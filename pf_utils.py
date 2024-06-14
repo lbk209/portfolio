@@ -66,32 +66,6 @@ def get_price(df_rate, data_check, rate_is_percent=True):
     return df_price
 
 
-def backtest(dfs, weights=None, name='portfolio', period=None, **kwargs):
-    if weights is None:
-        cols = dfs.columns
-        weights = dict(zip(cols, [1/len(cols)]*len(cols)))
-
-    if period == 'W':
-        run_period = bt.algos.RunWeekly()
-    elif period == 'Q':
-        run_period = bt.algos.RunQuarterly()
-    elif period == 'Y':
-        run_period = bt.algos.RunYearly()
-    elif period == 'M':
-        run_period = bt.algos.RunMonthly()
-    else: # default montly
-        run_period = bt.algos.RunOnce()
-        
-    strategy = bt.Strategy(name, [
-        bt.algos.SelectAll(),
-        bt.algos.WeighSpecified(**weights),
-        run_period,
-        bt.algos.Rebalance()
-    ])
-    return bt.Backtest(strategy, dfs, **kwargs)
-
-
-
 def get_start_dates(dfs, symbol_name=None):
     """
     symbol_name: dict of symbols to names
@@ -119,3 +93,158 @@ def valuate_bond(face, rate, year, ytm, n_pay=1):
         vc += c/(1+r_discount)**t
     # the present value of the face value of the bond added
     return vc + face/(1+r_discount)**(year*n_pay)
+
+
+
+class Backtest():
+    def __init__(self, metrics=None, name_prfx='Portfolio', 
+                 initial_capital=1000000, commissions=None, asset_names=None):
+        self.portfolios = dict()
+        self.pf_weights = dict()
+        self.metrics = metrics
+        self.name_prfx = name_prfx
+        self.n_names = 0
+        self.initial_capital = initial_capital
+        # commissions of all assets across portfolios 
+        # commissions per year
+        self.commissions = commissions 
+        self.asset_names = asset_names # names of all assets across portfolios
+        
+    
+    def _check_name(self, name=None):
+        if name is None:
+            self.n_names += 1
+            name = f'{self.name_prfx} {self.n_names}'
+        return name
+
+    
+    def _check_weights(self, dfs, weights):
+        if weights is None:
+            cols = dfs.columns
+            weights = dict(zip(cols, [1/len(cols)]*len(cols)))
+        return weights
+
+    
+    def _check_var(self, var_arg, var_self):
+        if var_arg is None:
+            var_arg = var_self
+        return var_arg
+
+
+    def _calc_commissions(self, commissions, weights, period='Y', rate_is_percent=True):
+        """
+        commissions: dict of assets
+        """
+        a = 100 if rate_is_percent else 1
+        
+        if period == 'W':
+            a *= 52
+        elif period == 'Q':
+            a *= 4
+        elif period == 'M':
+            a *= 12
+        else:
+            pass
+
+        try:
+            c = sum([v*commissions[k]/a for k,v in weights.items()])
+            return lambda q, p: abs(q*p*c)
+        except Exception as e:
+            print(f'WARNING: commissions set to 0 as {e}')
+            return None
+
+
+    def backtest(self, dfs, weights=None, name='portfolio', 
+                 run_period=bt.algos.RunOnce(), 
+                 capital_flow=0, **kwargs):
+        """
+        kwargs: keyword args for bt.Backtest
+        """
+        strategy = bt.Strategy(name, [
+            bt.algos.SelectAll(),
+            bt.algos.CapitalFlow(capital_flow),
+            bt.algos.WeighSpecified(**weights),
+            run_period,
+            bt.algos.Rebalance()
+        ])
+        return bt.Backtest(strategy, dfs, **kwargs)
+        
+
+    def build(self, dfs, weights=None, name=None, period=None, 
+              initial_capital=None, commissions=None, capital_flow=0):
+        
+        name = self._check_name(name)
+        if isinstance(dfs, pd.Series):
+            dfs = dfs.to_frame(name)
+            
+        weights = self._check_weights(dfs, weights)
+        initial_capital = self._check_var(initial_capital, self.initial_capital)
+
+        if period == 'W':
+            run_period = bt.algos.RunWeekly()
+        elif period == 'Q':
+            run_period = bt.algos.RunQuarterly()
+        elif period == 'Y':
+            run_period = bt.algos.RunYearly()
+        elif period == 'M':
+            run_period = bt.algos.RunMonthly()
+        else: # default: buy & hold
+            run_period = bt.algos.RunOnce()
+        
+        commissions = self._check_var(commissions, self.commissions)
+        if commissions is None:
+            c_avg = None
+        else:
+            c_avg = self._calc_commissions(commissions, weights, period)
+        
+        self.portfolios[name] = self.backtest(dfs, weights=weights, name=name, run_period=run_period, 
+                                              capital_flow=capital_flow,
+                                              initial_capital=initial_capital, commissions=c_avg)
+        self.pf_weights[name] = weights
+
+    
+    def buy_n_hold(self, dfs, weights=None, name=None, **kwargs):
+        return self.build(dfs, weights, name, **kwargs)
+
+    
+    def run(self, pf_list=None, metrics=None, plot=True, freq='d', figsize=None):
+        """
+        pf_list: List of backtests or index
+        """
+        if pf_list is None:
+            pf_list = self.portfolios.values()
+        else:
+            c = [0 if isinstance(x, int) else 1 for x in pf_list]
+            if sum(c) == 0:
+                pf_list = [x for i, x in enumerate(self.portfolios.values()) if i in pf_list]
+            else:
+                pf_list = [v for k, v in self.portfolios.items() if k in pf_list]
+        
+        results = bt.run(*pf_list)
+        
+        if plot:
+            results.plot(freq=freq, figsize=figsize);
+        
+        metrics = self._check_var(metrics, self.metrics)
+        if (metrics is None) or (metrics == 'all'):
+            return results.stats
+        else:
+            metrics = ['start', 'end'] + metrics
+            return results.stats.loc[metrics]
+
+    
+    def show_weights(self, name=None, asset_names=None, as_series=True):
+        if name is None: # return weights of all portfolios
+            weights = self.pf_weights
+        else:
+            if name in self.portfolios.keys():
+                weights = self.pf_weights[name]
+                asset_names = self._check_var(asset_names, self.asset_names)
+                if asset_names is not None:
+                    weights = {asset_names[k] if k in asset_names else k:v for k,v in weights.items()}
+            else:
+                print(f'WARNING: no portfolio {name}')
+                weights = self.pf_weights
+        if as_series:
+            weights = pd.Series(weights)
+        return weights
