@@ -9,35 +9,67 @@ metrics = [
 ]
 
 
-def buy_and_hold(df, names=None, name_stg=None):
-    if isinstance(df, pd.Series):
-        df = df.to_frame()
-    if names is not None:
-        if not isinstance(names, list):
-            names = [names]
-        cols = df.columns
-        if len(cols) == len(names):
-            df = df.rename(columns=dict(zip(cols, names)))
-        else:
-            print('WARNING: check num of names')
+def import_rate1(file, path='.', cols=['date', None]):
+    """
+    data_check: [(기준일1, 기준가1), (기준일2, 기준가2)]
+    """
+    df_rate = pd.read_csv(f'{path}/{file}', parse_dates=[0], index_col=[0])
+    if df_rate.columns.size > 1:
+        print('WARNING: taking the 1st two columns only ...')
+        df_rate = df_rate.iloc[:, 0]
 
-    if name_stg is None:
-        name_stg = names[0]
-        
-    strategy = bt.Strategy(name_stg, [
-        bt.algos.SelectAll(),
-        bt.algos.WeighEqually(),
-        bt.algos.RunOnce(),
-        bt.algos.Rebalance()
-    ])
-    return bt.Backtest(strategy, df)
+    df_rate = df_rate.rename_axis(cols[0])
+    
+    col_data = cols[1]
+    if col_data is None:
+        col_data = file.split('.')[0]
+    df_rate.name = col_data
+
+    return df_rate
 
 
+def import_rate2(file, path='.', cols=['date', None], n_headers=1):
+    """
+    data_check: [(기준일1, 기준가1), (기준일2, 기준가2)]
+    """
+    df_rate = pd.read_csv(f'{path}/{file}')
+    df_rate = df_rate.T.iloc[n_headers:, 0]
 
-def backtest(dfs, weights=None, name='portfolio', period='M', **kwargs):
+    df_rate.index = pd.to_datetime(df_rate.index)
+    df_rate = df_rate.rename_axis(cols[0])
+    
+    col_data = cols[1]
+    if col_data is None:
+        col_data = file.split('.')[0]
+    df_rate.name = col_data
+
+    return df_rate
+    
+
+def get_price(df_rate, data_check, rate_is_percent=True):
+    
+    # convert to price with data_check[0]
+    dt, price = data_check[0]
+    dt = pd.to_datetime(dt)
+    rate = df_rate[dt]
+    if rate_is_percent:
+        rate = rate/100
+        df_rate = df_rate/100
+    price_base = price / (rate+1)
+    df_price = (df_rate + 1) * price_base 
+
+    # check price
+    dt, price = data_check[1]
+    e = df_price[dt]/price - 1
+    print(f'error: {e*100:.2f} %')
+    
+    return df_price
+
+
+def backtest(dfs, weights=None, name='portfolio', period=None, **kwargs):
     if weights is None:
         cols = dfs.columns
-        weights = dict(zip(cols, [1]*len(cols)))
+        weights = dict(zip(cols, [1/len(cols)]*len(cols)))
 
     if period == 'W':
         run_period = bt.algos.RunWeekly()
@@ -45,8 +77,10 @@ def backtest(dfs, weights=None, name='portfolio', period='M', **kwargs):
         run_period = bt.algos.RunQuarterly()
     elif period == 'Y':
         run_period = bt.algos.RunYearly()
-    else: # default montly
+    elif period == 'M':
         run_period = bt.algos.RunMonthly()
+    else: # default montly
+        run_period = bt.algos.RunOnce()
         
     strategy = bt.Strategy(name, [
         bt.algos.SelectAll(),
