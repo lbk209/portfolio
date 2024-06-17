@@ -47,6 +47,9 @@ def import_rate2(file, path='.', cols=['date', None], n_headers=1):
     
 
 def get_price(df_rate, data_check, rate_is_percent=True):
+    """
+    calc price from rate of return
+    """
     # date check
     for dt, _ in data_check:
         try:
@@ -73,31 +76,36 @@ def get_price(df_rate, data_check, rate_is_percent=True):
     return df_price
 
 
-def import_tdfs(tdf_data, df_tdf_all = None, data_type=1, n_headers=1):
+def convert_rate_to_price(data, n_headers=1, path=None, rate_is_percent=True, df_rate=None):
+    """
+    data: series or dict
+    df_rate: historical given as dataframe
+    """
+    data_type = data['data_type']
     if data_type == 1:
         import_rate = import_rate1
     elif data_type == 2:
-        import_rate = lambda *args, **kwargs: import_rate2(*args, **kwargs, n_headers=n_headers)
+        import_rate = lambda *args, **kwargs: import_rate2(*args, n_headers=n_headers, **kwargs)
     else:
-        return print(f'ERROR: no data type {data_type} exists')
-        
-    for ticker, data in tdf_data.items():
-        name = data['name']
-        file = data['file']
-        data_check = data['data_check']
-        path = data['path']
-    
-        df = import_rate(file, path, ['date', ticker])
-        df = get_price(df, data_check)
-        if df is None:
-            return print(f'ERROR: check {ticker}')
-        
-        if df_tdf_all is None:
-            df_tdf_all = df.to_frame()
+        if df_rate is None:
+            return print(f'ERROR: no data type {data_type} exists')
         else:
-            df_tdf_all = df_tdf_all.join(df, how='outer')
-
-    return df_tdf_all
+            import_rate = lambda *args, **kwargs: df_rate.rename_axis(kwargs['cols'][0]).rename(kwargs['cols'][1])
+    
+    ticker = data['ticker']
+    name = data['name']
+    file = f'{data['file']}.csv'
+    data_check = [
+        (data['check1_date'], data['check1_price']),
+        (data['check2_date'], data['check2_price']),
+    ]
+    
+    df = import_rate(file, path=path, cols=['date', ticker])
+    df = get_price(df, data_check, rate_is_percent=rate_is_percent)
+    if df is None:
+        return print(f'ERROR: check {ticker}')
+    else:
+        return df
 
 
 def get_date_range(dfs, symbol_name=None):
@@ -132,18 +140,34 @@ def valuate_bond(face, rate, year, ytm, n_pay=1):
 
 
 class Backtest():
-    def __init__(self, metrics=None, name_prfx='Portfolio', 
-                 initial_capital=1000000, commissions=None, asset_names=None):
+    def __init__(self, df_equity, metrics=None, name_prfx='Portfolio', 
+                 initial_capital=1000000, commissions=None, equity_names=None):
+        self.df_equity = self.align_period(df_equity)
         self.portfolios = dict()
         self.pf_weights = dict()
         self.metrics = metrics
         self.name_prfx = name_prfx
         self.n_names = 0
         self.initial_capital = initial_capital
-        # commissions of all assets across portfolios 
-        # commissions per year
+        # commissions of all equities across portfolios (per year)
         self.commissions = commissions 
-        self.asset_names = asset_names # names of all assets across portfolios
+        self.equity_names = equity_names # names of all equities across portfolios
+
+
+    def align_period(self, df_equity, dt_format='%Y-%m-%d', n_indent=2):
+        df = get_date_range(df_equity)
+        start_date = df.iloc[:, 0].max()
+        end_date = df.iloc[:, 1].min()
+        df = df_equity.loc[start_date:end_date]
+        dts = [x.strftime(dt_format) for x in (start_date, end_date)]
+        print(f"backtest period reset: {' ~ '.join(dts)}")
+        
+        stats = df.isna().sum().div(df.count())
+        print('rate of nan filled forward::')
+        indent = ' '*n_indent
+        _ = [print(f'{indent}{i}: {stats[i]:.3f}') for i in stats.index]
+        
+        return df.ffill()
         
     
     def _check_name(self, name=None):
@@ -168,7 +192,7 @@ class Backtest():
 
     def _calc_commissions(self, commissions, weights, period='Y', rate_is_percent=True):
         """
-        commissions: dict of assets
+        commissions: dict of equity to fee
         """
         a = 100 if rate_is_percent else 1
         
@@ -205,16 +229,19 @@ class Backtest():
         return bt.Backtest(strategy, dfs, **kwargs)
         
 
-    def build(self, dfs, weights=None, name=None, period=None, 
+    def build(self, weights=None, name=None, period=None, 
               initial_capital=None, commissions=None, capital_flow=0):
-        
-        name = self._check_name(name)
-        if isinstance(dfs, pd.Series):
-            dfs = dfs.to_frame(name)
-            
-        weights = self._check_weights(dfs, weights)
-        initial_capital = self._check_var(initial_capital, self.initial_capital)
 
+        dfs = self.df_equity
+        weights = self._check_weights(dfs, weights)
+        name = self._check_name(name)
+        initial_capital = self._check_var(initial_capital, self.initial_capital)
+        
+        try:
+            dfs = dfs[weights.keys()] # dataframe even if one weight given
+        except KeyError as e:
+            return print(f'ERROR: check weights as {e}')
+        
         if period == 'W':
             run_period = bt.algos.RunWeekly()
         elif period == 'Q':
@@ -238,8 +265,10 @@ class Backtest():
         self.pf_weights[name] = weights
 
     
-    def buy_n_hold(self, dfs, weights=None, name=None, **kwargs):
-        return self.build(dfs, weights, name, **kwargs)
+    def buy_n_hold(self, weights=None, name=None, **kwargs):
+        if isinstance(weights, str):
+            weights = {weights: 1}
+        return self.build(weights=weights, name=name, period=None, **kwargs)
 
     
     def run(self, pf_list=None, metrics=None, plot=True, freq='d', figsize=None):
@@ -268,15 +297,15 @@ class Backtest():
             return results.stats.loc[metrics]
 
     
-    def show_weights(self, name=None, asset_names=None, as_series=True):
+    def show_weights(self, name=None, equity_names=None, as_series=True):
         if name is None: # return weights of all portfolios
             weights = self.pf_weights
         else:
             if name in self.portfolios.keys():
                 weights = self.pf_weights[name]
-                asset_names = self._check_var(asset_names, self.asset_names)
-                if asset_names is not None:
-                    weights = {asset_names[k] if k in asset_names else k:v for k,v in weights.items()}
+                equity_names = self._check_var(equity_names, self.equity_names)
+                if equity_names is not None:
+                    weights = {equity_names[k] if k in equity_names else k:v for k,v in weights.items()}
             else:
                 print(f'WARNING: no portfolio {name}')
                 weights = self.pf_weights
