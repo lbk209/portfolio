@@ -11,11 +11,12 @@ metrics = [
 
 def import_rate1(file, path='.', cols=['date', None]):
     """
+    file: historical of cumulative rate of return in long format
     data_check: [(기준일1, 기준가1), (기준일2, 기준가2)]
     """
     df_rate = pd.read_csv(f'{path}/{file}', parse_dates=[0], index_col=[0])
     if df_rate.columns.size > 1:
-        print('WARNING: taking the 1st two columns only ...')
+        print('WARNING: taking the 1st two columns only.')
     # make sure to get series
     df_rate = df_rate.iloc[:, 0]
     df_rate = df_rate.rename_axis(cols[0])
@@ -30,6 +31,7 @@ def import_rate1(file, path='.', cols=['date', None]):
 
 def import_rate2(file, path='.', cols=['date', None], n_headers=1):
     """
+    file: historical of cumulative rate of return in wide format
     data_check: [(기준일1, 기준가1), (기준일2, 기준가2)]
     """
     df_rate = pd.read_csv(f'{path}/{file}')
@@ -76,7 +78,8 @@ def get_price(df_rate, data_check, rate_is_percent=True):
     return df_price
 
 
-def convert_rate_to_price(data, n_headers=1, path=None, rate_is_percent=True, df_rate=None):
+def convert_rate_to_price(data, n_headers=1, path=None, 
+                          rate_is_percent=True, df_rate=None, rate_only=False):
     """
     data: series or dict
     df_rate: historical given as dataframe
@@ -101,6 +104,9 @@ def convert_rate_to_price(data, n_headers=1, path=None, rate_is_percent=True, df
     ]
     
     df = import_rate(file, path=path, cols=['date', ticker])
+    if rate_only:
+       return df
+        
     df = get_price(df, data_check, rate_is_percent=rate_is_percent)
     if df is None:
         return print(f'ERROR: check {ticker}')
