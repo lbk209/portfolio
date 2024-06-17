@@ -16,8 +16,8 @@ def import_rate1(file, path='.', cols=['date', None]):
     df_rate = pd.read_csv(f'{path}/{file}', parse_dates=[0], index_col=[0])
     if df_rate.columns.size > 1:
         print('WARNING: taking the 1st two columns only ...')
-        df_rate = df_rate.iloc[:, 0]
-
+    # make sure to get series
+    df_rate = df_rate.iloc[:, 0]
     df_rate = df_rate.rename_axis(cols[0])
     
     col_data = cols[1]
@@ -47,11 +47,18 @@ def import_rate2(file, path='.', cols=['date', None], n_headers=1):
     
 
 def get_price(df_rate, data_check, rate_is_percent=True):
+    # date check
+    for dt, _ in data_check:
+        try:
+            dt = pd.to_datetime(dt)
+            rate = df_rate.loc[dt]
+        except KeyError as e:
+            return print(f'ERROR: KeyError {e}')
     
     # convert to price with data_check[0]
     dt, price = data_check[0]
     dt = pd.to_datetime(dt)
-    rate = df_rate[dt]
+    rate = df_rate.loc[dt]
     if rate_is_percent:
         rate = rate/100
         df_rate = df_rate/100
@@ -60,17 +67,45 @@ def get_price(df_rate, data_check, rate_is_percent=True):
 
     # check price
     dt, price = data_check[1]
-    e = df_price[dt]/price - 1
+    e = df_price.loc[dt]/price - 1
     print(f'error: {e*100:.2f} %')
     
     return df_price
 
 
-def get_start_dates(dfs, symbol_name=None):
+def import_tdfs(tdf_data, df_tdf_all = None, data_type=1, n_headers=1):
+    if data_type == 1:
+        import_rate = import_rate1
+    elif data_type == 2:
+        import_rate = lambda *args, **kwargs: import_rate2(*args, **kwargs, n_headers=n_headers)
+    else:
+        return print(f'ERROR: no data type {data_type} exists')
+        
+    for ticker, data in tdf_data.items():
+        name = data['name']
+        file = data['file']
+        data_check = data['data_check']
+        path = data['path']
+    
+        df = import_rate(file, path, ['date', ticker])
+        df = get_price(df, data_check)
+        if df is None:
+            return print(f'ERROR: check {ticker}')
+        
+        if df_tdf_all is None:
+            df_tdf_all = df.to_frame()
+        else:
+            df_tdf_all = df_tdf_all.join(df, how='outer')
+
+    return df_tdf_all
+
+
+def get_date_range(dfs, symbol_name=None):
     """
     symbol_name: dict of symbols to names
     """
     df = dfs.apply(lambda x: x[x.notna()].index.min()).to_frame('start date')
+    df = df.join(dfs.apply(lambda x: x[x.notna()].index.max()).to_frame('end date'))
     if symbol_name is not None:
         df = pd.Series(symbol_name).to_frame('name').join(df)
     return df.sort_values('start date')
