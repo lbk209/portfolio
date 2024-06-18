@@ -1,5 +1,6 @@
 import bt
 import pandas as pd
+import matplotlib.pyplot as plt
 
 metrics = [
     'total_return', 'cagr', 
@@ -146,6 +147,9 @@ def valuate_bond(face, rate, year, ytm, n_pay=1):
 
 
 class Backtest():
+    """
+    backtest fixed weight portfolio
+    """
     def __init__(self, df_equity, metrics=None, name_prfx='Portfolio', 
                  initial_capital=1000000, commissions=None, equity_names=None):
         self.df_equity = self.align_period(df_equity)
@@ -158,6 +162,7 @@ class Backtest():
         # commissions of all equities across portfolios (per year)
         self.commissions = commissions 
         self.equity_names = equity_names # names of all equities across portfolios
+        self.run_results = None
 
 
     def align_period(self, df_equity, dt_format='%Y-%m-%d', n_indent=2):
@@ -277,7 +282,7 @@ class Backtest():
         return self.build(weights=weights, name=name, period=None, **kwargs)
 
     
-    def run(self, pf_list=None, metrics=None, plot=True, freq='d', figsize=None):
+    def run(self, pf_list=None, metrics=None, plot=True, freq='d', figsize=None, stats=True):
         """
         pf_list: List of backtests or index
         """
@@ -291,30 +296,113 @@ class Backtest():
                 pf_list = [v for k, v in self.portfolios.items() if k in pf_list]
         
         results = bt.run(*pf_list)
+        self.run_results = results
         
         if plot:
             results.plot(freq=freq, figsize=figsize);
-        
-        metrics = self._check_var(metrics, self.metrics)
-        if (metrics is None) or (metrics == 'all'):
-            return results.stats
-        else:
-            metrics = ['start', 'end'] + metrics
-            return results.stats.loc[metrics]
 
-    
-    def show_weights(self, name=None, equity_names=None, as_series=True):
-        if name is None: # return weights of all portfolios
-            weights = self.pf_weights
-        else:
-            if name in self.portfolios.keys():
-                weights = self.pf_weights[name]
-                equity_names = self._check_var(equity_names, self.equity_names)
-                if equity_names is not None:
-                    weights = {equity_names[k] if k in equity_names else k:v for k,v in weights.items()}
+        if stats:
+            metrics = self._check_var(metrics, self.metrics)
+            if (metrics is None) or (metrics == 'all'):
+                return results.stats
             else:
-                print(f'WARNING: no portfolio {name}')
-                weights = self.pf_weights
+                metrics = ['start', 'end'] + metrics
+                return results.stats.loc[metrics]
+        else:
+            return results
+
+
+    def check_portfolios(self, pf_list=None, run=True, convert_index=True):
+        if run:
+            if self.run_results is None:
+                return print('ERROR')
+            else:
+                pf_list_all = list(self.run_results.keys())
+        else:
+            pf_list_all = list(self.portfolios.keys())
+    
+        if pf_list is None:
+            return pf_list_all
+            
+        if not isinstance(pf_list, list):
+            pf_list = [pf_list]
+    
+        try: # assuming list of int
+            if max(pf_list) >= len(pf_list_all):
+                print('WARNING: check pf_list')
+                pf_list = pf_list_all
+            else:
+                if convert_index:
+                    pf_list = [pf_list_all[x] for x in pf_list]
+
+        except TypeError: # pf_list is list of str
+            if len(set(pf_list) - set(pf_list_all)) > 0:
+                print('WARNING: check pf_list')
+                pf_list = pf_list_all
+            
+        return pf_list
+
+
+    def _plot_portfolios(self, plot_func, pf_list, ncols=2, sharex=True, sharey=True, figsize=(10,5)):
+        n = len(pf_list)
+        nrows = n // ncols + min(n % ncols, 1)
+        fig, axs = plt.subplots(nrows, ncols, sharex=sharex, sharey=sharey,
+                                #figsize=figsize
+                               )
+        if nrows == 1:
+            axs = [axs]
+        
+        k = 0
+        finished = False
+        for i in range(nrows):
+            for j in range(ncols):
+                ax = axs[i][j]
+                _ = plot_func(pf_list[k], ax=ax, figsize=figsize)
+                k += 1
+                if k == n:
+                    finished = True
+                    break
+            if finished:
+                break
+    
+    
+    def plot_security_weights(self, pf_list=None, **kwargs):
+        if self.run_results is None:
+            return print('ERROR: run backtest first')
+        
+        plot_func = self.run_results.plot_security_weights
+        pf_list  = self.check_portfolios(pf_list)
+        return self._plot_portfolios(plot_func, pf_list, **kwargs)
+        
+
+    def plot_weights(self, pf_list=None, **kwargs):
+        if self.run_results is None:
+            return print('ERROR: run backtest first')
+        
+        plot_func = self.run_results.plot_weights
+        pf_list  = self.check_portfolios(pf_list)
+        return self._plot_portfolios(plot_func, pf_list, **kwargs)
+
+
+    def plot_histogram(self, pf_list=None, **kwargs):
+        if self.run_results is None:
+            return print('ERROR: run backtest first')
+        
+        pf_list  = self.check_portfolios(pf_list)
+        if len(pf_list) > 1:
+            print('WARNING: passed axis not bound to passed figure')
+
+        for x in pf_list:
+            _ = self.run_results.plot_histogram(x, **kwargs)
+        return None
+
+
+    def get_weights(self, pf_list=None, equity_names=None, as_series=True):
+        pf_list  = self.check_portfolios(pf_list, convert_index=True)
+        weights = {k: self.pf_weights[k] for k in pf_list}
+        quity_names = self._check_var(equity_names, self.equity_names)
+        if equity_names is not None:
+            weights = {k: {equity_names[x]:y for x,y in v.items()} for k,v in weights.items()}
         if as_series:
-            weights = pd.Series(weights)
+            weights = pd.DataFrame().from_dict(weights).fillna(0)
         return weights
