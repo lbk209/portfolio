@@ -14,6 +14,8 @@ metrics = [
     'monthly_vol', 'monthly_sharpe', 'monthly_sortino'
 ]
 
+WEEKS_IN_YEAR = 51
+
 
 def import_rate1(file, path='.', cols=['date', None]):
     """
@@ -163,7 +165,8 @@ class Backtest():
     """
     def __init__(self, df_equity, metrics=None, name_prfx='Portfolio', 
                  initial_capital=1000000, commissions=None, equity_names=None):
-        self.df_equity = self.align_period(df_equity)
+        #self.df_equity = self.align_period(df_equity)
+        self.df_equity = df_equity
         self.portfolios = dict()
         self.pf_weights = dict()
         self.metrics = metrics
@@ -462,18 +465,58 @@ class Backtest():
 
 class AssetEvaluator():
     def __init__(self, df_prices, days_in_year=252):
-        self.df_prices = df_prices.to_frame() if isinstance(df_prices, pd.Series) else df_prices
+        df_prices = df_prices.to_frame() if isinstance(df_prices, pd.Series) else df_prices
+        if df_prices.index.name is None:
+            df_prices.index.name = 'date' # set index name to run check_days_in_year
+        
+        n = self.check_days_in_year(df_prices, days_in_year, freq='M')
+        if n != days_in_year:
+            print(f'Reset days_in_year from {days_in_year} to {n}')
+            days_in_year = n
+        
+        self.df_prices = df_prices
         self.days_in_year = days_in_year
         self.bayesian_data = None
-        if self.df_prices.index.name is None:
-            self.df_prices.index.name = 'date' # set index name to run check_days_in_year
-        return self.check_days_in_year(df_prices, days_in_year)
-     
+        
 
-    def check_days_in_year(self, df_prices=None, days_in_year=None):
+    def check_days_in_year(self, df, days_in_year, freq='M'):
+        """
+        freq: freq to check days_in_year in df
+        """
+        if freq == 'Y':
+            grp_format = '%Y'
+            #days_in_freq = days_in_year
+            factor = 1
+        elif freq == 'W':
+            grp_format = '%Y%m%U'
+            #days_in_freq = round(days_in_year/12/WEEKS_IN_YEAR)
+            factor = 12 * WEEKS_IN_YEAR
+        else: # default month
+            grp_format = '%Y%m'
+            #days_in_freq = round(days_in_year/12)
+            factor = 12
+        
+        df_freq = (pd.Series(1, index=df.index.strftime(grp_format))
+                     .groupby(df.index.name).count())
+        df_freq = df_freq[1:-1]
+        if len(df_freq) == 0:
+            print(f'ERROR: set freq less than {freq}')
+            return days_in_year
+        
+        days_freq_calc = round(df_freq.mean())
+        if days_freq_calc != round(days_in_year / factor):
+            days_in_year_new = round(days_freq_calc * factor)
+            print(f'WARNING: the num of days in a year is {days_in_year_new} different with {days_in_year} in setting')
+            return days_in_year_new
+        else:
+            return days_in_year
+
+
+    def check_days_in_year_del(self, df_prices=None, days_in_year=None):
         df_prices = self._check_var(df_prices, self.df_prices)
         days_in_year = self._check_var(days_in_year, self.days_in_year)
-        
+
+        # groupby year-month for data with periods less than a year
         df = (pd.Series(1, index=df_prices.index.strftime('%Y%m'))
                 .groupby(df_prices.index.name).count())
         df = df[1:-1]
@@ -481,9 +524,11 @@ class AssetEvaluator():
         avg_mdays = round(df.mean())
         days_in_month = round(days_in_year/12)
         if avg_mdays != days_in_month:
-            return print(f'WARNING: avg days in a month, {avg_mdays} differs with {days_in_month}')
+            days_new = round(avg_mdays*12)
+            print(f'WARNING: the num of days in a year is {days_new} different with {days_in_year} in setting')
+            return days_new
         else:
-            return None
+            return days_in_year
 
 
     def get_freq_days(self, freq='daily'):
@@ -492,7 +537,7 @@ class AssetEvaluator():
         elif freq == 'monthly':
             return round(self.days_in_year/12)
         elif freq == 'weekly':
-            return round(self.days_in_year/51)
+            return round(self.days_in_year/WEEKS_IN_YEAR)
         else: # default daily
             return 1
 
