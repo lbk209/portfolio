@@ -2,6 +2,11 @@ import bt
 import pandas as pd
 import matplotlib.pyplot as plt
 
+import arviz as az
+import numpy as np
+import pymc as pm
+import pytensor.tensor as pt
+
 metrics = [
     'total_return', 'cagr', 
     'max_drawdown', 'avg_drawdown', 'avg_drawdown_days', 
@@ -115,7 +120,7 @@ def convert_rate_to_price(data, n_headers=1, path=None,
         return df
 
 
-def get_date_range(dfs, symbol_name=None):
+def get_date_range(dfs, symbol_name=None, slice_input=False):
     """
     symbol_name: dict of symbols to names
     """
@@ -123,7 +128,13 @@ def get_date_range(dfs, symbol_name=None):
     df = df.join(dfs.apply(lambda x: x[x.notna()].index.max()).to_frame('end date'))
     if symbol_name is not None:
         df = pd.Series(symbol_name).to_frame('name').join(df)
-    return df.sort_values('start date')
+
+    if slice_input:
+        start_date = df.iloc[:, 0].max()
+        end_date = df.iloc[:, 1].min()
+        return dfs.loc[start_date:end_date]
+    else:
+        return df.sort_values('start date')
 
 
 
@@ -166,11 +177,8 @@ class Backtest():
 
 
     def align_period(self, df_equity, dt_format='%Y-%m-%d', n_indent=2):
-        df = get_date_range(df_equity)
-        start_date = df.iloc[:, 0].max()
-        end_date = df.iloc[:, 1].min()
-        df = df_equity.loc[start_date:end_date]
-        dts = [x.strftime(dt_format) for x in (start_date, end_date)]
+        df = get_date_range(df_equity, slice_input=True)
+        dts = [x.strftime(dt_format) for x in (df.index.min(), df.index.max())]
         print(f"backtest period reset: {' ~ '.join(dts)}")
         
         stats = df.isna().sum().div(df.count())
@@ -406,3 +414,188 @@ class Backtest():
         if as_series:
             weights = pd.DataFrame().from_dict(weights).fillna(0)
         return weights
+
+
+
+class AssetEvaluator():
+    def __init__(self, df_prices, days_in_year=252):
+        self.df_prices = df_prices.to_frame() if isinstance(df_prices, pd.Series) else df_prices
+        self.days_in_year = days_in_year
+        self.bayesian_data = None
+        return self.check_days_in_year(df_prices, days_in_year)
+     
+
+    def check_days_in_year(self, df_prices=None, days_in_year=None):
+        df_prices = self._check_var(df_prices, self.df_prices)
+        days_in_year = self._check_var(days_in_year, self.days_in_year)
+        
+        df = (pd.Series(1, index=df_prices.index.strftime('%Y%m'))
+                .groupby(df_prices.index.name).count())
+        df = df[1:-1]
+        
+        avg_mdays = round(df.mean())
+        days_in_month = round(days_in_year/12)
+        if avg_mdays != days_in_month:
+            return print(f'WARNING: avg days in a month, {avg_mdays} differs with {days_in_month}')
+        else:
+            return None
+
+
+    def get_freq_days(self, freq='daily'):
+        if freq == 'yearly':
+            return self.days_in_year
+        elif freq == 'monthly':
+            return round(self.days_in_year/12)
+        elif freq == 'weekly':
+            return round(self.days_in_year/51)
+        else: # default daily
+            return 1
+
+        
+    def _check_var(self, var_arg, var_self):
+        if var_arg is None:
+            var_arg = var_self
+        return var_arg
+
+    
+    def calc_cagr(self, df_prices=None, days_in_year=None):
+        df_prices = self._check_var(df_prices, self.df_prices)
+        days_in_year = self._check_var(days_in_year, self.days_in_year)
+
+        t = self.days_in_year / len(df_prices)
+        cagr = lambda x: (x[-1]/x[0]) ** t -1
+        
+        return df_prices.apply(lambda x: cagr(x.dropna()))
+        
+
+    def calc_mean_return(self, df_prices=None, days_in_year=None, freq='daily', annualize=True):
+        df_prices = self._check_var(df_prices, self.df_prices)
+        days_in_year = self._check_var(days_in_year, self.days_in_year)
+
+        periods = self.get_freq_days(freq)
+        res = df_prices.pct_change(periods).dropna().mean()
+        if annualize:
+            return res * (days_in_year/periods)
+        else:
+            return res
+        
+
+    def calc_volatility(self, df_prices=None, days_in_year=None, freq='daily', annualize=True):
+        df_prices = self._check_var(df_prices, self.df_prices)
+        days_in_year = self._check_var(days_in_year, self.days_in_year)
+
+        periods = self.get_freq_days(freq)
+        res = df_prices.pct_change(periods).dropna()
+        res = res.std()
+        if annualize:
+            return res * ((days_in_year/periods) ** .5)
+        else:
+            return res
+
+
+    def calc_sharpe(self, df_prices=None, days_in_year=None, freq='daily', annualize=True, rf=0):
+        df_prices = self._check_var(df_prices, self.df_prices)
+        days_in_year = self._check_var(days_in_year, self.days_in_year)
+
+        periods = self.get_freq_days(freq)
+        res = df_prices.pct_change(periods).dropna()
+        res = (res.mean() - rf) / res.std()
+        if annualize:
+            return res * ((days_in_year/periods) ** .5)
+        else:
+            return res
+
+
+    def summary(self, freq='daily', annualize=True, rf=0):
+        kwargs = dict(
+            freq=freq, annualize=annualize
+        )
+        df = self.df_prices.apply(lambda x: f'{len(x.dropna())/self.days_in_year:.1f}')
+        # work even with df_prices of single asset as df_prices is always series (see __init__)
+        return df.to_frame('years').join(
+            self.calc_cagr().to_frame('cagr').join(
+                self.calc_mean_return(**kwargs).to_frame(f'{freq}_mean').join(
+                    self.calc_volatility(**kwargs).to_frame(f'{freq}_vol').join(
+                        self.calc_sharpe(rf=rf, **kwargs).to_frame(f'{freq}_sharpe')
+                    )
+                )
+            )
+        ).T
+    
+    
+    def bayesian_sample(self, freq='daily', annualize=True, rf=0,
+                        sample_draws=1000, sample_tune=1000, target_accept=0.9,
+                        multiplier_std=10):
+
+        days_in_year = self.days_in_year
+        periods = self.get_freq_days(freq)
+        df_ret = self.df_prices.pct_change(periods).dropna()
+        
+        mean_prior = df_ret.mean()
+        std_prior = df_ret.std()
+        std_low = std_prior / multiplier_std
+        std_high = std_prior * multiplier_std
+    
+        assets = list(df_ret.columns)
+        num_assets = len(assets) # flag for comparisson of two assets
+        coords={'asset': assets}
+        
+        with pm.Model(coords=coords) as model:
+            nu = pm.Exponential('nu_minus_two', 1 / 29, testval=4) + 2.
+            
+            #nu_minus_one = pm.Exponential("nu_minus_one", 1 / 29.0)
+            #nu = pm.Deterministic("nu", nu_minus_one + 1)
+            
+            mean = pm.Normal('mean', mu=mean_prior, sigma=std_prior, dims='asset')
+            std = pm.Uniform('std', lower=std_low, upper=std_high, dims='asset')
+            returns = pm.StudentT('returns', nu=nu, mu=mean, sigma=std, observed=df_ret)
+            
+            std = std * pt.sqrt(nu / (nu - 2))
+            t = days_in_year/periods # annualizing
+            pm.Deterministic(f'{freq}_mean',  mean * t, dims='asset')
+            pm.Deterministic(f'{freq}_vol',  std * (t ** .5), dims='asset')
+            pm.Deterministic(f'{freq}_sharpe', ((mean-rf) / std) * (t ** .5), dims='asset')
+    
+            if num_assets == 2:
+                mean_diff = pm.Deterministic('mean diff', mean[0] - mean[1])
+                pm.Deterministic('std diff', std[0] - std[1])
+                pm.Deterministic('effect size', mean_diff / (std[0] ** 2 + std[1] ** 2) ** .5 / 2)
+    
+            trace = pm.sample(draws=sample_draws, tune=sample_tune,
+                              #chains=chains, cores=cores,
+                              target_accept=target_accept,
+                              #return_inferencedata=False, # TODO: what's for?
+                              progressbar=True)
+            
+        self.bayesian_data = {'trace':trace, 'coords':coords, 
+                              'freq':freq, 'annualize':annualize, 'rf':rf}
+        return None
+
+    
+    def bayesian_summary(self, var_names=None, filter_vars='like', **kwargs):
+        if self.bayesian_data is None:
+            return print('ERROR: run bayesian_sample first')
+        else:
+            trace = self.bayesian_data['trace']
+            return az.summary(trace, var_names=var_names, filter_vars=filter_vars, **kwargs)
+
+
+    def bayesian_plot(self, var_names=None, filter_vars='like', **kwargs):
+        if self.bayesian_data is None:
+            return print('ERROR: run bayesian_sample first')
+        else:
+            trace = self.bayesian_data['trace']
+            coords = self.bayesian_data['coords']
+            freq = self.bayesian_data['freq']
+            annualize = self.bayesian_data['annualize']
+            rf = self.bayesian_data['rf']
+
+        df = self.summary(freq=freq, annualize=annualize, rf=rf)
+        metrics = [x for x in df.index if x.startswith(freq)]
+        ref_val = df.loc[metrics].to_dict(orient='index')
+        col_name = list(coords.keys())[0]
+        ref_val = {k: [{col_name:at, 'ref_val':rv} for at, rv in v.items()] for k,v in ref_val.items()}
+            
+        _ = az.plot_posterior(trace, var_names=var_names, filter_vars=filter_vars,
+                              ref_val=ref_val, **kwargs)
+        return None
