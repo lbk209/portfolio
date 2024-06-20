@@ -2,6 +2,11 @@ import bt
 import pandas as pd
 import matplotlib.pyplot as plt
 
+import arviz as az
+import numpy as np
+import pymc as pm
+import pytensor.tensor as pt
+
 metrics = [
     'total_return', 'cagr', 
     'max_drawdown', 'avg_drawdown', 'avg_drawdown_days', 
@@ -416,8 +421,7 @@ class AssetEvaluator():
     def __init__(self, df_prices, days_in_year=252):
         self.df_prices = df_prices.to_frame() if isinstance(df_prices, pd.Series) else df_prices
         self.days_in_year = days_in_year
-        self.bayesian_input = None
-        self.bayesian_trace = None
+        self.bayesian_data = None
         return self.check_days_in_year(df_prices, days_in_year)
      
 
@@ -469,7 +473,7 @@ class AssetEvaluator():
         days_in_year = self._check_var(days_in_year, self.days_in_year)
 
         periods = self.get_freq_days(freq)
-        res = df.pct_change(periods).dropna().mean()
+        res = df_prices.pct_change(periods).dropna().mean()
         if annualize:
             return res * (days_in_year/periods)
         else:
@@ -481,7 +485,7 @@ class AssetEvaluator():
         days_in_year = self._check_var(days_in_year, self.days_in_year)
 
         periods = self.get_freq_days(freq)
-        res = df.pct_change(periods).dropna()
+        res = df_prices.pct_change(periods).dropna()
         res = res.std()
         if annualize:
             return res * ((days_in_year/periods) ** .5)
@@ -494,7 +498,7 @@ class AssetEvaluator():
         days_in_year = self._check_var(days_in_year, self.days_in_year)
 
         periods = self.get_freq_days(freq)
-        res = df.pct_change(periods).dropna()
+        res = df_prices.pct_change(periods).dropna()
         res = (res.mean() - rf) / res.std()
         if annualize:
             return res * ((days_in_year/periods) ** .5)
@@ -520,10 +524,9 @@ class AssetEvaluator():
     
     
     def bayesian_sample(self, freq='daily', annualize=True, rf=0,
-                          sample_draws=1000, sample_tune=1000, target_accept=0.9,
-                          multiplier_std=10):
+                        sample_draws=1000, sample_tune=1000, target_accept=0.9,
+                        multiplier_std=10):
 
-        freq = self._check_var(freq, self.bayesian_freq)
         days_in_year = self.days_in_year
         periods = self.get_freq_days(freq)
         df_ret = self.df_prices.pct_change(periods).dropna()
@@ -563,30 +566,36 @@ class AssetEvaluator():
                               target_accept=target_accept,
                               #return_inferencedata=False, # TODO: what's for?
                               progressbar=True)
-        self.bayesian_trace = trace
-        self.bayesian_freq = freq
+            
+        self.bayesian_data = {'trace':trace, 'coords':coords, 
+                              'freq':freq, 'annualize':annualize, 'rf':rf}
         return None
 
     
-    def bayesian_summary(self, var_names=None, filter_vars=None, **kwargs):
-        trace = self.bayesian_trace
-        if trace is None:
-            return print('ERROR: run bayesian_sample first')
-            
-        return az.summary(trace, var_names=var_names, filter_vars=filter_vars, **kwargs)
-
-
-    def bayesian_plot(self, var_names=None, filter_vars=None, **kwargs):
-        trace = self.bayesian_trace
-        if trace is None:
+    def bayesian_summary(self, var_names=None, filter_vars='like', **kwargs):
+        if self.bayesian_data is None:
             return print('ERROR: run bayesian_sample first')
         else:
-            freq = self.bayesian_freq
+            trace = self.bayesian_data['trace']
+            return az.summary(trace, var_names=var_names, filter_vars=filter_vars, **kwargs)
 
-        self.summary(freq=freq, annualize=True, rf=0)
+
+    def bayesian_plot(self, var_names=None, filter_vars='like', **kwargs):
+        if self.bayesian_data is None:
+            return print('ERROR: run bayesian_sample first')
+        else:
+            trace = self.bayesian_data['trace']
+            coords = self.bayesian_data['coords']
+            freq = self.bayesian_data['freq']
+            annualize = self.bayesian_data['annualize']
+            rf = self.bayesian_data['rf']
+
+        df = self.summary(freq=freq, annualize=annualize, rf=rf)
+        metrics = [x for x in df.index if x.startswith(freq)]
+        ref_val = df.loc[metrics].to_dict(orient='index')
+        col_name = list(coords.keys())[0]
+        ref_val = {k: [{col_name:at, 'ref_val':rv} for at, rv in v.items()] for k,v in ref_val.items()}
             
-        if ref_val:
-                self.summary(freq='monthly')
         _ = az.plot_posterior(trace, var_names=var_names, filter_vars=filter_vars,
                               ref_val=ref_val, **kwargs)
         return None
