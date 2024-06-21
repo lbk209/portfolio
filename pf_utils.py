@@ -490,17 +490,12 @@ class Backtest():
                     .to_frame(col_p).dropna())
 
 
-
 class AssetEvaluator():
     def __init__(self, df_prices, days_in_year=252):
         df_prices = df_prices.to_frame() if isinstance(df_prices, pd.Series) else df_prices
         if df_prices.index.name is None:
             df_prices.index.name = 'date' # set index name to run check_days_in_year
-        
-        n = self.check_days_in_year(df_prices, days_in_year, freq='M')
-        if n != days_in_year:
-            print(f'Reset days_in_year from {days_in_year} to {n}')
-            days_in_year = n
+        _ = self.check_days_in_year(df_prices, days_in_year, freq='M')
         
         self.df_prices = df_prices
         self.days_in_year = days_in_year
@@ -536,25 +531,6 @@ class AssetEvaluator():
             days_in_year_new = round(days_freq_calc * factor)
             print(f'WARNING: the num of days in a year is {days_in_year_new} different with {days_in_year} in setting')
             return days_in_year_new
-        else:
-            return days_in_year
-
-
-    def check_days_in_year_del(self, df_prices=None, days_in_year=None):
-        df_prices = self._check_var(df_prices, self.df_prices)
-        days_in_year = self._check_var(days_in_year, self.days_in_year)
-
-        # groupby year-month for data with periods less than a year
-        df = (pd.Series(1, index=df_prices.index.strftime('%Y%m'))
-                .groupby(df_prices.index.name).count())
-        df = df[1:-1]
-        
-        avg_mdays = round(df.mean())
-        days_in_month = round(days_in_year/12)
-        if avg_mdays != days_in_month:
-            days_new = round(avg_mdays*12)
-            print(f'WARNING: the num of days in a year is {days_new} different with {days_in_year} in setting')
-            return days_new
         else:
             return days_in_year
 
