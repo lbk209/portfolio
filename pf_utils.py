@@ -180,6 +180,9 @@ class Backtest():
 
 
     def align_period(self, df_equity, dt_format='%Y-%m-%d', n_indent=2, fill_na=True):
+        """
+        fill_na: set False to drop nan fields
+        """
         df = get_date_range(df_equity, slice_input=True)
         dts = [x.strftime(dt_format) for x in (df.index.min(), df.index.max())]
         print(f"period reset: {' ~ '.join(dts)}")
@@ -490,6 +493,7 @@ class Backtest():
                     .to_frame(col_p).dropna())
 
 
+
 class AssetEvaluator():
     def __init__(self, df_prices, days_in_year=252):
         df_prices = df_prices.to_frame() if isinstance(df_prices, pd.Series) else df_prices
@@ -600,17 +604,18 @@ class AssetEvaluator():
             return res
 
 
-    def summary(self, freq='daily', annualize=True, rf=0, align_period=False):
-        kwargs = dict(
-            freq=freq, annualize=annualize
-        )
+    def summary(self, freq='yearly', annualize=True, rf=0, align_period=False):
         df_prices = self.df_prices
         if align_period:
             df_prices = self.align_period(df_prices, fill_na=False)
+        
+        kwargs = dict(
+            df_prices=df_prices, freq=freq, annualize=annualize
+        )
         df = df_prices.apply(lambda x: f'{len(x.dropna())/self.days_in_year:.1f}')
         # work even with df_prices of single asset as df_prices is always series (see __init__)
         return df.to_frame('years').join(
-            self.calc_cagr().to_frame('cagr').join(
+            self.calc_cagr(df_prices).to_frame('cagr').join(
                 self.calc_mean_return(**kwargs).to_frame(f'{freq}_mean').join(
                     self.calc_volatility(**kwargs).to_frame(f'{freq}_vol').join(
                         self.calc_sharpe(rf=rf, **kwargs).to_frame(f'{freq}_sharpe')
@@ -618,24 +623,30 @@ class AssetEvaluator():
                 )
             )
         ).T
-    
-    
-    def bayesian_sample(self, freq='daily', annualize=True, rf=0,
+
+
+    def bayesian_sample(self, freq='yearly', annualize=True, rf=0, align_period=False,
                         sample_draws=1000, sample_tune=1000, target_accept=0.9,
                         multiplier_std=10):
+
+        self.bayesian_sample_warning(freq)
 
         days_in_year = self.days_in_year
         periods = self.get_freq_days(freq)
 
         #df_ret = self.df_prices.pct_change(periods) # ImputationWarning & taking more time
         #df_ret = self.df_prices.pct_change(periods).dropna()
-        df_ret = self.align_period(self.df_prices, fill_na=False)
-        df_ret = df_ret.pct_change(periods).dropna()
+
+        df_prices = self.df_prices
+        if align_period:
+            df_prices = self.align_period(df_prices, fill_na=False)
+        df_ret = df_prices.pct_change(periods).ffill().bfill()
         
         mean_prior = df_ret.mean()
         std_prior = df_ret.std()
         std_low = std_prior / multiplier_std
         std_high = std_prior * multiplier_std
+        factor_year = days_in_year/periods if annualize else 1
     
         assets = list(df_ret.columns)
         num_assets = len(assets) # flag for comparisson of two assets
@@ -652,10 +663,9 @@ class AssetEvaluator():
             returns = pm.StudentT('returns', nu=nu, mu=mean, sigma=std, observed=df_ret)
             
             std = std * pt.sqrt(nu / (nu - 2))
-            t = days_in_year/periods # annualizing
-            pm.Deterministic(f'{freq}_mean',  mean * t, dims='asset')
-            pm.Deterministic(f'{freq}_vol',  std * (t ** .5), dims='asset')
-            pm.Deterministic(f'{freq}_sharpe', ((mean-rf) / std) * (t ** .5), dims='asset')
+            pm.Deterministic(f'{freq}_mean',  mean * factor_year, dims='asset')
+            pm.Deterministic(f'{freq}_vol',  std * (factor_year ** .5), dims='asset')
+            pm.Deterministic(f'{freq}_sharpe', ((mean-rf) / std) * (factor_year ** .5), dims='asset')
     
             if num_assets == 2:
                 mean_diff = pm.Deterministic('mean diff', mean[0] - mean[1])
@@ -672,6 +682,62 @@ class AssetEvaluator():
                               'freq':freq, 'annualize':annualize, 'rf':rf}
         return None
 
+
+
+    def bayesian_sample_old(self, freq='yearly', annualize=True, rf=0,
+                        sample_draws=1000, sample_tune=1000, target_accept=0.9,
+                        multiplier_std=10):
+
+        self.bayesian_sample_warning(freq)
+
+        days_in_year = self.days_in_year
+        periods = self.get_freq_days(freq)
+
+        #df_ret = self.df_prices.pct_change(periods) # ImputationWarning & taking more time
+        #df_ret = self.df_prices.pct_change(periods).dropna()
+        df_ret = self.align_period(self.df_prices, fill_na=False)
+        df_ret = df_ret.pct_change(periods).dropna()
+        
+        mean_prior = df_ret.mean()
+        std_prior = df_ret.std()
+        std_low = std_prior / multiplier_std
+        std_high = std_prior * multiplier_std
+        factor_year = days_in_year/periods if annualize else 1
+    
+        assets = list(df_ret.columns)
+        num_assets = len(assets) # flag for comparisson of two assets
+        coords={'asset': assets}
+        
+        with pm.Model(coords=coords) as model:
+            nu = pm.Exponential('nu_minus_two', 1 / 29, testval=4) + 2.
+            
+            #nu_minus_one = pm.Exponential("nu_minus_one", 1 / 29.0)
+            #nu = pm.Deterministic("nu", nu_minus_one + 1)
+            
+            mean = pm.Normal('mean', mu=mean_prior, sigma=std_prior, dims='asset')
+            std = pm.Uniform('std', lower=std_low, upper=std_high, dims='asset')
+            returns = pm.StudentT('returns', nu=nu, mu=mean, sigma=std, observed=df_ret)
+            
+            std = std * pt.sqrt(nu / (nu - 2))
+            pm.Deterministic(f'{freq}_mean',  mean * factor_year, dims='asset')
+            pm.Deterministic(f'{freq}_vol',  std * (factor_year ** .5), dims='asset')
+            pm.Deterministic(f'{freq}_sharpe', ((mean-rf) / std) * (factor_year ** .5), dims='asset')
+    
+            if num_assets == 2:
+                mean_diff = pm.Deterministic('mean diff', mean[0] - mean[1])
+                pm.Deterministic('std diff', std[0] - std[1])
+                pm.Deterministic('effect size', mean_diff / (std[0] ** 2 + std[1] ** 2) ** .5 / 2)
+    
+            trace = pm.sample(draws=sample_draws, tune=sample_tune,
+                              #chains=chains, cores=cores,
+                              target_accept=target_accept,
+                              #return_inferencedata=False, # TODO: what's for?
+                              progressbar=True)
+            
+        self.bayesian_data = {'trace':trace, 'coords':coords, 
+                              'freq':freq, 'annualize':annualize, 'rf':rf}
+        return None
+        
     
     def bayesian_summary(self, var_names=None, filter_vars='like', **kwargs):
         if self.bayesian_data is None:
@@ -704,3 +770,15 @@ class AssetEvaluator():
 
     def align_period(self, df, fill_na=False):
         return Backtest(pd.Series()).align_period(df, fill_na=fill_na)
+
+
+    def bayesian_sample_warning(self, freq='yearly'):
+        msg = """ 
+        Bayesian estimation of certain TDFs yielded dubious posteriors for daily or monthly frequencies. 
+        However, the estimation for some ETFs appeared reasonable. The issue might lie in the historical prices of TDFs, 
+        which were derived from cumulative rates of return, with data for weekends seemingly filled forward.
+        """
+        if freq != 'yearly':
+            return print(f'WARNING: {msg}')
+        else:
+            return None
