@@ -164,10 +164,7 @@ class Backtest():
     backtest fixed weight portfolio
     """
     def __init__(self, df_equity, metrics=None, name_prfx='Portfolio', 
-                 initial_capital=1000000, commissions=None, equity_names=None,
-                 align_period=False):
-        if align_period:
-            df_equity = self.align_period(df_equity)
+                 initial_capital=1000000, commissions=None, equity_names=None):
         self.df_equity = df_equity
         self.df_equity = df_equity
         self.portfolios = dict()
@@ -182,17 +179,21 @@ class Backtest():
         self.run_results = None
 
 
-    def align_period(self, df_equity, dt_format='%Y-%m-%d', n_indent=2):
+    def align_period(self, df_equity, dt_format='%Y-%m-%d', n_indent=2, fill_na=True):
         df = get_date_range(df_equity, slice_input=True)
         dts = [x.strftime(dt_format) for x in (df.index.min(), df.index.max())]
-        print(f"backtest period reset: {' ~ '.join(dts)}")
+        print(f"period reset: {' ~ '.join(dts)}")
         
         stats = df.isna().sum().div(df.count())
-        print('rate of nan filled forward::')
+        t = 'filled forward' if fill_na else 'dropped'
+        print(f'ratio of nan {t}::')
         indent = ' '*n_indent
         _ = [print(f'{indent}{i}: {stats[i]:.3f}') for i in stats.index]
-        
-        return df.ffill()
+
+        if fill_na:
+            return df.ffill()
+        else:
+            return df.dropna()
         
     
     def _check_name(self, name=None):
@@ -255,7 +256,8 @@ class Backtest():
         
 
     def build(self, weights=None, name=None, freq=None, 
-              initial_capital=None, commissions=None, capital_flow=0):
+              initial_capital=None, commissions=None, capital_flow=0,
+              fill_na=True):
 
         dfs = self.df_equity
         weights = self._check_weights(dfs, weights)
@@ -264,10 +266,11 @@ class Backtest():
         
         try:
             dfs = dfs[weights.keys()] # dataframe even if one weight given
-            dfs = self.align_period(dfs)
         except KeyError as e:
             return print(f'ERROR: check weights as {e}')
-        
+
+        dfs = self.align_period(dfs, fill_na=fill_na)
+                
         if freq == 'W':
             run_freq = bt.algos.RunWeekly()
         elif freq == 'Q':
@@ -298,15 +301,18 @@ class Backtest():
         return self.build(weights=weights, name=name, freq=None, **kwargs)
 
 
-    def build_batch(self, build_list, reset_portfolios=False):
+    def build_batch(self, kwa_list, reset_portfolios=False, **kwargs):
+        """
+        kwa_list: list of k/w args for each backtest
+        kwargs: k/w args common for all backtest
+        """
         if reset_portfolios:
             self.portfolios = {}
         else:
             return print('WARNING: set reset_portfolios to True to run')
 
-        for kwargs in build_list:
-            self.build(**kwargs)
-
+        for kwa in kwa_list:
+            self.build(**{**kwa, **kwargs})
         return None
 
     
@@ -484,6 +490,7 @@ class Backtest():
                     .to_frame(col_p).dropna())
 
 
+
 class AssetEvaluator():
     def __init__(self, df_prices, days_in_year=252):
         df_prices = df_prices.to_frame() if isinstance(df_prices, pd.Series) else df_prices
@@ -617,11 +624,14 @@ class AssetEvaluator():
             return res
 
 
-    def summary(self, freq='daily', annualize=True, rf=0):
+    def summary(self, freq='daily', annualize=True, rf=0, align_period=False):
         kwargs = dict(
             freq=freq, annualize=annualize
         )
-        df = self.df_prices.apply(lambda x: f'{len(x.dropna())/self.days_in_year:.1f}')
+        df_prices = self.df_prices
+        if align_period:
+            df_prices = self.align_period(df_prices, fill_na=False)
+        df = df_prices.apply(lambda x: f'{len(x.dropna())/self.days_in_year:.1f}')
         # work even with df_prices of single asset as df_prices is always series (see __init__)
         return df.to_frame('years').join(
             self.calc_cagr().to_frame('cagr').join(
@@ -640,7 +650,11 @@ class AssetEvaluator():
 
         days_in_year = self.days_in_year
         periods = self.get_freq_days(freq)
-        df_ret = self.df_prices.pct_change(periods).dropna()
+
+        #df_ret = self.df_prices.pct_change(periods) # ImputationWarning & taking more time
+        #df_ret = self.df_prices.pct_change(periods).dropna()
+        df_ret = self.align_period(self.df_prices, fill_na=False)
+        df_ret = df_ret.pct_change(periods).dropna()
         
         mean_prior = df_ret.mean()
         std_prior = df_ret.std()
@@ -710,3 +724,7 @@ class AssetEvaluator():
         _ = az.plot_posterior(trace, var_names=var_names, filter_vars=filter_vars,
                               ref_val=ref_val, **kwargs)
         return None
+
+
+    def align_period(self, df, fill_na=False):
+        return Backtest(pd.Series()).align_period(df, fill_na=fill_na)
