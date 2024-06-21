@@ -164,8 +164,11 @@ class Backtest():
     backtest fixed weight portfolio
     """
     def __init__(self, df_equity, metrics=None, name_prfx='Portfolio', 
-                 initial_capital=1000000, commissions=None, equity_names=None):
-        #self.df_equity = self.align_period(df_equity)
+                 initial_capital=1000000, commissions=None, equity_names=None,
+                 align_period=False):
+        if align_period:
+            df_equity = self.align_period(df_equity)
+        self.df_equity = df_equity
         self.df_equity = df_equity
         self.portfolios = dict()
         self.pf_weights = dict()
@@ -261,6 +264,7 @@ class Backtest():
         
         try:
             dfs = dfs[weights.keys()] # dataframe even if one weight given
+            dfs = self.align_period(dfs)
         except KeyError as e:
             return print(f'ERROR: check weights as {e}')
         
@@ -285,12 +289,25 @@ class Backtest():
                                               capital_flow=capital_flow,
                                               initial_capital=initial_capital, commissions=c_avg)
         self.pf_weights[name] = weights
+        return None
 
     
     def buy_n_hold(self, weights=None, name=None, **kwargs):
         if isinstance(weights, str):
             weights = {weights: 1}
         return self.build(weights=weights, name=name, freq=None, **kwargs)
+
+
+    def build_batch(self, build_list, reset_portfolios=False):
+        if reset_portfolios:
+            self.portfolios = {}
+        else:
+            return print('WARNING: set reset_portfolios to True to run')
+
+        for kwargs in build_list:
+            self.build(**kwargs)
+
+        return None
 
     
     def run(self, pf_list=None, metrics=None, plot=True, freq='d', figsize=None, stats=True):
@@ -308,8 +325,12 @@ class Backtest():
                 bt_list = [x for i, x in enumerate(self.portfolios.values()) if i in pf_list]
             else: # pf_list is list of names
                 bt_list = [v for k, v in self.portfolios.items() if k in pf_list]
-        
-        results = bt.run(*bt_list)
+
+        try:
+            results = bt.run(*bt_list)
+        except Exception as e:
+            return print(f'ERROR: {e}')
+            
         self.run_results = results
         
         if plot:
