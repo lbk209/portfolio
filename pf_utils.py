@@ -165,13 +165,14 @@ class Backtest():
     """
     def __init__(self, df_equity, metrics=None, name_prfx='Portfolio', 
                  initial_capital=1000000, commissions=None, equity_names=None):
-        self.df_equity = df_equity
+        # df of equities (equities in columns) which of each has its own periods.
+        # the periods will be aligned for equities in a portfolio. see self.build
         self.df_equity = df_equity
         self.portfolios = dict()
         self.pf_weights = dict()
         self.metrics = metrics
         self.name_prfx = name_prfx
-        self.n_names = 0
+        self.n_names = 0 # see self._check_name
         self.initial_capital = initial_capital
         # commissions of all equities across portfolios (per year)
         self.commissions = commissions 
@@ -261,7 +262,9 @@ class Backtest():
     def build(self, weights=None, name=None, freq=None, 
               initial_capital=None, commissions=None, capital_flow=0,
               fill_na=True):
-
+        """
+        make backtest of a strategy with tickers in weights
+        """
         dfs = self.df_equity
         weights = self._check_weights(dfs, weights)
         name = self._check_name(name)
@@ -493,9 +496,10 @@ class Backtest():
                     .to_frame(col_p).dropna())
 
 
-
 class AssetEvaluator():
     def __init__(self, df_prices, days_in_year=252):
+        # df of equities (equities in columns) which of each might have its own periods.
+        # the periods of all equities will be aligned in every calculation.
         df_prices = df_prices.to_frame() if isinstance(df_prices, pd.Series) else df_prices
         if df_prices.index.name is None:
             df_prices.index.name = 'date' # set index name to run check_days_in_year
@@ -522,18 +526,17 @@ class AssetEvaluator():
             grp_format = '%Y%m'
             #days_in_freq = round(days_in_year/12)
             factor = 12
-        
-        df_freq = (pd.Series(1, index=df.index.strftime(grp_format))
-                     .groupby(df.index.name).count())
-        df_freq = df_freq[1:-1]
-        if len(df_freq) == 0:
-            print(f'ERROR: set freq less than {freq}')
-            return days_in_year
-        
-        days_freq_calc = round(df_freq.mean())
-        if days_freq_calc != round(days_in_year / factor):
-            days_in_year_new = round(days_freq_calc * factor)
-            print(f'WARNING: the num of days in a year is {days_in_year_new} different with {days_in_year} in setting')
+
+        # calc mean days for each equity
+        days_freq_calc = (df.assign(gb=df.index.strftime(grp_format)).set_index('gb')
+                            .apply(lambda x: x.dropna()[1:-1]
+                            .groupby('gb').count().mean().round()))
+
+        cond = (days_freq_calc != round(days_in_year / factor))
+        if cond.sum() > 0:
+            days_in_year_new = days_freq_calc.loc[cond].mul(factor).round()
+            print(f'WARNING: the number of days in a year with followings is not {days_in_year} in setting:')
+            _ = [print(f'{k}: {int(v)}') for k,v in days_in_year_new.to_dict().items()]
             return days_in_year_new
         else:
             return days_in_year
@@ -541,13 +544,15 @@ class AssetEvaluator():
 
     def get_freq_days(self, freq='daily'):
         if freq == 'yearly':
-            return self.days_in_year
+            n = self.days_in_year
         elif freq == 'monthly':
-            return round(self.days_in_year/12)
+            n = round(self.days_in_year/12)
         elif freq == 'weekly':
-            return round(self.days_in_year/WEEKS_IN_YEAR)
+            n = round(self.days_in_year/WEEKS_IN_YEAR)
         else: # default daily
-            return 1
+            n = 1
+            freq = 'daily'
+        return (n, freq)
 
         
     def _check_var(self, var_arg, var_self):
@@ -555,60 +560,65 @@ class AssetEvaluator():
             var_arg = var_self
         return var_arg
 
-    
+
     def calc_cagr(self, df_prices=None, days_in_year=None):
+        # calc cagr's of equities
         df_prices = self._check_var(df_prices, self.df_prices)
         days_in_year = self._check_var(days_in_year, self.days_in_year)
+        return df_prices.apply(lambda x: self._calc_cagr(x, days_in_year))
 
-        t = self.days_in_year / len(df_prices)
-        cagr = lambda x: (x[-1]/x[0]) ** t -1
-        
-        return df_prices.apply(lambda x: cagr(x.dropna()))
-        
+
+    def _calc_cagr(self, sr_prices, days_in_year):
+        # calc cagr of a equity
+        sr = sr_prices.dropna()
+        t = days_in_year / len(sr)
+        return (sr[-1]/sr[0]) ** t - 1
+
 
     def calc_mean_return(self, df_prices=None, days_in_year=None, freq='daily', annualize=True):
         df_prices = self._check_var(df_prices, self.df_prices)
         days_in_year = self._check_var(days_in_year, self.days_in_year)
-
-        periods = self.get_freq_days(freq)
-        res = df_prices.pct_change(periods).dropna().mean()
-        if annualize:
-            return res * (days_in_year/periods)
-        else:
-            return res
+        periods, _ = self.get_freq_days(freq)
+        scale = (days_in_year/periods) if annualize else 1
+        return df_prices.apply(lambda x: self._calc_mean_return(x, periods, scale))
         
+
+    def _calc_mean_return(self, sr_prices, periods, scale):
+        return sr_prices.pct_change(periods).dropna().mean() * scale
+    
 
     def calc_volatility(self, df_prices=None, days_in_year=None, freq='daily', annualize=True):
         df_prices = self._check_var(df_prices, self.df_prices)
         days_in_year = self._check_var(days_in_year, self.days_in_year)
+        periods, _ = self.get_freq_days(freq)
+        scale = (days_in_year/periods) ** .5 if annualize else 1
+        return df_prices.apply(lambda x: self._calc_volatility(x, periods, scale))
+        
 
-        periods = self.get_freq_days(freq)
-        res = df_prices.pct_change(periods).dropna()
-        res = res.std()
-        if annualize:
-            return res * ((days_in_year/periods) ** .5)
-        else:
-            return res
-
+    def _calc_volatility(self, sr_prices, periods, scale):
+        return sr_prices.pct_change(periods).dropna().std() * scale
+    
 
     def calc_sharpe(self, df_prices=None, days_in_year=None, freq='daily', annualize=True, rf=0):
         df_prices = self._check_var(df_prices, self.df_prices)
         days_in_year = self._check_var(days_in_year, self.days_in_year)
+        periods, _ = self.get_freq_days(freq)
+        scale = (days_in_year/periods) ** .5 if annualize else 1
+        return df_prices.apply(lambda x: self._calc_sharpe(x, periods, scale, rf))
+        
 
-        periods = self.get_freq_days(freq)
-        res = df_prices.pct_change(periods).dropna()
-        res = (res.mean() - rf) / res.std()
-        if annualize:
-            return res * ((days_in_year/periods) ** .5)
-        else:
-            return res
+    def _calc_sharpe(self, sr_prices, periods, scale, rf):
+        mean = self._calc_mean_return(sr_prices, periods, 1)
+        std = self._calc_volatility(sr_prices, periods, 1)
+        return (mean - rf) / std * scale
 
 
     def summary(self, freq='yearly', annualize=True, rf=0, align_period=False):
         df_prices = self.df_prices
         if align_period:
             df_prices = self.align_period(df_prices, fill_na=False)
-        
+
+        _, freq = self.get_freq_days(freq) # check freq for naming
         kwargs = dict(
             df_prices=df_prices, freq=freq, annualize=annualize
         )
@@ -632,15 +642,95 @@ class AssetEvaluator():
         self.bayesian_sample_warning(freq)
 
         days_in_year = self.days_in_year
-        periods = self.get_freq_days(freq)
+        periods, freq = self.get_freq_days(freq)
+        factor_year = days_in_year/periods if annualize else 1
 
-        #df_ret = self.df_prices.pct_change(periods) # ImputationWarning & taking more time
-        #df_ret = self.df_prices.pct_change(periods).dropna()
+        df_prices = self.df_prices
+        assets = list(df_prices.columns)
+        
+        if align_period:
+            df_prices = self.align_period(df_prices, fill_na=False)
+            df_ret = df_prices.pct_change(periods).dropna()
+            mean_prior = df_ret.mean()
+            std_prior = df_ret.std()
+            std_low = std_prior / multiplier_std
+            std_high = std_prior * multiplier_std
+        else:
+            ret_list = [df_prices[x].pct_change(periods).dropna() for x in assets]
+            mean_prior = [x.mean() for x in ret_list]
+            std_prior = [x.std() for x in ret_list]
+            std_low = [x / multiplier_std for x in std_prior]
+            std_high = [x * multiplier_std for x in std_prior]
+            returns = dict()
+        
+        num_assets = len(assets) # flag for comparisson of two assets
+        coords={'asset': assets}
 
+        with pm.Model(coords=coords) as model:
+            nu = pm.Exponential('nu_minus_two', 1 / 29, testval=4) + 2.
+            #nu_minus_one = pm.Exponential("nu_minus_one", 1 / 29.0)
+            #nu = pm.Deterministic("nu", nu_minus_one + 1)
+            
+            mean = pm.Normal('mean', mu=mean_prior, sigma=std_prior, dims='asset')
+            std = pm.Uniform('std', lower=std_low, upper=std_high, dims='asset')
+            if align_period:
+                returns = pm.StudentT('returns', nu=nu, mu=mean, sigma=std, observed=df_ret)
+            else:
+                func = lambda x: dict(mu=mean[x], sigma=std[x], observed=ret_list[x])
+                returns = {i: pm.StudentT(f'returns[{i}]', nu=nu, **func(i)) for i, _ in enumerate(assets)}
+            
+            std = std * pt.sqrt(nu / (nu - 2))
+            pm.Deterministic(f'{freq}_mean',  mean * factor_year, dims='asset')
+            pm.Deterministic(f'{freq}_vol',  std * (factor_year ** .5), dims='asset')
+            pm.Deterministic(f'{freq}_sharpe', ((mean-rf) / std) * (factor_year ** .5), dims='asset')
+    
+            if num_assets == 2:
+                mean_diff = pm.Deterministic('mean diff', mean[0] - mean[1])
+                pm.Deterministic('std diff', std[0] - std[1])
+                pm.Deterministic('effect size', mean_diff / (std[0] ** 2 + std[1] ** 2) ** .5 / 2)
+    
+            trace = pm.sample(draws=sample_draws, tune=sample_tune,
+                              #chains=chains, cores=cores,
+                              target_accept=target_accept,
+                              #return_inferencedata=False, # TODO: what's for?
+                              progressbar=True)
+            
+        self.bayesian_data = {'trace':trace, 'coords':coords, 
+                              'freq':freq, 'annualize':annualize, 'rf':rf}
+        return None
+
+
+    
+    def bayesian_sample_working(self, freq='yearly', annualize=True, rf=0, align_period=False,
+                        sample_draws=1000, sample_tune=1000, target_accept=0.9,
+                        multiplier_std=10):
+
+        self.bayesian_sample_warning(freq)
+
+        days_in_year = self.days_in_year
+        periods, freq = self.get_freq_days(freq)
+        factor_year = days_in_year/periods if annualize else 1
+        
         df_prices = self.df_prices
         if align_period:
             df_prices = self.align_period(df_prices, fill_na=False)
-        df_ret = df_prices.pct_change(periods).ffill().bfill()
+        df_ret = df_prices.pct_change(periods)
+
+        mean, std, returns = {}, {}, {}
+        assets = list(df_ret.columns)
+        num_assets = len(assets) # flag for comparisson of two assets
+        with pm.Model() as model:
+            nu = pm.Exponential('nu_minus_two', 1 / 29, testval=4) + 2.
+            
+            for i, x in enumerate(assets):
+                mean[i] = pm.Normal(f'mean[{x}]', mu=mean_prior, sigma=std_prior)
+                std[i] = pm.Uniform(f'std[{x}]', lower=std_low, upper=std_high)
+                returns[i] = pm.StudentT('returns', nu=nu, mu=mean, sigma=std, observed=df_ret)
+
+
+
+
+        ###
         
         mean_prior = df_ret.mean()
         std_prior = df_ret.std()
@@ -652,14 +742,11 @@ class AssetEvaluator():
         num_assets = len(assets) # flag for comparisson of two assets
         coords={'asset': assets}
         
-        with pm.Model(coords=coords) as model:
+        with pm.Model() as model:
             nu = pm.Exponential('nu_minus_two', 1 / 29, testval=4) + 2.
             
-            #nu_minus_one = pm.Exponential("nu_minus_one", 1 / 29.0)
-            #nu = pm.Deterministic("nu", nu_minus_one + 1)
-            
-            mean = pm.Normal('mean', mu=mean_prior, sigma=std_prior, dims='asset')
-            std = pm.Uniform('std', lower=std_low, upper=std_high, dims='asset')
+            mean = pm.Normal('mean', mu=mean_prior, sigma=std_prior)
+            std = pm.Uniform('std', lower=std_low, upper=std_high)
             returns = pm.StudentT('returns', nu=nu, mu=mean, sigma=std, observed=df_ret)
             
             std = std * pt.sqrt(nu / (nu - 2))
@@ -683,7 +770,6 @@ class AssetEvaluator():
         return None
 
 
-
     def bayesian_sample_old(self, freq='yearly', annualize=True, rf=0,
                         sample_draws=1000, sample_tune=1000, target_accept=0.9,
                         multiplier_std=10):
@@ -691,7 +777,7 @@ class AssetEvaluator():
         self.bayesian_sample_warning(freq)
 
         days_in_year = self.days_in_year
-        periods = self.get_freq_days(freq)
+        periods, freq = self.get_freq_days(freq)
 
         #df_ret = self.df_prices.pct_change(periods) # ImputationWarning & taking more time
         #df_ret = self.df_prices.pct_change(periods).dropna()
