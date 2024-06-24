@@ -640,15 +640,12 @@ class AssetEvaluator():
     def bayesian_sample(self, freq='yearly', annualize=True, rf=0, align_period=False,
                         sample_draws=1000, sample_tune=1000, target_accept=0.9,
                         multiplier_std=1000, 
-                        rate_nu = 29, normality_sharpe=True):
+                        rate_nu = 29, normality_sharpe=True, debug_annualize=False):
         """
         normality_sharpe: set to True if 
          -. You are making comparisons to Sharpe ratios calculated under the assumption of normality.
          -. You want to account for the higher variability due to the heavy tails of the t-distribution.
         """
-
-        #self.bayesian_sample_warning(freq)
-
         days_in_year = self.days_in_year
         periods, freq = self.get_freq_days(freq)
         factor_year = days_in_year/periods if annualize else 1
@@ -658,15 +655,15 @@ class AssetEvaluator():
         
         if align_period:
             df_prices = self.align_period(df_prices, fill_na=True)
-            df_ret = df_prices.pct_change(periods).dropna()
-            mean_prior = df_ret.mean() * factor_year
-            std_prior = df_ret.std() * factor_year ** .5
+            df_ret = df_prices.pct_change(periods).dropna() * factor_year
+            mean_prior = df_ret.mean()
+            std_prior = df_ret.std()
             std_low = std_prior / multiplier_std
             std_high = std_prior * multiplier_std
         else:
-            ret_list = [df_prices[x].pct_change(periods).dropna() for x in assets]
-            mean_prior = [x.mean() * factor_year for x in ret_list]
-            std_prior = [x.std() * factor_year ** .5 for x in ret_list]
+            ret_list = [df_prices[x].pct_change(periods).dropna() * factor_year for x in assets]
+            mean_prior = [x.mean() for x in ret_list]
+            std_prior = [x.std() for x in ret_list]
             std_low = [x / multiplier_std for x in std_prior]
             std_high = [x * multiplier_std for x in std_prior]
             returns = dict()
@@ -677,21 +674,23 @@ class AssetEvaluator():
         with pm.Model(coords=coords) as model:
             # nu: degree of freedom (normality parameter)
             nu = pm.Exponential('nu_minus_two', 1 / rate_nu, testval=4) + 2.
-            mean = pm.Normal(f'{freq}_mean', mu=mean_prior, sigma=std_prior, dims='asset')
-            std = pm.Uniform(f'{freq}_vol', lower=std_low, upper=std_high, dims='asset')
+            mean = pm.Normal('mean', mu=mean_prior, sigma=std_prior, dims='asset')
+            std = pm.Uniform('vol', lower=std_low, upper=std_high, dims='asset')
             
             if align_period:
-                returns = pm.StudentT('returns', nu=nu, mu=mean, sigma=std, observed=df_ret)
+                returns = pm.StudentT(f'{freq}_returns', nu=nu, mu=mean, sigma=std, observed=df_ret)
             else:
                 func = lambda x: dict(mu=mean[x], sigma=std[x], observed=ret_list[x])
-                returns = {i: pm.StudentT(f'returns[{i}]', nu=nu, **func(i)) for i, _ in enumerate(assets)}
+                returns = {i: pm.StudentT(f'{freq}_returns[{x}]', nu=nu, **func(i)) for i, x in enumerate(assets)}
+
+            fy2 = 1 if debug_annualize else factor_year
+            pm.Deterministic(f'{freq}_mean', mean * fy2, dims='asset')
+            pm.Deterministic(f'{freq}_vol', std * (fy2 ** .5), dims='asset')
+            std_sr = std * pt.sqrt(nu / (nu - 2)) if normality_sharpe else std
+            sharpe = pm.Deterministic(f'{freq}_sharpe', ((mean-rf) / std_sr) * (fy2 ** .5), dims='asset')
             
-            std = std * pt.sqrt(nu / (nu - 2)) if normality_sharpe else std
-            sharpe = pm.Deterministic(f'{freq}_sharpe', ((mean-rf) / std), dims='asset')
-    
             if num_assets == 2:
                 #mean_diff = pm.Deterministic('mean diff', mean[0] - mean[1])
-                #pm.Deterministic('std diff', std[0] - std[1])
                 #pm.Deterministic('effect size', mean_diff / (std[0] ** 2 + std[1] ** 2) ** .5 / 2)
                 sharpe_diff = pm.Deterministic('sharpe diff', sharpe[0] - sharpe[1])
     
@@ -758,15 +757,3 @@ class AssetEvaluator():
 
     def align_period(self, df, fill_na=True):
         return Backtest(pd.Series()).align_period(df, fill_na=fill_na)
-
-
-    def bayesian_sample_warning(self, freq='yearly'):
-        msg = """ 
-        Bayesian estimation of certain TDFs yielded dubious posteriors for daily or monthly frequencies. 
-        However, the estimation for some ETFs appeared reasonable. The issue might lie in the historical prices of TDFs, 
-        which were derived from cumulative rates of return, with data for weekends seemingly filled forward.
-        """
-        if freq != 'yearly':
-            return print(f'WARNING: {msg}')
-        else:
-            return None
