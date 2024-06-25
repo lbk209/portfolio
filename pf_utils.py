@@ -574,7 +574,7 @@ class AssetEvaluator():
         # calc cagr of a equity
         sr = sr_prices.ffill().dropna()
         t = days_in_year / len(sr)
-        return (sr[-1]/sr[0]) ** t - 1
+        return (sr.iloc[-1]/sr.iloc[0]) ** t - 1
 
 
     def calc_mean_return(self, df_prices=None, days_in_year=None, freq='daily', annualize=True):
