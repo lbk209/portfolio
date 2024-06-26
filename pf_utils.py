@@ -6,9 +6,13 @@ import arviz as az
 import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
+import warnings
+
+warnings.filterwarnings(action='ignore', category=FutureWarning)
+warnings.filterwarnings(action='ignore', category=pd.errors.PerformanceWarning)
 
 metrics = [
-    'total_return', 'cagr', 
+    'total_return', 'cagr', 'calmar', 
     'max_drawdown', 'avg_drawdown', 'avg_drawdown_days', 
     'daily_vol', 'daily_sharpe', 'daily_sortino', 
     'monthly_vol', 'monthly_sharpe', 'monthly_sortino'
@@ -158,8 +162,7 @@ def valuate_bond(face, rate, year, ytm, n_pay=1):
     return vc + face/(1+r_discount)**(year*n_pay)
 
 
-
-class Backtest():
+class StaticPortfolio():
     """
     backtest fixed weight portfolio
     """
@@ -167,8 +170,10 @@ class Backtest():
                  initial_capital=1000000, commissions=None, equity_names=None):
         # df of equities (equities in columns) which of each has its own periods.
         # the periods will be aligned for equities in a portfolio. see self.build
+        if isinstance(df_equity, pd.Series):
+            return print('ERROR: df_equity must be Dataframe')
         self.df_equity = df_equity
-        self.portfolios = dict()
+        self.portfolios = dict() # dict of bt.backtest.Backtest
         self.pf_weights = dict()
         self.metrics = metrics
         self.name_prfx = name_prfx
@@ -180,19 +185,20 @@ class Backtest():
         self.run_results = None
 
 
-    def align_period(self, df_equity, dt_format='%Y-%m-%d', n_indent=2, fill_na=True):
+    def align_period(self, df_equity, dt_format='%Y-%m-%d', n_indent=2, fill_na=True, print_msg=True):
         """
         fill_na: set False to drop nan fields
         """
         df = get_date_range(df_equity, slice_input=True)
         dts = [x.strftime(dt_format) for x in (df.index.min(), df.index.max())]
         print(f"period reset: {' ~ '.join(dts)}")
-        
-        stats = df.isna().sum().div(df.count())
-        t = 'filled forward' if fill_na else 'dropped'
-        print(f'ratio of nan {t}::')
-        indent = ' '*n_indent
-        _ = [print(f'{indent}{i}: {stats[i]:.3f}') for i in stats.index]
+
+        if print_msg:
+            stats = df.isna().sum().div(df.count())
+            t = 'filled forward' if fill_na else 'dropped'
+            print(f'ratio of nan {t}::')
+            indent = ' '*n_indent
+            _ = [print(f'{indent}{i}: {stats[i]:.3f}') for i in stats.index]
 
         if fill_na:
             return df.ffill()
@@ -203,7 +209,7 @@ class Backtest():
     def _check_name(self, name=None):
         if name is None:
             self.n_names += 1
-            name = f'{self.name_prfx} {self.n_names}'
+            name = f'{self.name_prfx}{self.n_names}'
         return name
 
     
@@ -349,13 +355,10 @@ class Backtest():
             results.plot(freq=freq, figsize=figsize);
 
         if stats:
-            metrics = self._check_var(metrics, self.metrics)
-            if (metrics is None) or (metrics == 'all'):
-                return results.stats
-            else:
-                metrics = ['start', 'end'] + metrics
-                return results.stats.loc[metrics]
+            print('Returning stats')
+            return self.get_stats(pf_list=pf_list, metrics=metrics)
         else:
+            print('Returning backtest results')
             return results
 
 
@@ -393,21 +396,42 @@ class Backtest():
         return pf_list
 
 
-    def _plot_portfolios(self, plot_func, pf_list, ncols=2, sharex=True, sharey=True, figsize=(10,5)):
+    def get_stats(self, pf_list=None, metrics=None):
+        pf_list  = self.check_portfolios(pf_list, run=True)
+        if pf_list is None:
+            return None
+        else:
+            results = self.run_results
+            
+        metrics = self._check_var(metrics, self.metrics)
+        if (metrics is None) or (metrics == 'all'):
+            return results.stats[pf_list]
+        else:
+            metrics = ['start', 'end'] + metrics
+            return results.stats.loc[metrics, pf_list]
+
+
+    def _plot_portfolios(self, plot_func, pf_list, ncols=2, sharex=True, sharey=True, 
+                         figsize=(10,5), legend=True):
         n = len(pf_list)
+        if n == 1:
+            ncols = 1
+            
         nrows = n // ncols + min(n % ncols, 1)
-        fig, axs = plt.subplots(nrows, ncols, sharex=sharex, sharey=sharey,
+        fig, axes = plt.subplots(nrows, ncols, sharex=sharex, sharey=sharey,
                                 #figsize=figsize
                                )
         if nrows == 1:
-            axs = [axs]
+            axes = [axes]
+            if ncols == 1:
+                axes = [axes]
         
         k = 0
         finished = False
         for i in range(nrows):
             for j in range(ncols):
-                ax = axs[i][j]
-                _ = plot_func(pf_list[k], ax=ax, figsize=figsize)
+                ax = axes[i][j]
+                _ = plot_func(pf_list[k], ax=ax, legend=legend, figsize=figsize)
                 k += 1
                 if k == n:
                     finished = True
@@ -461,7 +485,10 @@ class Backtest():
         return weights
 
 
-    def get_historical(self, pf_list=None, normalize=True):
+    def _retrieve(self, pf_list)
+
+
+    def get_historical(self, pf_list=None):
         """
         calc weighted sum of securities for each portfolio
         """
@@ -471,29 +498,160 @@ class Backtest():
 
         df_all = None
         for rp in pf_list:
-            df = self._calc_weigthed(self.portfolios[rp])
-            if normalize:
-                df = df / df.dropna().iloc[0] * 100
+            # ffn.core.PerformanceStats get only a key or None
+            df = self.run_results[rp].prices
             if df_all is None:
-                df_all = df
+                df_all = df.to_frame()
             else:
                 df_all = df_all.join(df)
         return df_all
-        
 
-    def _calc_weigthed(self, result_portfolio):
-        df_d = result_portfolio.data
-        df_w = result_portfolio.weights
-        cols_d = df_d.columns
-        cols_w = df_w.columns
-        col_p = cols_w[0]
+
+    def get_turnover(self, pf_list=None, drop_zero=True):
+        """
+        Calculate the turnover for the backtest
+        """
+        pf_list  = self.check_portfolios(pf_list, run=True, convert_index=True)
+        if pf_list is None:
+            return None
+
+        df_all = None
+        for rp in pf_list:
+            # turnover saved in bt.backtest.Backtest not ffn.core.PerformanceStats
+            df = self.portfolios[rp].turnover.rename(rp)
+            if df_all is None:
+                df_all = df.to_frame()
+            else:
+                df_all = df_all.join(df)
+
+        if drop_zero:
+            df_all = df_all.loc[(df_all.sum(axis=1) > 0)]
+        return df_all
+
+
+
+class DynamicPortfolio(StaticPortfolio):
+    def __init__(self, df_equity, metrics=None, name_prfx='Portfolio', 
+                  initial_capital=1000000, commissions=None, equity_names=None):
+        self.df_equity = df_equity
+        self.portfolios = dict()
+        #self.pf_weights = dict()
+        self.metrics = metrics
+        self.name_prfx = name_prfx
+        self.n_names = 0 # see self._check_name
+        self.initial_capital = initial_capital
+        # commissions of all equities across portfolios (per year)
+        self.commissions = commissions 
+        self.equity_names = equity_names # names of all equities across portfolios
+        self.run_results = None
+
+
+    def backtest(self, dfs, n_equities=2, lookback_months=12, name='portfolio',                 
+                 run_freq=bt.algos.RunMonthly(), **kwargs):
+        """
+        kwargs: keyword args for bt.Backtest
+        """
+        strategy = bt.Strategy(name, [
+            bt.algos.SelectAll(),
+            bt.algos.SelectMomentum(n=n_equities, lookback=pd.DateOffset(months=lookback_months)),
+            bt.algos.WeighERC(lookback=pd.DateOffset(months=lookback_months)),
+            run_freq,
+            bt.algos.Rebalance()
+        ])
+        return bt.Backtest(strategy, dfs, **kwargs)
+
+
+    def build(self, n_equities=2, lookback_months=12, name=None, freq='M', 
+              initial_capital=None, commissions=None, rate_is_percent=True,
+              fill_na=True):
+        """
+        make backtest of a strategy with tickers in weights
+        commissions: same for all equities
+        """
+        dfs = self.df_equity
+        dfs = self.align_period(dfs, fill_na=fill_na, print_msg=False)
         
-        di = list(range(len(cols_d)))
-        wi = [[i+len(di) for i, cw in enumerate(cols_w) if cw.endswith(cd)][0] for cd in cols_d]
-        f = lambda la, lb: [la[i] for i in lb]
-        return (df_d.join(df_w, rsuffix='_w')
-                    .apply(lambda x: np.inner(f(x, di), f(x, wi)), axis=1)
-                    .to_frame(col_p).dropna())
+        name = self._check_name(name)
+        initial_capital = self._check_var(initial_capital, self.initial_capital)
+                
+        if freq == 'W':
+            run_freq = bt.algos.RunWeekly()
+        elif freq == 'Q':
+            run_freq = bt.algos.RunQuarterly()
+        elif freq == 'Y':
+            run_freq = bt.algos.RunYearly()
+        else: # default monthly
+            run_freq = bt.algos.RunMonthly()
+
+        if commissions is not None:
+            c = 100 if rate_is_percent else 1
+            c = commissions * c
+            commissions = lambda q, p: abs(q*p*c)
+            
+        self.portfolios[name] = self.backtest(dfs, n_equities=n_equities, 
+                                              lookback_months=lookback_months, 
+                                              name=name, run_freq=run_freq, 
+                                              initial_capital=initial_capital, 
+                                              commissions=commissions)
+        return None
+
+
+    def benchmark(self, dfs, name='BM'):
+        """
+        dfs: str or list of str if dfs in self.df_equity or historical of tickers
+        """
+        df_equity = self.df_equity
+        
+        if isinstance(dfs, str):
+            dfs = [dfs]
+
+        if isinstance(dfs, list):
+            if pd.Index(dfs).isin(self.df_equity.columns).sum() != len(dfs):
+                return print('ERROR: check arg dfs')
+            else:
+                dfs = df_equity[dfs]
+        else:
+            dfs = dfs.loc[self.df_equity.index]
+            
+        if isinstance(dfs, pd.Series):
+            if dfs.name is None:
+                dfs = dfs.to_frame(name)
+                weights = name
+            else:
+                dfs = dfs.to_frame()
+                weights = None
+        else:
+            weights = None # equal weights
+            
+        spf = StaticPortfolio(dfs, initial_capital=self.initial_capital)
+        spf.buy_n_hold(weights, name=name)
+        self.portfolios[name] = spf.portfolios[name]
+        return None
+
+
+    def run(self, *args, **kwargs):
+        return super().run(*args, **kwargs)
+
+    def get_stats(self, *args, **kwargs):
+        return super().get_stats(*args, **kwargs)
+
+    def _check_name(self, *args, **kwargs):
+        return super()._check_name(*args, **kwargs)
+
+    def _check_var(self, *args, **kwargs):
+        return super()._check_var(*args, **kwargs)
+
+    def align_period(self, *args, **kwargs):
+        return super().align_period(*args, **kwargs)
+
+    def plot_security_weights(self, *args, **kwargs):
+        return super().plot_security_weights(*args, **kwargs)
+
+    def plot_weights(self, *args, **kwargs):
+        return super().plot_weights(*args, **kwargs)
+
+    def plot_histogram(self, *args, **kwargs):
+        return super().plot_histogram(*args, **kwargs)
 
 
 class AssetEvaluator():
@@ -535,8 +693,12 @@ class AssetEvaluator():
         cond = (days_freq_calc != round(days_in_year / factor))
         if cond.sum() > 0:
             days_in_year_new = days_freq_calc.loc[cond].mul(factor).round()
-            print(f'WARNING: the number of days in a year with followings is not {days_in_year} in setting:')
-            _ = [print(f'{k}: {int(v)}') for k,v in days_in_year_new.to_dict().items()]
+            n = len(days_in_year_new)
+            if n < 5:
+                print(f'WARNING: the number of days in a year with followings is not {days_in_year} in setting:')
+                _ = [print(f'{k}: {int(v)}') for k,v in days_in_year_new.to_dict().items()]
+            else:
+                print(f'WARNING: the number of days in a year with {n} equities is not {days_in_year} in setting:')
             return days_in_year_new
         else:
             return days_in_year
