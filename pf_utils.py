@@ -166,13 +166,14 @@ class StaticPortfolio():
     """
     backtest fixed weight portfolio
     """
-    def __init__(self, df_equity, metrics=None, name_prfx='Portfolio', 
+    def __init__(self, df_equity, align_axis=0, metrics=None, name_prfx='Portfolio', 
                  initial_capital=1000000, commissions=None, equity_names=None):
         # df of equities (equities in columns) which of each has its own periods.
         # the periods will be aligned for equities in a portfolio. see self.build
         if isinstance(df_equity, pd.Series):
             return print('ERROR: df_equity must be Dataframe')
         self.df_equity = df_equity
+        self.align_axis = align_axis # how to set time periods intersection with equities
         self.portfolios = dict() # dict of bt.backtest.Backtest
         self.pf_weights = dict()
         self.metrics = metrics
@@ -185,13 +186,29 @@ class StaticPortfolio():
         self.run_results = None
 
 
-    def align_period(self, df_equity, dt_format='%Y-%m-%d', n_indent=2, fill_na=True, print_msg=True):
+    def align_period(self, df_equity, axis=0, dt_format='%Y-%m-%d',
+                     fill_na=True, print_msg=True, n_indent=2):
         """
+        axis: 0 : Drop time index which contain missing prices.
+              1 : Drop equity columns whose length is less than max from missing value.
         fill_na: set False to drop nan fields
         """
-        df = get_date_range(df_equity, slice_input=True)
-        dts = [x.strftime(dt_format) for x in (df.index.min(), df.index.max())]
-        print(f"period reset: {' ~ '.join(dts)}")
+        if axis == 0:
+            df = get_date_range(df_equity, slice_input=True)
+            if len(df) < len(df_equity):
+                dts = [x.strftime(dt_format) for x in (df.index.min(), df.index.max())]
+                print(f"period reset: {' ~ '.join(dts)}")
+        elif axis == 1:
+            c_all = df_equity.columns
+            cond = df_equity.apply(lambda x: x.dropna().count()) < len(df_equity)
+            c_drop = c_all[cond]
+            df = df_equity[c_all.difference(c_drop)]
+            n_c = len(c_drop)
+            if n_c > 0:
+                n_all = len(c_all)
+                print(f'{n_c} equities removed for shorter periods ({n_c/n_all*100:.1f}%)')
+        else:
+            pass
 
         if print_msg:
             stats = df.isna().sum().div(df.count())
@@ -204,7 +221,7 @@ class StaticPortfolio():
             return df.ffill()
         else:
             return df.dropna()
-        
+
     
     def _check_name(self, name=None):
         if name is None:
@@ -267,7 +284,7 @@ class StaticPortfolio():
 
     def build(self, weights=None, name=None, freq=None, 
               initial_capital=None, commissions=None, capital_flow=0,
-              fill_na=True):
+              align_axis=None, fill_na=True):
         """
         make backtest of a strategy with tickers in weights
         """
@@ -275,13 +292,14 @@ class StaticPortfolio():
         weights = self._check_weights(dfs, weights)
         name = self._check_name(name)
         initial_capital = self._check_var(initial_capital, self.initial_capital)
+        align_axis = self._check_var(align_axis, self.align_axis)
         
         try:
             dfs = dfs[weights.keys()] # dataframe even if one weight given
         except KeyError as e:
             return print(f'ERROR: check weights as {e}')
 
-        dfs = self.align_period(dfs, fill_na=fill_na)
+        dfs = self.align_period(dfs, axis=align_axis, fill_na=fill_na)
                 
         if freq == 'W':
             run_freq = bt.algos.RunWeekly()
@@ -485,12 +503,10 @@ class StaticPortfolio():
         return weights
 
 
-    def _retrieve(self, pf_list)
-
-
-    def get_historical(self, pf_list=None):
+    def _retrieve_results(self, pf_list, func_result):
         """
-        calc weighted sum of securities for each portfolio
+        generalized function to retrieve results of pf_list from func_result
+        func_result is func with ffn.core.PerformanceStats or bt.backtest.Backtest
         """
         pf_list  = self.check_portfolios(pf_list, run=True, convert_index=True)
         if pf_list is None:
@@ -498,42 +514,58 @@ class StaticPortfolio():
 
         df_all = None
         for rp in pf_list:
-            # ffn.core.PerformanceStats get only a key or None
-            df = self.run_results[rp].prices
+            df = func_result(rp)
             if df_all is None:
                 df_all = df.to_frame()
             else:
                 df_all = df_all.join(df)
         return df_all
+
+
+    def get_historical(self, pf_list=None):
+        func_result = lambda x: self.run_results[x].prices
+        return self._retrieve_results(pf_list, func_result)
 
 
     def get_turnover(self, pf_list=None, drop_zero=True):
         """
         Calculate the turnover for the backtest
         """
-        pf_list  = self.check_portfolios(pf_list, run=True, convert_index=True)
-        if pf_list is None:
-            return None
-
-        df_all = None
-        for rp in pf_list:
-            # turnover saved in bt.backtest.Backtest not ffn.core.PerformanceStats
-            df = self.portfolios[rp].turnover.rename(rp)
-            if df_all is None:
-                df_all = df.to_frame()
-            else:
-                df_all = df_all.join(df)
+        func_result = lambda x: self.portfolios[x].turnover.rename(x)
+        df = self._retrieve_results(pf_list, func_result)
 
         if drop_zero:
-            df_all = df_all.loc[(df_all.sum(axis=1) > 0)]
-        return df_all
+            df = df.loc[(df.sum(axis=1) > 0)]
+        return df
 
+    
+    def get_security_weights(self, pf=0):
+        pf_list  = self.check_portfolios(pf, run=True, convert_index=True)
+        if pf_list is None:
+            return None
+        else:
+            pf = pf_list[0]
+        return self.run_results.get_security_weights(pf)
+        
+
+    def get_transactions(self, pf=0):
+        if isinstance(pf, list):
+            return print('WARNING: set one portfolio')
+            
+        pf_list  = self.check_portfolios(pf, run=True, convert_index=True)
+        if pf_list is None:
+            return None
+        else:
+            pf = pf_list[0]
+            
+        return self.run_results.get_transactions(pf)
 
 
 class DynamicPortfolio(StaticPortfolio):
-    def __init__(self, df_equity, metrics=None, name_prfx='Portfolio', 
+    def __init__(self, df_equity, align_axis=0, metrics=None, name_prfx='Portfolio', 
                   initial_capital=1000000, commissions=None, equity_names=None):
         self.df_equity = df_equity
+        self.align_axis = align_axis
         self.portfolios = dict()
         #self.pf_weights = dict()
         self.metrics = metrics
@@ -563,17 +595,18 @@ class DynamicPortfolio(StaticPortfolio):
 
     def build(self, n_equities=2, lookback_months=12, name=None, freq='M', 
               initial_capital=None, commissions=None, rate_is_percent=True,
-              fill_na=True):
+              align_axis=None, fill_na=True):
         """
         make backtest of a strategy with tickers in weights
         commissions: same for all equities
         """
         dfs = self.df_equity
-        dfs = self.align_period(dfs, fill_na=fill_na, print_msg=False)
-        
         name = self._check_name(name)
         initial_capital = self._check_var(initial_capital, self.initial_capital)
+        align_axis = self._check_var(align_axis, self.align_axis)
                 
+        dfs = self.align_period(dfs, axis=align_axis, fill_na=fill_na, print_msg=False)
+        
         if freq == 'W':
             run_freq = bt.algos.RunWeekly()
         elif freq == 'Q':
@@ -596,7 +629,7 @@ class DynamicPortfolio(StaticPortfolio):
         return None
 
 
-    def benchmark(self, dfs, name='BM'):
+    def benchmark(self, dfs, name='BM', align_axis=None):
         """
         dfs: str or list of str if dfs in self.df_equity or historical of tickers
         """
@@ -624,10 +657,12 @@ class DynamicPortfolio(StaticPortfolio):
             weights = None # equal weights
             
         spf = StaticPortfolio(dfs, initial_capital=self.initial_capital)
-        spf.buy_n_hold(weights, name=name)
+        spf.buy_n_hold(weights, name=name, align_axis=align_axis)
         self.portfolios[name] = spf.portfolios[name]
         return None
 
+    def build_batch(self, *args, **kwargs):
+        return super().build_batch(*args, **kwargs)
 
     def run(self, *args, **kwargs):
         return super().run(*args, **kwargs)
@@ -652,6 +687,19 @@ class DynamicPortfolio(StaticPortfolio):
 
     def plot_histogram(self, *args, **kwargs):
         return super().plot_histogram(*args, **kwargs)
+
+    def get_historical(self, *args, **kwargs):
+        return super().get_historical(*args, **kwargs)
+
+    def get_turnover(self, *args, **kwargs):
+        return super().get_turnover(*args, **kwargs)
+    
+    def get_security_weights(self, *args, **kwargs):
+        return super().get_security_weights(*args, **kwargs)
+        
+    def get_transactions(self, *args, **kwargs):
+        return super().get_transactions(*args, **kwargs)
+        
 
 
 class AssetEvaluator():
