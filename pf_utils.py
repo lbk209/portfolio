@@ -161,6 +161,7 @@ def valuate_bond(face, rate, year, ytm, n_pay=1):
     # the present value of the face value of the bond added
     return vc + face/(1+r_discount)**(year*n_pay)
 
+## class - static
 
 class StaticPortfolio():
     """
@@ -560,6 +561,7 @@ class StaticPortfolio():
             
         return self.run_results.get_transactions(pf)
 
+## class - dynamic
 
 class DynamicPortfolio(StaticPortfolio):
     def __init__(self, df_equity, align_axis=0, metrics=None, name_prfx='Portfolio', 
@@ -661,6 +663,7 @@ class DynamicPortfolio(StaticPortfolio):
         self.portfolios[name] = spf.portfolios[name]
         return None
 
+    
     def build_batch(self, *args, **kwargs):
         return super().build_batch(*args, **kwargs)
 
