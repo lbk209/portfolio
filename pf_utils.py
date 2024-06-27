@@ -1,4 +1,3 @@
-import bt
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -6,6 +5,15 @@ import arviz as az
 import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
+
+import bt
+from bt.algos import (
+    RunWeekly, RunMonthly, RunQuarterly, RunYearly, 
+    SelectN, SelectMomentum
+)
+
+from pf_custom import SelectKRatio
+
 import warnings
 
 warnings.filterwarnings(action='ignore', category=FutureWarning)
@@ -162,6 +170,7 @@ def valuate_bond(face, rate, year, ytm, n_pay=1):
     return vc + face/(1+r_discount)**(year*n_pay)
 
 
+
 class StaticPortfolio():
     """
     backtest fixed weight portfolio
@@ -301,16 +310,7 @@ class StaticPortfolio():
 
         dfs = self.align_period(dfs, axis=align_axis, fill_na=fill_na)
                 
-        if freq == 'W':
-            run_freq = bt.algos.RunWeekly()
-        elif freq == 'Q':
-            run_freq = bt.algos.RunQuarterly()
-        elif freq == 'Y':
-            run_freq = bt.algos.RunYearly()
-        elif freq == 'M':
-            run_freq = bt.algos.RunMonthly()
-        else: # default: buy & hold
-            run_freq = bt.algos.RunOnce()
+        run_freq = self._get_run_freq(freq)
         
         commissions = self._check_var(commissions, self.commissions)
         if commissions is None:
@@ -323,6 +323,18 @@ class StaticPortfolio():
                                               initial_capital=initial_capital, commissions=c_avg)
         self.pf_weights[name] = weights
         return None
+
+
+    def _get_run_freq(self, freq='M'):
+        if freq == 'W':
+            run_freq = RunWeekly()
+        elif freq == 'Q':
+            run_freq = RunQuarterly()
+        elif freq == 'Y':
+            run_freq = RunYearly()
+        else: # default monthly
+            run_freq = RunMonthly()
+        return run_freq
 
     
     def buy_n_hold(self, weights=None, name=None, **kwargs):
@@ -578,26 +590,36 @@ class DynamicPortfolio(StaticPortfolio):
         self.run_results = None
 
 
-    def backtest(self, dfs, n_equities=2, lookback_months=12, name='portfolio',                 
-                 run_freq=bt.algos.RunMonthly(), **kwargs):
+    def backtest(self, dfs, 
+                 algo_select=SelectMomentum, n_equities=2, lookback=12, lag=30, 
+                 name='portfolio', run_freq=RunMonthly(), **kwargs):
         """
+        lookback: month
+        lag: day
         kwargs: keyword args for bt.Backtest
         """
         strategy = bt.Strategy(name, [
             bt.algos.SelectAll(),
-            bt.algos.SelectMomentum(n=n_equities, lookback=pd.DateOffset(months=lookback_months)),
-            bt.algos.WeighERC(lookback=pd.DateOffset(months=lookback_months)),
             run_freq,
+            algo_select(n=n_equities, lookback=pd.DateOffset(months=lookback),
+                       lag=pd.DateOffset(days=lag)),
+            bt.algos.WeighERC(lookback=pd.DateOffset(months=lookback)),
+            #run_freq,
             bt.algos.Rebalance()
         ])
         return bt.Backtest(strategy, dfs, **kwargs)
 
 
-    def build(self, n_equities=2, lookback_months=12, name=None, freq='M', 
+    def build(self, 
+              method='simple', n_equities=2, lookback=12, lag=30, 
+              name=None, freq='M', 
               initial_capital=None, commissions=None, rate_is_percent=True,
               align_axis=None, fill_na=True):
         """
         make backtest of a strategy with tickers in weights
+        method: rule how to select equities
+        lookback: month
+        lag: day
         commissions: same for all equities
         """
         dfs = self.df_equity
@@ -607,26 +629,32 @@ class DynamicPortfolio(StaticPortfolio):
                 
         dfs = self.align_period(dfs, axis=align_axis, fill_na=fill_na, print_msg=False)
         
-        if freq == 'W':
-            run_freq = bt.algos.RunWeekly()
-        elif freq == 'Q':
-            run_freq = bt.algos.RunQuarterly()
-        elif freq == 'Y':
-            run_freq = bt.algos.RunYearly()
-        else: # default monthly
-            run_freq = bt.algos.RunMonthly()
+        run_freq = self._get_run_freq(freq)
 
         if commissions is not None:
             c = 100 if rate_is_percent else 1
             c = commissions * c
             commissions = lambda q, p: abs(q*p*c)
-            
-        self.portfolios[name] = self.backtest(dfs, n_equities=n_equities, 
-                                              lookback_months=lookback_months, 
+
+        algo_select = self._get_algo_select(method)
+        
+        self.portfolios[name] = self.backtest(dfs, algo_select=algo_select,
+                                              n_equities=n_equities, 
+                                              lookback=lookback, lag=lag,
                                               name=name, run_freq=run_freq, 
                                               initial_capital=initial_capital, 
                                               commissions=commissions)
         return None
+
+
+    def _get_algo_select(self, method='simple'):
+        if method == 'simple':
+            return SelectMomentum
+        elif method == 'k-ratio':
+            return SelectKRatio
+        else:
+            print(f'WARNING: set to SelectMomentum as no {method} exists')
+            return SelectMomentum
 
 
     def benchmark(self, dfs, name='BM', align_axis=None):
@@ -675,6 +703,9 @@ class DynamicPortfolio(StaticPortfolio):
 
     def _check_var(self, *args, **kwargs):
         return super()._check_var(*args, **kwargs)
+
+    def _get_run_freq(self,  *args, **kwargs):
+        return super()._get_run_freq(*args, **kwargs)
 
     def align_period(self, *args, **kwargs):
         return super().align_period(*args, **kwargs)
