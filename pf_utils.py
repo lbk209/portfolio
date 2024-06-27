@@ -426,7 +426,7 @@ class StaticPortfolio():
         return pf_list
 
 
-    def get_stats(self, pf_list=None, metrics=None):
+    def get_stats(self, pf_list=None, metrics=None, sort_by=None):
         pf_list  = self.check_portfolios(pf_list, run=True)
         if pf_list is None:
             return None
@@ -435,10 +435,18 @@ class StaticPortfolio():
             
         metrics = self._check_var(metrics, self.metrics)
         if (metrics is None) or (metrics == 'all'):
-            return results.stats[pf_list]
+            df = results.stats[pf_list]
         else:
             metrics = ['start', 'end'] + metrics
-            return results.stats.loc[metrics, pf_list]
+            df = results.stats.loc[metrics, pf_list]
+
+        if sort_by is not None:
+            try:
+                df = df.sort_values(sort_by, axis=1, ascending=False)
+            except KeyError as e:
+                print(f'WARNING: no sorting as {e}')
+
+        return df
 
 
     def _plot_portfolios(self, plot_func, pf_list, ncols=2, sharex=True, sharey=True, 
@@ -573,6 +581,7 @@ class StaticPortfolio():
         return self.run_results.get_transactions(pf)
 
 
+
 class DynamicPortfolio(StaticPortfolio):
     def __init__(self, df_equity, align_axis=0, metrics=None, name_prfx='Portfolio', 
                   initial_capital=1000000, commissions=None, equity_names=None):
@@ -604,7 +613,6 @@ class DynamicPortfolio(StaticPortfolio):
             algo_select(n=n_equities, lookback=pd.DateOffset(months=lookback),
                        lag=pd.DateOffset(days=lag)),
             bt.algos.WeighERC(lookback=pd.DateOffset(months=lookback)),
-            #run_freq,
             bt.algos.Rebalance()
         ])
         return bt.Backtest(strategy, dfs, **kwargs)
@@ -648,12 +656,9 @@ class DynamicPortfolio(StaticPortfolio):
 
 
     def _get_algo_select(self, method='simple'):
-        if method == 'simple':
-            return SelectMomentum
-        elif method == 'k-ratio':
+        if method == 'k-ratio':
             return SelectKRatio
         else:
-            print(f'WARNING: set to SelectMomentum as no {method} exists')
             return SelectMomentum
 
 
@@ -689,6 +694,7 @@ class DynamicPortfolio(StaticPortfolio):
         self.portfolios[name] = spf.portfolios[name]
         return None
 
+    
     def build_batch(self, *args, **kwargs):
         return super().build_batch(*args, **kwargs)
 
