@@ -39,10 +39,26 @@ class StatKRatio(Algo):
         if target.universe[selected].index[0] > t0:
             return False
         prc = target.universe.loc[t0 - self.lookback : t0, selected]
-        # to_returns didn't work here
-        #target.temp["stat"] = prc.to_returns().apply(lambda x: calc_kratio(x.dropna()))
-        target.temp["stat"] = prc.pct_change(1).apply(lambda x: calc_kratio(x.dropna()))
+
+        #print(prc.iloc[0].notna().sum())
+        if prc.iloc[0].notna().sum() > 0:
+            kratio = prc.pct_change(1).apply(lambda x: calc_kratio(x.dropna()))
+        else:
+            kratio = prc.iloc[0]
+        
+        target.temp["stat"] = kratio
+        
+        #kratio = prc.pct_change(1).apply(lambda x: calc_kratio(x.dropna()))
+        #target.temp["stat"] = kratio
+        #print(kratio)
+
+        #tret = (prc.iloc[-1] / prc.iloc[0]) - 1
+        #target.temp["stat"] = tret
+        #print(tret)
+        #print(prc.iloc[0])
+        
         return True
+
 
 
 def calc_kratio(ret):
