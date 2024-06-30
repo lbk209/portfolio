@@ -7,11 +7,6 @@ import pymc as pm
 import pytensor.tensor as pt
 
 import bt
-from bt.algos import (
-    RunWeekly, RunMonthly, RunQuarterly, RunYearly, 
-    SelectN, SelectMomentum
-)
-
 from pf_custom import SelectKRatio
 
 import warnings
@@ -168,29 +163,26 @@ def valuate_bond(face, rate, year, ytm, n_pay=1):
         vc += c/(1+r_discount)**t
     # the present value of the face value of the bond added
     return vc + face/(1+r_discount)**(year*n_pay)
+        
 
 
-
-class StaticPortfolio():
-    """
-    backtest fixed weight portfolio
-    """
-    def __init__(self, df_equity, align_axis=0, metrics=None, name_prfx='Portfolio', 
+class BacktestManager():
+    def __init__(self, df_equity, align_axis=0, metrics=metrics, name_prfx='Portfolio', 
                  initial_capital=1000000, commissions=None, equity_names=None):
         # df of equities (equities in columns) which of each has its own periods.
         # the periods will be aligned for equities in a portfolio. see self.build
         if isinstance(df_equity, pd.Series):
             return print('ERROR: df_equity must be Dataframe')
+
         self.df_equity = df_equity
         self.align_axis = align_axis # how to set time periods intersection with equities
         self.portfolios = dict() # dict of bt.backtest.Backtest
-        self.pf_weights = dict()
         self.metrics = metrics
         self.name_prfx = name_prfx
         self.n_names = 0 # see self._check_name
         self.initial_capital = initial_capital
-        # commissions of all equities across portfolios (per year)
-        self.commissions = commissions 
+        # commissions of all equities across portfolios
+        self.commissions = commissions  # unit %
         self.equity_names = equity_names # names of all equities across portfolios
         self.run_results = None
 
@@ -239,108 +231,203 @@ class StaticPortfolio():
         return name
 
     
-    def _check_weights(self, dfs, weights):
-        if weights is None:
-            cols = dfs.columns
-            weights = dict(zip(cols, [1/len(cols)]*len(cols)))
-        return weights
-
-    
     def _check_var(self, var_arg, var_self):
         if var_arg is None:
             var_arg = var_self
         return var_arg
 
 
-    def _calc_commissions(self, commissions, weights, freq='Y', rate_is_percent=True):
-        """
-        commissions: dict of equity to fee
-        """
-        a = 100 if rate_is_percent else 1
-        
-        if freq == 'W':
-            a *= 52
-        elif freq == 'Q':
-            a *= 4
-        elif freq == 'M':
-            a *= 12
+    def _check_algos(self, select, freq, weigh):
+        cond = lambda x,y: False if x is None else x.lower() == y.lower()
+        if cond(select['select'], 'randomly') and cond(weigh['weigh'], 'ERC'):
+            return print('WARNING: random select does not work with ERC weighting')
         else:
-            pass
-
-        try:
-            c = sum([v*commissions[k]/a for k,v in weights.items()])
-            return lambda q, p: abs(q*p*c)
-        except Exception as e:
-            print(f'WARNING: commissions set to 0 as {e}')
             return None
+    
+
+    def backtest(self, dfs, name='portfolio', 
+                 select={'select':'all'}, freq={'freq':'year'}, weigh={'weigh':'equally'},
+                 algos=None, commissions=None, **kwargs):
+        """
+        kwargs: keyword args for bt.Backtest except commissions
+        algos: List of Algos
+        """
+        self._check_algos(select, freq, weigh)
+        if algos is None:
+            algos = [
+                self._get_algo_select(**select), 
+                self._get_algo_freq(**freq), 
+                self._get_algo_weigh(**weigh),
+                bt.algos.Rebalance()
+            ]
+        strategy = bt.Strategy(name, algos)
+        if commissions is not None:
+            c = lambda q, p: abs(q) * p * commissions
+        return bt.Backtest(strategy, dfs, commissions=c, **kwargs)
 
 
-    def backtest(self, dfs, weights=None, name='portfolio', 
-                 run_freq=bt.algos.RunOnce(), 
-                 capital_flow=0, **kwargs):
+    def _get_algo_select(self, select='all', n_equities=0, lookback=0, lag=0):
         """
-        kwargs: keyword args for bt.Backtest
+        select: all, momentum, kratio, randomly
         """
-        strategy = bt.Strategy(name, [
-            bt.algos.SelectAll(),
-            bt.algos.CapitalFlow(capital_flow),
-            bt.algos.WeighSpecified(**weights),
-            run_freq,
-            bt.algos.Rebalance()
-        ])
-        return bt.Backtest(strategy, dfs, **kwargs)
+        cond = lambda x,y: False if x is None else x.lower() == y.lower()
+        
+        if cond(select, 'Momentum'):
+            algo_select = bt.algos.SelectMomentum(n=n_equities, lookback=pd.DateOffset(months=lookback),
+                                                  lag=pd.DateOffset(days=lag))
+            # SelectAll() or similar should be called before SelectMomentum(), 
+            # as StatTotalReturn uses values of temp[‘selected’]
+            algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
+        elif cond(select, 'k-ratio'):
+            algo_select = SelectKRatio(n=n_equities, lookback=pd.DateOffset(months=lookback),
+                                       lag=pd.DateOffset(days=lag))
+            algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
+        elif cond(select, 'randomly'):
+            algo_select = bt.algos.SelectRandomly(n=n_equities)
+            algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
+        else: # default all
+            print('SelectAll selected')
+            algo_select = bt.algos.SelectAll()
+            
+        return algo_select
         
 
-    def build(self, weights=None, name=None, freq=None, 
-              initial_capital=None, commissions=None, capital_flow=0,
-              align_axis=None, fill_na=True):
+    def _get_algo_freq(self, freq='M'):
         """
-        make backtest of a strategy with tickers in weights
+        freq: W, M, Q, Y
+        """
+        cond = lambda x, y: False if x is None else x[0].lower() == y[0].lower()
+        if cond(freq, 'W'):
+            algo_freq = bt.algos.RunWeekly()
+        elif cond(freq, 'M'):
+            algo_freq = bt.algos.RunMonthly()
+        elif cond(freq, 'Q'):
+            algo_freq = bt.algos.RunQuarterly()
+        elif cond(freq, 'Y'):
+            algo_freq = bt.algos.RunYearly()
+        else:  # default run once
+            print('RunOnce selected')
+            algo_freq = bt.algos.RunOnce()
+        return algo_freq
+
+
+    def _get_algo_weigh(self, weigh='equally', 
+                         weights=None, lookback=0, lag=0, rf=0, bounds=(0.0, 1.0)):
+        """
+        weigh: equally, erc, specified, randomly, invvol, meanvar
+        lookback: month
+        lag: day
+        """
+        cond = lambda x,y: False if x is None else x.lower() == y.lower()
+        
+        # reset weigh if weights not given
+        if cond(weigh, 'Specified') and (weights is None):
+            weigh = 'equally'
+        
+        if cond(weigh, 'ERC'):
+            algo_weigh = bt.algos.WeighERC(lookback=pd.DateOffset(months=lookback), 
+                                          lag=pd.DateOffset(days=lag))
+        elif cond(weigh, 'Specified'):
+            algo_weigh = bt.algos.WeighSpecified(**weights)
+        elif cond(weigh, 'Randomly'):
+            algo_weigh = bt.algos.WeighRandomly()
+        elif cond(weigh, 'InvVol'): # risk parity
+            algo_weigh = bt.algos.WeighInvVol(lookback=pd.DateOffset(months=lookback), 
+                                             lag=pd.DateOffset(days=lag))
+        elif cond(weigh, 'MeanVar'): # Markowitz’s mean-variance optimization
+            algo_weigh = bt.algos.WeighMeanVar(lookback=pd.DateOffset(months=lookback), 
+                                              lag=pd.DateOffset(days=lag),
+                                              rf=rf, bounds=bounds)
+        else: # default WeighEqually
+            print('WeighEqually selected')
+            algo_weigh = bt.algos.WeighEqually()
+            
+        return algo_weigh
+        
+
+    def build(self, name=None, freq='M',
+              select='all', n_equities=0, lookback=0, lag=0,
+              weigh='equally', weights=None, rf=0, bounds=(0.0, 1.0),
+              initial_capital=None, commissions=None, 
+              align_axis=None, fill_na=True, algos=None):
+        """
+        make backtest of a strategy
+        lookback: month
+        lag: day
+        commissions: %; same for all equities
+        algos: set List of Algos to build backtest directly
         """
         dfs = self.df_equity
-        weights = self._check_weights(dfs, weights)
         name = self._check_name(name)
+        align_axis = self._check_var(align_axis, self.align_axis)
         initial_capital = self._check_var(initial_capital, self.initial_capital)
+        commissions = self._check_var(commissions, self.commissions)
+       
+        dfs = self.align_period(dfs, axis=align_axis, fill_na=fill_na, print_msg=False)
+        
+        select = {'select':select, 'n_equities':n_equities, 'lookback':lookback, 'lag':lag}
+        freq = {'freq':freq}
+        weigh = {'weigh':weigh, 'weights':weights, 'rf':rf, 'bounds':bounds,
+                 'lookback':lookback, 'lag':lag}
+
+        self.portfolios[name] = self.backtest(dfs, name=name, 
+                                              select=select, freq=freq, weigh=weigh, algos=algos,
+                                              initial_capital=initial_capital, 
+                                              commissions=commissions)
+        return None
+    
+    
+    def buy_n_hold(self, name=None, weights=None, **kwargs):
+        """
+        weights: dict of ticker to weight. str if one equity portfolio
+        kwargs: set initial_capital, commissions, align_axis or fill_na 
+                to use different onces with other strategies
+        """
+        if isinstance(weights, str):
+            if weights in self.df_equity.columns:
+                weights = {weights: 1}
+            else:
+                return print('ERROR')
+        return self.build(name=name, freq=None, select='all', weigh='specified',
+                          weights=weights, **kwargs)
+
+
+    def benchmark(self, dfs, name='BM', weights=None, 
+                  initial_capital=None, commissions=None, 
+                  align_axis=None, fill_na=True):
+        """
+        dfs: str or list of str if dfs in self.df_equity or historical of tickers
+        """
+        df_equity = self.df_equity
         align_axis = self._check_var(align_axis, self.align_axis)
         
-        try:
-            dfs = dfs[weights.keys()] # dataframe even if one weight given
-        except KeyError as e:
-            return print(f'ERROR: check weights as {e}')
+        if isinstance(dfs, str):
+            dfs = [dfs]
 
-        dfs = self.align_period(dfs, axis=align_axis, fill_na=fill_na)
-                
-        run_freq = self._get_run_freq(freq)
-        
-        commissions = self._check_var(commissions, self.commissions)
-        if commissions is None:
-            c_avg = None
+        if isinstance(dfs, list):
+            if pd.Index(dfs).isin(self.df_equity.columns).sum() != len(dfs):
+                return print('ERROR: check arg dfs')
+            else:
+                dfs = df_equity[dfs]
         else:
-            c_avg = self._calc_commissions(commissions, weights, freq)
+            dfs = dfs.loc[self.df_equity.index]
+            
+        if isinstance(dfs, pd.Series):
+            if dfs.name is None:
+                dfs = dfs.to_frame(name)
+            else:
+                dfs = dfs.to_frame()
         
-        self.portfolios[name] = self.backtest(dfs, weights=weights, name=name, run_freq=run_freq, 
-                                              capital_flow=capital_flow,
-                                              initial_capital=initial_capital, commissions=c_avg)
-        self.pf_weights[name] = weights
+        dfs = self.align_period(dfs, axis=align_axis, fill_na=fill_na, print_msg=False)
+        weigh = {'weigh':'specified', 'weights':weights}
+        initial_capital = self._check_var(initial_capital, self.initial_capital)
+        commissions = self._check_var(commissions, self.commissions)
+       
+        self.portfolios[name] = self.backtest(dfs, name=name, select={'select':'all'}, 
+                                              freq={'freq':None}, weigh=weigh, 
+                                              initial_capital=initial_capital, 
+                                              commissions=commissions)
         return None
-
-
-    def _get_run_freq(self, freq='M'):
-        if freq == 'W':
-            run_freq = RunWeekly()
-        elif freq == 'Q':
-            run_freq = RunQuarterly()
-        elif freq == 'Y':
-            run_freq = RunYearly()
-        else: # default monthly
-            run_freq = RunMonthly()
-        return run_freq
-
-    
-    def buy_n_hold(self, weights=None, name=None, **kwargs):
-        if isinstance(weights, str):
-            weights = {weights: 1}
-        return self.build(weights=weights, name=name, freq=None, **kwargs)
 
 
     def build_batch(self, kwa_list, reset_portfolios=False, **kwargs):
@@ -358,7 +445,7 @@ class StaticPortfolio():
         return None
 
     
-    def run(self, pf_list=None, metrics=None, plot=True, freq='d', figsize=None, stats=True):
+    def run(self, pf_list=None, metrics=None, plot=True, freq='D', figsize=None, stats=True):
         """
         pf_list: List of backtests or list of index of backtest
         """
@@ -366,6 +453,7 @@ class StaticPortfolio():
             return print('ERROR: no strategy to backtest. build strategies first')
             
         if pf_list is None:
+            #bt_list = list(self.portfolios.values())
             bt_list = self.portfolios.values()
         else:
             c = [0 if isinstance(x, int) else 1 for x in pf_list]
@@ -509,20 +597,6 @@ class StaticPortfolio():
         return None
 
 
-    def get_weights(self, pf_list=None, equity_names=None, as_series=True):
-        pf_list  = self.check_portfolios(pf_list, run=False, convert_index=True)
-        if pf_list is None:
-            return None
-        
-        weights = {k: self.pf_weights[k] for k in pf_list}
-        quity_names = self._check_var(equity_names, self.equity_names)
-        if equity_names is not None:
-            weights = {k: {equity_names[x]:y for x,y in v.items()} for k,v in weights.items()}
-        if as_series:
-            weights = pd.DataFrame().from_dict(weights).fillna(0)
-        return weights
-
-
     def _retrieve_results(self, pf_list, func_result):
         """
         generalized function to retrieve results of pf_list from func_result
@@ -579,163 +653,6 @@ class StaticPortfolio():
             pf = pf_list[0]
             
         return self.run_results.get_transactions(pf)
-
-
-
-class DynamicPortfolio(StaticPortfolio):
-    def __init__(self, df_equity, align_axis=0, metrics=None, name_prfx='Portfolio', 
-                  initial_capital=1000000, commissions=None, equity_names=None):
-        self.df_equity = df_equity
-        self.align_axis = align_axis
-        self.portfolios = dict()
-        #self.pf_weights = dict()
-        self.metrics = metrics
-        self.name_prfx = name_prfx
-        self.n_names = 0 # see self._check_name
-        self.initial_capital = initial_capital
-        # commissions of all equities across portfolios (per year)
-        self.commissions = commissions 
-        self.equity_names = equity_names # names of all equities across portfolios
-        self.run_results = None
-
-
-    def backtest(self, dfs, 
-                 algo_select=SelectMomentum, n_equities=2, lookback=12, lag=30, 
-                 name='portfolio', run_freq=RunMonthly(), **kwargs):
-        """
-        lookback: month
-        lag: day
-        kwargs: keyword args for bt.Backtest
-        """
-        strategy = bt.Strategy(name, [
-            bt.algos.SelectAll(),
-            run_freq,
-            algo_select(n=n_equities, lookback=pd.DateOffset(months=lookback),
-                       lag=pd.DateOffset(days=lag)),
-            bt.algos.WeighERC(lookback=pd.DateOffset(months=lookback)),
-            bt.algos.Rebalance()
-        ])
-        return bt.Backtest(strategy, dfs, **kwargs)
-
-
-    def build(self, 
-              method='simple', n_equities=2, lookback=12, lag=30, 
-              name=None, freq='M', 
-              initial_capital=None, commissions=None, rate_is_percent=True,
-              align_axis=None, fill_na=True):
-        """
-        make backtest of a strategy with tickers in weights
-        method: rule how to select equities
-        lookback: month
-        lag: day
-        commissions: same for all equities
-        """
-        dfs = self.df_equity
-        name = self._check_name(name)
-        initial_capital = self._check_var(initial_capital, self.initial_capital)
-        align_axis = self._check_var(align_axis, self.align_axis)
-                
-        dfs = self.align_period(dfs, axis=align_axis, fill_na=fill_na, print_msg=False)
-        
-        run_freq = self._get_run_freq(freq)
-
-        if commissions is not None:
-            c = 100 if rate_is_percent else 1
-            c = commissions * c
-            commissions = lambda q, p: abs(q*p*c)
-
-        algo_select = self._get_algo_select(method)
-        
-        self.portfolios[name] = self.backtest(dfs, algo_select=algo_select,
-                                              n_equities=n_equities, 
-                                              lookback=lookback, lag=lag,
-                                              name=name, run_freq=run_freq, 
-                                              initial_capital=initial_capital, 
-                                              commissions=commissions)
-        return None
-
-
-    def _get_algo_select(self, method='simple'):
-        if method == 'k-ratio':
-            return SelectKRatio
-        else:
-            return SelectMomentum
-
-
-    def benchmark(self, dfs, name='BM', align_axis=None):
-        """
-        dfs: str or list of str if dfs in self.df_equity or historical of tickers
-        """
-        df_equity = self.df_equity
-        
-        if isinstance(dfs, str):
-            dfs = [dfs]
-
-        if isinstance(dfs, list):
-            if pd.Index(dfs).isin(self.df_equity.columns).sum() != len(dfs):
-                return print('ERROR: check arg dfs')
-            else:
-                dfs = df_equity[dfs]
-        else:
-            dfs = dfs.loc[self.df_equity.index]
-            
-        if isinstance(dfs, pd.Series):
-            if dfs.name is None:
-                dfs = dfs.to_frame(name)
-                weights = name
-            else:
-                dfs = dfs.to_frame()
-                weights = None
-        else:
-            weights = None # equal weights
-            
-        spf = StaticPortfolio(dfs, initial_capital=self.initial_capital)
-        spf.buy_n_hold(weights, name=name, align_axis=align_axis)
-        self.portfolios[name] = spf.portfolios[name]
-        return None
-
-    
-    def build_batch(self, *args, **kwargs):
-        return super().build_batch(*args, **kwargs)
-
-    def run(self, *args, **kwargs):
-        return super().run(*args, **kwargs)
-
-    def get_stats(self, *args, **kwargs):
-        return super().get_stats(*args, **kwargs)
-
-    def _check_name(self, *args, **kwargs):
-        return super()._check_name(*args, **kwargs)
-
-    def _check_var(self, *args, **kwargs):
-        return super()._check_var(*args, **kwargs)
-
-    def _get_run_freq(self,  *args, **kwargs):
-        return super()._get_run_freq(*args, **kwargs)
-
-    def align_period(self, *args, **kwargs):
-        return super().align_period(*args, **kwargs)
-
-    def plot_security_weights(self, *args, **kwargs):
-        return super().plot_security_weights(*args, **kwargs)
-
-    def plot_weights(self, *args, **kwargs):
-        return super().plot_weights(*args, **kwargs)
-
-    def plot_histogram(self, *args, **kwargs):
-        return super().plot_histogram(*args, **kwargs)
-
-    def get_historical(self, *args, **kwargs):
-        return super().get_historical(*args, **kwargs)
-
-    def get_turnover(self, *args, **kwargs):
-        return super().get_turnover(*args, **kwargs)
-    
-    def get_security_weights(self, *args, **kwargs):
-        return super().get_security_weights(*args, **kwargs)
-        
-    def get_transactions(self, *args, **kwargs):
-        return super().get_transactions(*args, **kwargs)
         
 
 
