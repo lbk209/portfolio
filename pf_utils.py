@@ -260,8 +260,10 @@ class BacktestManager():
 
     def _check_algos(self, select, freq, weigh):
         cond = lambda x,y: False if x is None else x.lower() == y.lower()
+        # managed to make it work
         if cond(select['select'], 'randomly') and cond(weigh['weigh'], 'ERC'):
-            return print('WARNING: random select does not work with ERC weighting')
+            #return print('WARNING: random select does not work with ERC weighting')
+            return None
         else:
             return None
     
@@ -350,6 +352,9 @@ class BacktestManager():
         if cond(weigh, 'ERC'):
             algo_weigh = bt.algos.WeighERC(lookback=pd.DateOffset(months=lookback), 
                                           lag=pd.DateOffset(days=lag))
+            # Use SelectHasData to avoid LedoitWolf ERROR; other weights like InvVol work fine without it.
+            algo_weigh = bt.AlgoStack(bt.algos.SelectHasData(lookback=pd.DateOffset(months=lookback)), 
+                                      algo_weigh)
         elif cond(weigh, 'Specified'):
             algo_weigh = bt.algos.WeighSpecified(**weights)
         elif cond(weigh, 'Randomly'):
@@ -474,7 +479,7 @@ class BacktestManager():
         """
         if len(self.portfolios) == 0:
             return print('ERROR: no strategy to backtest. build strategies first')
-            
+
         if pf_list is None:
             #bt_list = list(self.portfolios.values())
             bt_list = self.portfolios.values()
@@ -493,7 +498,9 @@ class BacktestManager():
         self.run_results = results
         
         if plot:
-            results.plot(freq=freq, figsize=figsize);
+            results.plot(freq=freq, figsize=figsize)
+
+        return (stats, pf_list, metrics) # testing
 
         if stats:
             print('Returning stats')
@@ -520,7 +527,7 @@ class BacktestManager():
             
         if not isinstance(pf_list, list):
             pf_list = [pf_list]
-    
+
         try: # assuming list of int
             if max(pf_list) >= len(pf_list_all):
                 print('WARNING: check pf_list')
@@ -528,7 +535,6 @@ class BacktestManager():
             else:
                 if convert_index:
                     pf_list = [pf_list_all[x] for x in pf_list]
-
         except TypeError: # pf_list is list of str
             if len(set(pf_list) - set(pf_list_all)) > 0:
                 print('WARNING: check pf_list')
