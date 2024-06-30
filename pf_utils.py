@@ -195,15 +195,16 @@ class BacktestManager():
         fill_na: set False to drop nan fields
         """
         if axis == 0:
-            df = get_date_range(df_equity, slice_input=True)
-            if len(df) < len(df_equity):
-                dts = [x.strftime(dt_format) for x in (df.index.min(), df.index.max())]
+            df_aligned = get_date_range(df_equity, slice_input=True)
+            if len(df_aligned) < len(df_equity):
+                dts = [x.strftime(dt_format) for x in (df_aligned.index.min(), df_aligned.index.max())]
                 print(f"period reset: {' ~ '.join(dts)}")
         elif axis == 1:
             c_all = df_equity.columns
-            cond = df_equity.apply(lambda x: x.dropna().count()) < len(df_equity)
+            df_cnt = df_equity.apply(lambda x: x.dropna().count())
+            cond = (df_cnt < df_cnt.max())
             c_drop = c_all[cond]
-            df = df_equity[c_all.difference(c_drop)]
+            df_aligned = df_equity[c_all.difference(c_drop)]
             n_c = len(c_drop)
             if n_c > 0:
                 n_all = len(c_all)
@@ -212,16 +213,16 @@ class BacktestManager():
             pass
 
         if print_msg:
-            stats = df.isna().sum().div(df.count())
+            stats = df_aligned.isna().sum().div(df.count())
             t = 'filled forward' if fill_na else 'dropped'
             print(f'ratio of nan {t}::')
             indent = ' '*n_indent
             _ = [print(f'{indent}{i}: {stats[i]:.3f}') for i in stats.index]
 
         if fill_na:
-            return df.ffill()
+            return df_aligned.ffill()
         else:
-            return df.dropna()
+            return df_aligned.dropna()
 
     
     def _check_name(self, name=None):
@@ -235,6 +236,26 @@ class BacktestManager():
         if var_arg is None:
             var_arg = var_self
         return var_arg
+
+
+    def _check_weights(self, weights, dfs):
+        """
+        weights: str, list of str, dict, or None
+        """
+        if isinstance(weights, str):
+            if weights in dfs.columns:
+                return {weights: 1}
+            else:
+                return print(f'ERROR: No {weights} in the dfs')
+        elif isinstance(weights, list):
+            cols = pd.Index(weights).difference(dfs.columns)
+            if len(cols) == 0:
+                return {k:1/len(weights) for k in weights}
+            else:
+                cols = ', '.join(cols)
+                return print(f'ERROR: No {cols} in the dfs')
+        else: # assuming dict
+            return weights
 
 
     def _check_algos(self, select, freq, weigh):
@@ -285,7 +306,9 @@ class BacktestManager():
         elif cond(select, 'randomly'):
             algo_select = bt.algos.SelectRandomly(n=n_equities)
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
-        else: # default all
+        elif cond(select, 'all'):
+            algo_select = bt.algos.SelectAll()
+        else:
             print('SelectAll selected')
             algo_select = bt.algos.SelectAll()
             
@@ -338,7 +361,9 @@ class BacktestManager():
             algo_weigh = bt.algos.WeighMeanVar(lookback=pd.DateOffset(months=lookback), 
                                               lag=pd.DateOffset(days=lag),
                                               rf=rf, bounds=bounds)
-        else: # default WeighEqually
+        elif cond(weigh, 'equally'):
+            algo_weigh = bt.algos.WeighEqually()
+        else:
             print('WeighEqually selected')
             algo_weigh = bt.algos.WeighEqually()
             
@@ -364,6 +389,7 @@ class BacktestManager():
         commissions = self._check_var(commissions, self.commissions)
        
         dfs = self.align_period(dfs, axis=align_axis, fill_na=fill_na, print_msg=False)
+        weights = self._check_weights(weights, dfs)
         
         select = {'select':select, 'n_equities':n_equities, 'lookback':lookback, 'lag':lag}
         freq = {'freq':freq}
@@ -383,11 +409,6 @@ class BacktestManager():
         kwargs: set initial_capital, commissions, align_axis or fill_na 
                 to use different onces with other strategies
         """
-        if isinstance(weights, str):
-            if weights in self.df_equity.columns:
-                weights = {weights: 1}
-            else:
-                return print('ERROR')
         return self.build(name=name, freq=None, select='all', weigh='specified',
                           weights=weights, **kwargs)
 
@@ -419,6 +440,7 @@ class BacktestManager():
                 dfs = dfs.to_frame()
         
         dfs = self.align_period(dfs, axis=align_axis, fill_na=fill_na, print_msg=False)
+        weights = self._check_weights(weights, dfs)
         weigh = {'weigh':'specified', 'weights':weights}
         initial_capital = self._check_var(initial_capital, self.initial_capital)
         commissions = self._check_var(commissions, self.commissions)
@@ -438,8 +460,9 @@ class BacktestManager():
         if reset_portfolios:
             self.portfolios = {}
         else:
-            return print('WARNING: set reset_portfolios to True to run')
-
+            #return print('WARNING: set reset_portfolios to True to run')
+            pass
+            
         for kwa in kwa_list:
             self.build(**{**kwa, **kwargs})
         return None
