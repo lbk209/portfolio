@@ -1,5 +1,6 @@
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 import FinanceDataReader as fdr
 import arviz as az
 import numpy as np
@@ -13,6 +14,10 @@ import warnings
 
 warnings.filterwarnings(action='ignore', category=FutureWarning)
 warnings.filterwarnings(action='ignore', category=pd.errors.PerformanceWarning)
+
+# support korean lang
+mpl.rcParams['axes.unicode_minus'] = False
+plt.rcParams["font.family"] = 'NanumBarunGothic'
 
 metrics = [
     'total_return', 'cagr', 'calmar', 
@@ -163,12 +168,48 @@ def valuate_bond(face, rate, year, ytm, n_pay=1):
         vc += c/(1+r_discount)**t
     # the present value of the face value of the bond added
     return vc + face/(1+r_discount)**(year*n_pay)
-        
+
+
+def check_days_in_year(df, days_in_year=252, freq='M'):
+    """
+    freq: unit to check days_in_year in df
+    """
+    if freq == 'Y':
+        grp_format = '%Y'
+        #days_in_freq = days_in_year
+        factor = 1
+    elif freq == 'W':
+        grp_format = '%Y%m%U'
+        #days_in_freq = round(days_in_year/12/WEEKS_IN_YEAR)
+        factor = 12 * WEEKS_IN_YEAR
+    else: # default month
+        grp_format = '%Y%m'
+        #days_in_freq = round(days_in_year/12)
+        factor = 12
+
+    # calc mean days for each equity
+    days_freq_calc = (df.assign(gb=df.index.strftime(grp_format)).set_index('gb')
+                        .apply(lambda x: x.dropna().groupby('gb').count()[1:-1]
+                        .mean().round()))
+
+    cond = (days_freq_calc != round(days_in_year / factor))
+    if cond.sum() > 0:
+        df_days = days_freq_calc.loc[cond].mul(factor).round()
+        n = len(df_days)
+        if n < 5:
+            print(f'WARNING: the number of days in a year with followings is not {days_in_year} in setting:')
+            _ = [print(f'{k}: {int(v)}') for k,v in df_days.to_dict().items()]
+        else:
+            print(f'WARNING: the number of days in a year with {n} equities is not {days_in_year} in setting:')
+        return df_days
+    else:
+        return None
+
 
 
 class BacktestManager():
     def __init__(self, df_equity, align_axis=0, metrics=metrics, name_prfx='Portfolio', 
-                 initial_capital=1000000, commissions=None, equity_names=None):
+                 initial_capital=1000000, commissions=None, days_in_year=252):
         # df of equities (equities in columns) which of each has its own periods.
         # the periods will be aligned for equities in a portfolio. see self.build
         if isinstance(df_equity, pd.Series):
@@ -183,8 +224,9 @@ class BacktestManager():
         self.initial_capital = initial_capital
         # commissions of all equities across portfolios
         self.commissions = commissions  # unit %
-        self.equity_names = equity_names # names of all equities across portfolios
         self.run_results = None
+        self.days_in_year = days_in_year
+        _ = check_days_in_year(df_equity, days_in_year, freq='M')
 
 
     def align_period(self, df_equity, axis=0, dt_format='%Y-%m-%d',
@@ -320,20 +362,25 @@ class BacktestManager():
         return algo_select
         
 
-    def _get_algo_freq(self, freq='M'):
+    def _get_algo_freq(self, freq='M', offset=0, days_in_year=252):
         """
         freq: W, M, Q, Y
         """
         cond = lambda x, y: False if x is None else x[0].lower() == y[0].lower()
         if cond(freq, 'W'):
-            algo_freq = bt.algos.RunWeekly()
+            n = round(days_in_year / WEEKS_IN_YEAR)
         elif cond(freq, 'M'):
-            algo_freq = bt.algos.RunMonthly()
+            n = round(days_in_year / 12)
         elif cond(freq, 'Q'):
-            algo_freq = bt.algos.RunQuarterly()
+            n = round(days_in_year / 4)
         elif cond(freq, 'Y'):
-            algo_freq = bt.algos.RunYearly()
+            n = days_in_year
         else:  # default run once
+            n = -1
+
+        if n > 0:
+            algo_freq = bt.algos.RunEveryNPeriods(n, offset=offset)
+        else:
             print('RunOnce selected')
             algo_freq = bt.algos.RunOnce()
         return algo_freq
@@ -378,7 +425,8 @@ class BacktestManager():
         return algo_weigh
         
 
-    def build(self, name=None, freq='M',
+    def build(self, name=None, 
+              freq='M', offset=0,
               select='all', n_equities=0, lookback=0, lag=0,
               weigh='equally', weights=None, rf=0, bounds=(0.0, 1.0),
               initial_capital=None, commissions=None, 
@@ -400,7 +448,7 @@ class BacktestManager():
         weights = self._check_weights(weights, dfs)
         
         select = {'select':select, 'n_equities':n_equities, 'lookback':lookback, 'lag':lag}
-        freq = {'freq':freq}
+        freq = {'freq':freq, 'offset':offset, 'days_in_year':self.days_in_year}
         weigh = {'weigh':weigh, 'weights':weights, 'rf':rf, 'bounds':bounds,
                  'lookback':lookback, 'lag':lag}
 
@@ -702,7 +750,8 @@ class BacktestManager():
         return self.run_results.get_transactions(pf)
 
 
-    def util_import_data(self, symbol, name=None, align_axis=None, date_format='%Y-%m-%d'):
+    def util_import_data(self, symbol, col='Close', name=None, 
+                         align_axis=None, date_format='%Y-%m-%d'):
         """
         import historical of symbol by using FinanceDataReader.DataReader
         """
@@ -716,11 +765,11 @@ class BacktestManager():
         start = dfs.index[0].strftime(date_format)
         end = dfs.index[-1].strftime(date_format)
         try:
-            return (fdr.DataReader(symbol, start, end)
-                       .Close.rename(name))
+            df = fdr.DataReader(symbol, start, end)
+            return df[col].rename(name)
         except Exception as e:
             return print(f'ERROR: {e}')
-        
+
 
 
 class AssetEvaluator():
@@ -730,47 +779,11 @@ class AssetEvaluator():
         df_prices = df_prices.to_frame() if isinstance(df_prices, pd.Series) else df_prices
         if df_prices.index.name is None:
             df_prices.index.name = 'date' # set index name to run check_days_in_year
-        _ = self.check_days_in_year(df_prices, days_in_year, freq='M')
+        _ = check_days_in_year(df_prices, days_in_year, freq='M')
         
         self.df_prices = df_prices
         self.days_in_year = days_in_year
         self.bayesian_data = None
-        
-
-    def check_days_in_year(self, df, days_in_year, freq='M'):
-        """
-        freq: freq to check days_in_year in df
-        """
-        if freq == 'Y':
-            grp_format = '%Y'
-            #days_in_freq = days_in_year
-            factor = 1
-        elif freq == 'W':
-            grp_format = '%Y%m%U'
-            #days_in_freq = round(days_in_year/12/WEEKS_IN_YEAR)
-            factor = 12 * WEEKS_IN_YEAR
-        else: # default month
-            grp_format = '%Y%m'
-            #days_in_freq = round(days_in_year/12)
-            factor = 12
-
-        # calc mean days for each equity
-        days_freq_calc = (df.assign(gb=df.index.strftime(grp_format)).set_index('gb')
-                            .apply(lambda x: x.dropna().groupby('gb').count()[1:-1]
-                            .mean().round()))
-
-        cond = (days_freq_calc != round(days_in_year / factor))
-        if cond.sum() > 0:
-            days_in_year_new = days_freq_calc.loc[cond].mul(factor).round()
-            n = len(days_in_year_new)
-            if n < 5:
-                print(f'WARNING: the number of days in a year with followings is not {days_in_year} in setting:')
-                _ = [print(f'{k}: {int(v)}') for k,v in days_in_year_new.to_dict().items()]
-            else:
-                print(f'WARNING: the number of days in a year with {n} equities is not {days_in_year} in setting:')
-            return days_in_year_new
-        else:
-            return days_in_year
 
 
     def get_freq_days(self, freq='daily'):
