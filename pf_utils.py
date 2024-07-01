@@ -481,12 +481,12 @@ class BacktestManager():
             return print('ERROR: no strategy to backtest. build strategies first')
 
         if pf_list is None:
-            #bt_list = list(self.portfolios.values())
             bt_list = self.portfolios.values()
         else:
             c = [0 if isinstance(x, int) else 1 for x in pf_list]
             if sum(c) == 0: # pf_list is list of index
                 bt_list = [x for i, x in enumerate(self.portfolios.values()) if i in pf_list]
+                print(f'REMINDER: max index of reset set to {len(bt_list)-1}')
             else: # pf_list is list of names
                 bt_list = [v for k, v in self.portfolios.items() if k in pf_list]
 
@@ -500,11 +500,10 @@ class BacktestManager():
         if plot:
             results.plot(freq=freq, figsize=figsize)
 
-        return (stats, pf_list, metrics) # testing
-
         if stats:
             print('Returning stats')
-            return self.get_stats(pf_list=pf_list, metrics=metrics)
+            # pf_list not given as self.run_results recreated
+            return self.get_stats(metrics=metrics) 
         else:
             print('Returning backtest results')
             return results
@@ -552,18 +551,18 @@ class BacktestManager():
             
         metrics = self._check_var(metrics, self.metrics)
         if (metrics is None) or (metrics == 'all'):
-            df = results.stats[pf_list]
+            df_stats = results.stats[pf_list]
         else:
             metrics = ['start', 'end'] + metrics
-            df = results.stats.loc[metrics, pf_list]
+            df_stats = results.stats.loc[metrics, pf_list]
 
         if sort_by is not None:
             try:
-                df = df.sort_values(sort_by, axis=1, ascending=False)
+                df_stats = df_stats.sort_values(sort_by, axis=1, ascending=False)
             except KeyError as e:
                 print(f'WARNING: no sorting as {e}')
 
-        return df
+        return df_stats
 
 
     def _plot_portfolios(self, plot_func, pf_list, ncols=2, sharex=True, sharey=True, 
