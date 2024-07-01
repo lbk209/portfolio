@@ -1,6 +1,6 @@
 import pandas as pd
 import matplotlib.pyplot as plt
-
+import FinanceDataReader as fdr
 import arviz as az
 import numpy as np
 import pymc as pm
@@ -188,17 +188,18 @@ class BacktestManager():
 
 
     def align_period(self, df_equity, axis=0, dt_format='%Y-%m-%d',
-                     fill_na=True, print_msg=True, n_indent=2):
+                     fill_na=True, print_msg1=True, print_msg2=True, n_indent=2):
         """
         axis: 0 : Drop time index which contain missing prices.
               1 : Drop equity columns whose length is less than max from missing value.
         fill_na: set False to drop nan fields
         """
+        msg1 = None
         if axis == 0:
             df_aligned = get_date_range(df_equity, slice_input=True)
             if len(df_aligned) < len(df_equity):
                 dts = [x.strftime(dt_format) for x in (df_aligned.index.min(), df_aligned.index.max())]
-                print(f"period reset: {' ~ '.join(dts)}")
+                msg1 = f"period reset: {' ~ '.join(dts)}"
         elif axis == 1:
             c_all = df_equity.columns
             df_cnt = df_equity.apply(lambda x: x.dropna().count())
@@ -208,16 +209,18 @@ class BacktestManager():
             n_c = len(c_drop)
             if n_c > 0:
                 n_all = len(c_all)
-                print(f'{n_c} equities removed for shorter periods ({n_c/n_all*100:.1f}%)')
+                msg1 = f'{n_c} equities removed for shorter periods ({n_c/n_all*100:.1f}%)'
         else:
             pass
 
-        if print_msg:
-            stats = df_aligned.isna().sum().div(df.count())
-            t = 'filled forward' if fill_na else 'dropped'
-            print(f'ratio of nan {t}::')
-            indent = ' '*n_indent
-            _ = [print(f'{indent}{i}: {stats[i]:.3f}') for i in stats.index]
+        if print_msg1:
+            print(msg1) if msg1 is not None else None
+            if print_msg2:
+                stats = df_aligned.isna().sum().div(df.count())
+                t = 'filled forward' if fill_na else 'dropped'
+                print(f'ratio of nan {t}::')
+                indent = ' '*n_indent
+                _ = [print(f'{indent}{i}: {stats[i]:.3f}') for i in stats.index]
 
         if fill_na:
             return df_aligned.ffill()
@@ -275,7 +278,7 @@ class BacktestManager():
         kwargs: keyword args for bt.Backtest except commissions
         algos: List of Algos
         """
-        self._check_algos(select, freq, weigh)
+        _ = self._check_algos(select, freq, weigh)
         if algos is None:
             algos = [
                 self._get_algo_select(**select), 
@@ -393,7 +396,7 @@ class BacktestManager():
         initial_capital = self._check_var(initial_capital, self.initial_capital)
         commissions = self._check_var(commissions, self.commissions)
        
-        dfs = self.align_period(dfs, axis=align_axis, fill_na=fill_na, print_msg=False)
+        dfs = self.align_period(dfs, axis=align_axis, fill_na=fill_na, print_msg2=False)
         weights = self._check_weights(weights, dfs)
         
         select = {'select':select, 'n_equities':n_equities, 'lookback':lookback, 'lag':lag}
@@ -418,33 +421,42 @@ class BacktestManager():
                           weights=weights, **kwargs)
 
 
-    def benchmark(self, dfs, name='BM', weights=None, 
+    def benchmark(self, dfs, name=None, weights=None, 
                   initial_capital=None, commissions=None, 
                   align_axis=None, fill_na=True):
         """
         dfs: str or list of str if dfs in self.df_equity or historical of tickers
         """
-        df_equity = self.df_equity
         align_axis = self._check_var(align_axis, self.align_axis)
+        df_equity = self.align_period(self.df_equity, axis=align_axis, fill_na=fill_na, print_msg1=False)
         
         if isinstance(dfs, str):
             dfs = [dfs]
 
-        if isinstance(dfs, list):
-            if pd.Index(dfs).isin(self.df_equity.columns).sum() != len(dfs):
+        if isinstance(dfs, list): # dfs is list of columns in self.df_equity
+            if pd.Index(dfs).isin(df_equity.columns).sum() != len(dfs):
                 return print('ERROR: check arg dfs')
             else:
                 dfs = df_equity[dfs]
         else:
-            dfs = dfs.loc[self.df_equity.index]
-            
+            dfs = dfs.loc[df_equity.index.min():df_equity.index.max()]
+
         if isinstance(dfs, pd.Series):
             if dfs.name is None:
-                dfs = dfs.to_frame(name)
+                if name is None:
+                    return print('ERROR')
+                else:
+                    dfs = dfs.to_frame(name)
             else:
+                if name is None:
+                    name = dfs.name
                 dfs = dfs.to_frame()
+        else:
+            if name is None:
+                name = list(dfs.columns)[0]
+                print(f'WARNING: name set to {name}')
         
-        dfs = self.align_period(dfs, axis=align_axis, fill_na=fill_na, print_msg=False)
+        dfs = self.align_period(dfs, axis=align_axis, fill_na=fill_na, print_msg2=False)
         weights = self._check_weights(weights, dfs)
         weigh = {'weigh':'specified', 'weights':weights}
         initial_capital = self._check_var(initial_capital, self.initial_capital)
@@ -649,6 +661,13 @@ class BacktestManager():
         return self._retrieve_results(pf_list, func_result)
 
 
+    def plot(self, freq='D', figsize=None):
+        if self.run_results is None:
+            return print('ERROR: run backtest first')
+        else:
+            return self.run_results.plot(freq=freq, figsize=figsize)
+
+
     def get_turnover(self, pf_list=None, drop_zero=True):
         """
         Calculate the turnover for the backtest
@@ -681,6 +700,26 @@ class BacktestManager():
             pf = pf_list[0]
             
         return self.run_results.get_transactions(pf)
+
+
+    def util_import_data(self, symbol, name=None, align_axis=None, date_format='%Y-%m-%d'):
+        """
+        import historical of symbol by using FinanceDataReader.DataReader
+        """
+        if name is None:
+            name = symbol
+
+        df_equity = self.df_equity
+        align_axis = self._check_var(align_axis, self.align_axis)
+        dfs = self.align_period(df_equity, axis=align_axis, print_msg1=False)
+        
+        start = dfs.index[0].strftime(date_format)
+        end = dfs.index[-1].strftime(date_format)
+        try:
+            return (fdr.DataReader(symbol, start, end)
+                       .Close.rename(name))
+        except Exception as e:
+            return print(f'ERROR: {e}')
         
 
 
