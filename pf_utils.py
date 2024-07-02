@@ -517,7 +517,7 @@ class BacktestManager():
         return None
 
 
-    def build_batch(self, kwa_list, reset_portfolios=False, **kwargs):
+    def build_batch(self, *kwa_list, reset_portfolios=False, **kwargs):
         """
         kwa_list: list of k/w args for each backtest
         kwargs: k/w args common for all backtest
@@ -729,7 +729,7 @@ class BacktestManager():
         return df
 
     
-    def get_security_weights(self, pf=0, transaction_only=True):
+    def get_security_weights(self, pf=0, transaction_only=True, stack=False):
         pf_list  = self.check_portfolios(pf, run=True, convert_index=True)
         if pf_list is None:
             return None
@@ -743,6 +743,10 @@ class BacktestManager():
             print(f'{pf}: weights at transactions returned')
         else:
             print(f'{pf}: weights returned')
+
+        if stack: # convert to mutiindex of date and tickers allocated
+            df_w = df_w.stack()
+            df_w = df_w.loc[df_w > 0]
         return df_w
         
 
@@ -778,7 +782,7 @@ class BacktestManager():
             return print(f'ERROR: {e}')
 
     
-    def util_check_days_in_year(df=None, days_in_year=None, freq='M', n_thr=10):
+    def util_check_days_in_year(self, df=None, days_in_year=None, freq='M', n_thr=10):
         df = self._check_var(df, self.df_equity)
         days_in_year = self._check_var(days_in_year, self.days_in_year)
         return check_days_in_year(df, days_in_year=days_in_year, freq=freq, n_thr=n_thr)
