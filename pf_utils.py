@@ -205,6 +205,7 @@ def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10):
     return df_days
 
 
+
 class BacktestManager():
     def __init__(self, df_equity, name_prfx='Portfolio',
                  align_axis=0, fill_na=True, metrics=metrics,  
@@ -568,6 +569,28 @@ class BacktestManager():
             print('Returning backtest results')
             return results
 
+
+    def cross_validate(self, lag=None, n_sample=10, sampling='random', cv_name='CV', **kwargs_build):
+        lag = self._check_var(lag, self.days_in_year)
+        if lag <= n_sample:
+            n_sample = lag
+            print(f'WARNING: n_sample set to lag {lag}')
+            
+        if sampling == 'random':
+            offset_list = np.random.randint(lag, size=n_sample)
+        else:
+            offset_list = range(0, lag+1, round(lag/n_sample))
+            
+        keys = ['name', 'offset']
+        kwa_list = [dict(zip(keys, [f'{cv_name}: offset {x}', x])) for x in offset_list]
+        kwargs_build = {k:v for k,v in kwargs_build.items() if k not in keys}
+        self.build_batch(*kwa_list, **kwargs_build)
+        
+        pf_list = [x['name'] for x in kwa_list]
+        stats = self.run(pf_list, plot=False, stats=True)
+        idx = stats.index.difference(['start', 'end'])
+        return stats.loc[idx].agg(['mean', 'std', 'min', 'max'], axis=1)
+        
 
     def check_portfolios(self, pf_list=None, run=True, convert_index=True):
         """
