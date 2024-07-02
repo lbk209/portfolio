@@ -170,7 +170,7 @@ def valuate_bond(face, rate, year, ytm, n_pay=1):
     return vc + face/(1+r_discount)**(year*n_pay)
 
 
-def check_days_in_year(df, days_in_year=252, freq='M'):
+def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10):
     """
     freq: unit to check days_in_year in df
     """
@@ -188,35 +188,40 @@ def check_days_in_year(df, days_in_year=252, freq='M'):
         factor = 12
 
     # calc mean days for each equity
-    days_freq_calc = (df.assign(gb=df.index.strftime(grp_format)).set_index('gb')
-                        .apply(lambda x: x.dropna().groupby('gb').count()[1:-1]
-                        .mean().round()))
+    df_days = (df.assign(gb=df.index.strftime(grp_format)).set_index('gb')
+                 .apply(lambda x: x.dropna().groupby('gb').count()[1:-1]
+                 .mul(factor).mean().round()))
 
-    cond = (days_freq_calc != round(days_in_year / factor))
+    cond = (df_days != days_in_year)
     if cond.sum() > 0:
-        df_days = days_freq_calc.loc[cond].mul(factor).round()
-        n = len(df_days)
-        if n < 5:
+        df = df_days.loc[cond]
+        n = len(df)
+        if n < n_thr:
             print(f'WARNING: the number of days in a year with followings is not {days_in_year} in setting:')
-            _ = [print(f'{k}: {int(v)}') for k,v in df_days.to_dict().items()]
+            _ = [print(f'{k}: {int(v)}') for k,v in df.to_dict().items()]
         else:
             print(f'WARNING: the number of days in a year with {n} equities is not {days_in_year} in setting:')
-        return df_days
-    else:
-        return None
-
+    
+    return df_days
 
 
 class BacktestManager():
-    def __init__(self, df_equity, align_axis=0, metrics=metrics, name_prfx='Portfolio', 
+    def __init__(self, df_equity, name_prfx='Portfolio',
+                 align_axis=0, fill_na=True, metrics=metrics,  
                  initial_capital=1000000, commissions=None, days_in_year=252):
+        """
+        align_axis: how to set time periods intersection with equities
+        fill_na: fill forward na in df_equity if True, drop na if False 
+        """
         # df of equities (equities in columns) which of each has its own periods.
         # the periods will be aligned for equities in a portfolio. see self.build
         if isinstance(df_equity, pd.Series):
             return print('ERROR: df_equity must be Dataframe')
+        
+        df_equity = self.align_period(df_equity, axis=align_axis, fill_na=fill_na, print_msg2=False)
+        _ = check_days_in_year(df_equity, days_in_year, freq='M')
 
         self.df_equity = df_equity
-        self.align_axis = align_axis # how to set time periods intersection with equities
         self.portfolios = dict() # dict of bt.backtest.Backtest
         self.metrics = metrics
         self.name_prfx = name_prfx
@@ -225,9 +230,11 @@ class BacktestManager():
         # commissions of all equities across portfolios
         self.commissions = commissions  # unit %
         self.run_results = None
-        self.days_in_year = days_in_year
-        _ = check_days_in_year(df_equity, days_in_year, freq='M')
-
+        self.days_in_year = days_in_year # only for self._get_algo_freq
+        # saving to apply the same rule in benchmark data
+        self.align_axis = align_axis
+        self.fill_na = fill_na
+        
 
     def align_period(self, df_equity, axis=0, dt_format='%Y-%m-%d',
                      fill_na=True, print_msg1=True, print_msg2=True, n_indent=2):
@@ -269,7 +276,7 @@ class BacktestManager():
         else:
             return df_aligned.dropna()
 
-    
+
     def _check_name(self, name=None):
         if name is None:
             self.n_names += 1
@@ -429,8 +436,7 @@ class BacktestManager():
               freq='M', offset=0,
               select='all', n_equities=0, lookback=0, lag=0,
               weigh='equally', weights=None, rf=0, bounds=(0.0, 1.0),
-              initial_capital=None, commissions=None, 
-              align_axis=None, fill_na=True, algos=None):
+              initial_capital=None, commissions=None, algos=None):
         """
         make backtest of a strategy
         lookback: month
@@ -439,13 +445,10 @@ class BacktestManager():
         algos: set List of Algos to build backtest directly
         """
         dfs = self.df_equity
+        weights = self._check_weights(weights, dfs)
         name = self._check_name(name)
-        align_axis = self._check_var(align_axis, self.align_axis)
         initial_capital = self._check_var(initial_capital, self.initial_capital)
         commissions = self._check_var(commissions, self.commissions)
-       
-        dfs = self.align_period(dfs, axis=align_axis, fill_na=fill_na, print_msg2=False)
-        weights = self._check_weights(weights, dfs)
         
         select = {'select':select, 'n_equities':n_equities, 'lookback':lookback, 'lag':lag}
         freq = {'freq':freq, 'offset':offset, 'days_in_year':self.days_in_year}
@@ -462,21 +465,18 @@ class BacktestManager():
     def buy_n_hold(self, name=None, weights=None, **kwargs):
         """
         weights: dict of ticker to weight. str if one equity portfolio
-        kwargs: set initial_capital, commissions, align_axis or fill_na 
-                to use different onces with other strategies
+        kwargs: set initial_capital or commissions to use different onces with other strategies
         """
         return self.build(name=name, freq=None, select='all', weigh='specified',
                           weights=weights, **kwargs)
 
 
     def benchmark(self, dfs, name=None, weights=None, 
-                  initial_capital=None, commissions=None, 
-                  align_axis=None, fill_na=True):
+                  initial_capital=None, commissions=None):
         """
         dfs: str or list of str if dfs in self.df_equity or historical of tickers
         """
-        align_axis = self._check_var(align_axis, self.align_axis)
-        df_equity = self.align_period(self.df_equity, axis=align_axis, fill_na=fill_na, print_msg1=False)
+        df_equity = self.df_equity
         
         if isinstance(dfs, str):
             dfs = [dfs]
@@ -504,7 +504,7 @@ class BacktestManager():
                 name = list(dfs.columns)[0]
                 print(f'WARNING: name set to {name}')
         
-        dfs = self.align_period(dfs, axis=align_axis, fill_na=fill_na, print_msg2=False)
+        dfs = self.align_period(dfs, axis=self.align_axis, fill_na=self.fill_na, print_msg2=False)
         weights = self._check_weights(weights, dfs)
         weigh = {'weigh':'specified', 'weights':weights}
         initial_capital = self._check_var(initial_capital, self.initial_capital)
@@ -645,7 +645,8 @@ class BacktestManager():
         for i in range(nrows):
             for j in range(ncols):
                 ax = axes[i][j]
-                _ = plot_func(pf_list[k], ax=ax, legend=legend, figsize=figsize)
+                _ = plot_func(pf_list[k], title=pf_list[k], 
+                              ax=ax, legend=legend, figsize=figsize)
                 k += 1
                 if k == n:
                     finished = True
@@ -728,16 +729,24 @@ class BacktestManager():
         return df
 
     
-    def get_security_weights(self, pf=0):
+    def get_security_weights(self, pf=0, transaction_only=True):
         pf_list  = self.check_portfolios(pf, run=True, convert_index=True)
         if pf_list is None:
             return None
         else:
             pf = pf_list[0]
-        return self.run_results.get_security_weights(pf)
+            
+        df_w = self.run_results.get_security_weights(pf)
+        if transaction_only:
+            dts = self.get_transactions(pf, msg=False).index.get_level_values(0).unique()
+            df_w = df_w.loc[dts]
+            print(f'{pf}: weights at transactions returned')
+        else:
+            print(f'{pf}: weights returned')
+        return df_w
         
 
-    def get_transactions(self, pf=0):
+    def get_transactions(self, pf=0, msg=True):
         if isinstance(pf, list):
             return print('WARNING: set one portfolio')
             
@@ -746,12 +755,12 @@ class BacktestManager():
             return None
         else:
             pf = pf_list[0]
-            
+
+        print(f'{pf}: transactions returned') if msg else None
         return self.run_results.get_transactions(pf)
 
 
-    def util_import_data(self, symbol, col='Close', name=None, 
-                         align_axis=None, date_format='%Y-%m-%d'):
+    def util_import_data(self, symbol, col='Close', name=None, date_format='%Y-%m-%d'):
         """
         import historical of symbol by using FinanceDataReader.DataReader
         """
@@ -759,17 +768,21 @@ class BacktestManager():
             name = symbol
 
         df_equity = self.df_equity
-        align_axis = self._check_var(align_axis, self.align_axis)
-        dfs = self.align_period(df_equity, axis=align_axis, print_msg1=False)
+        start = df_equity.index[0].strftime(date_format)
+        end = df_equity.index[-1].strftime(date_format)
         
-        start = dfs.index[0].strftime(date_format)
-        end = dfs.index[-1].strftime(date_format)
         try:
             df = fdr.DataReader(symbol, start, end)
             return df[col].rename(name)
         except Exception as e:
             return print(f'ERROR: {e}')
 
+    
+    def util_check_days_in_year(df=None, days_in_year=None, freq='M', n_thr=10):
+        df = self._check_var(df, self.df_equity)
+        days_in_year = self._check_var(days_in_year, self.days_in_year)
+        return check_days_in_year(df, days_in_year=days_in_year, freq=freq, n_thr=n_thr)
+    
 
 
 class AssetEvaluator():
@@ -810,7 +823,7 @@ class AssetEvaluator():
         df_prices = self._check_var(df_prices, self.df_prices)
         days_in_year = self._check_var(days_in_year, self.days_in_year)
         if align_period:
-            df_prices = self.align_period(df_prices, fill_na=True)
+            df_prices = self.align_period(df_prices, axis=0, fill_na=True)
         return df_prices.apply(lambda x: self._calc_cagr(x, days_in_year))
 
 
@@ -862,7 +875,7 @@ class AssetEvaluator():
     def summary(self, freq='yearly', annualize=True, rf=0, align_period=False):
         df_prices = self.df_prices
         if align_period:
-            df_prices = self.align_period(df_prices, fill_na=True)
+            df_prices = self.align_period(df_prices, axis=0, fill_na=True)
 
         _, freq = self.get_freq_days(freq) # check freq for naming
         kwargs = dict(
@@ -898,7 +911,7 @@ class AssetEvaluator():
         assets = list(df_prices.columns)
         
         if align_period:
-            df_prices = self.align_period(df_prices, fill_na=True)
+            df_prices = self.align_period(df_prices, axis=0, fill_na=True)
             df_ret = df_prices.pct_change(periods).dropna() * factor_year
             mean_prior = df_ret.mean()
             std_prior = df_ret.std()
@@ -999,5 +1012,5 @@ class AssetEvaluator():
             return az.plot_energy(trace, **kwargs)
 
 
-    def align_period(self, df, fill_na=True):
-        return Backtest(pd.Series()).align_period(df, fill_na=fill_na)
+    def align_period(self, df, axis=0, fill_na=True, **kwargs):
+        return Backtest(pd.Series()).align_period(df, axis=0, fill_na=fill_na, **kwargs)
