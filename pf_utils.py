@@ -187,7 +187,7 @@ def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10):
         #days_in_freq = round(days_in_year/12)
         factor = 12
 
-    # calc mean days for each equity
+    # calc mean days for each asset
     df_days = (df.assign(gb=df.index.strftime(grp_format)).set_index('gb')
                  .apply(lambda x: x.dropna().groupby('gb').count()[1:-1]
                  .mul(factor).mean().round()))
@@ -200,67 +200,95 @@ def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10):
             print(f'WARNING: the number of days in a year with followings is not {days_in_year} in setting:')
             _ = [print(f'{k}: {int(v)}') for k,v in df.to_dict().items()]
         else:
-            print(f'WARNING: the number of days in a year with {n} equities is not {days_in_year} in setting:')
+            print(f'WARNING: the number of days in a year with {n} assets is not {days_in_year} in setting:')
     
     return df_days
 
 
 
-class BacktestManager():
-    def __init__(self, df_equity, name_prfx='Portfolio',
-                 align_axis=0, fill_na=True, metrics=metrics,  
-                 initial_capital=1000000, commissions=None, days_in_year=252):
-        """
-        align_axis: how to set time periods intersection with equities
-        fill_na: fill forward na in df_equity if True, drop na if False 
-        """
-        # df of equities (equities in columns) which of each has its own periods.
-        # the periods will be aligned for equities in a portfolio. see self.build
-        if isinstance(df_equity, pd.Series):
-            return print('ERROR: df_equity must be Dataframe')
-        
-        df_equity = self.align_period(df_equity, axis=align_axis, fill_na=fill_na, print_msg2=False)
-        _ = check_days_in_year(df_equity, days_in_year, freq='M')
+class AssetDict(dict):
+    def __init__(self, *args, names=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.names = names
 
-        self.df_equity = df_equity
-        self.portfolios = dict() # dict of bt.backtest.Backtest
+    def __repr__(self):
+        output = ""
+        for i, key in enumerate(self.keys()):
+            name = self.get_name(key)
+            if name is None:
+                output += f"{i}) {key}\n"
+            else:
+                output += f"{i}) {key}: {name}\n"
+        return output
+
+    def get_name(self, key):
+        if self.names is None:
+            return None
+        else:
+            try:
+                return self.names[key]
+            except KeyError:
+                return None
+        
+
+class BacktestManager():
+    def __init__(self, df_assets, name_prfx='Portfolio',
+                 align_axis=0, fill_na=True, metrics=metrics,  
+                 initial_capital=1000000, commissions=None, 
+                 days_in_year=252, asset_names=None):
+        """
+        align_axis: how to set time periods intersection with assets
+        fill_na: fill forward na in df_assets if True, drop na if False 
+        """
+        # df of assets (assets in columns) which of each has its own periods.
+        # the periods will be aligned for assets in a portfolio. see self.build
+        if isinstance(df_assets, pd.Series):
+            return print('ERROR: df_assets must be Dataframe')
+        
+        df_assets = self.align_period(df_assets, axis=align_axis, fill_na=fill_na, print_msg2=False)
+        _ = check_days_in_year(df_assets, days_in_year, freq='M')
+
+        self.df_assets = df_assets
+        self.portfolios = AssetDict(names=asset_names) # dict of bt.backtest.Backtest
+        self.cv_strategies = AssetDict(names=asset_names) # dict of args of strategies to cross-validate
         self.metrics = metrics
         self.name_prfx = name_prfx
         self.n_names = 0 # see self._check_name
         self.initial_capital = initial_capital
-        # commissions of all equities across portfolios
+        # commissions of all assets across portfolios
         self.commissions = commissions  # unit %
         self.run_results = None
         self.days_in_year = days_in_year # only for self._get_algo_freq
         # saving to apply the same rule in benchmark data
         self.align_axis = align_axis
         self.fill_na = fill_na
-        self.cv_strategies = dict() # dict of args of strategies to cross-validate
+        self.asset_names = asset_names
+        self.print_algos_msg = True # control msg print in self._get_algo_*
         
 
-    def align_period(self, df_equity, axis=0, dt_format='%Y-%m-%d',
+    def align_period(self, df_assets, axis=0, dt_format='%Y-%m-%d',
                      fill_na=True, print_msg1=True, print_msg2=True, n_indent=2):
         """
         axis: 0 : Drop time index which contain missing prices.
-              1 : Drop equity columns whose length is less than max from missing value.
+              1 : Drop asset columns whose length is less than max from missing value.
         fill_na: set False to drop nan fields
         """
         msg1 = None
         if axis == 0:
-            df_aligned = get_date_range(df_equity, slice_input=True)
-            if len(df_aligned) < len(df_equity):
+            df_aligned = get_date_range(df_assets, slice_input=True)
+            if len(df_aligned) < len(df_assets):
                 dts = [x.strftime(dt_format) for x in (df_aligned.index.min(), df_aligned.index.max())]
                 msg1 = f"period reset: {' ~ '.join(dts)}"
         elif axis == 1:
-            c_all = df_equity.columns
-            df_cnt = df_equity.apply(lambda x: x.dropna().count())
+            c_all = df_assets.columns
+            df_cnt = df_assets.apply(lambda x: x.dropna().count())
             cond = (df_cnt < df_cnt.max())
             c_drop = c_all[cond]
-            df_aligned = df_equity[c_all.difference(c_drop)]
+            df_aligned = df_assets[c_all.difference(c_drop)]
             n_c = len(c_drop)
             if n_c > 0:
                 n_all = len(c_all)
-                msg1 = f'{n_c} equities removed for shorter periods ({n_c/n_all*100:.1f}%)'
+                msg1 = f'{n_c} assets removed for shorter periods ({n_c/n_all*100:.1f}%)'
         else:
             pass
 
@@ -343,29 +371,29 @@ class BacktestManager():
         return bt.Backtest(strategy, dfs, commissions=c, **kwargs)
 
 
-    def _get_algo_select(self, select='all', n_equities=0, lookback=0, lag=0):
+    def _get_algo_select(self, select='all', n_assets=0, lookback=0, lag=0):
         """
         select: all, momentum, kratio, randomly
         """
         cond = lambda x,y: False if x is None else x.lower() == y.lower()
         
         if cond(select, 'Momentum'):
-            algo_select = bt.algos.SelectMomentum(n=n_equities, lookback=pd.DateOffset(months=lookback),
+            algo_select = bt.algos.SelectMomentum(n=n_assets, lookback=pd.DateOffset(months=lookback),
                                                   lag=pd.DateOffset(days=lag))
             # SelectAll() or similar should be called before SelectMomentum(), 
             # as StatTotalReturn uses values of temp[‘selected’]
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'k-ratio'):
-            algo_select = SelectKRatio(n=n_equities, lookback=pd.DateOffset(months=lookback),
+            algo_select = SelectKRatio(n=n_assets, lookback=pd.DateOffset(months=lookback),
                                        lag=pd.DateOffset(days=lag))
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'randomly'):
-            algo_select = bt.algos.SelectRandomly(n=n_equities)
+            algo_select = bt.algos.SelectRandomly(n=n_assets)
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'all'):
             algo_select = bt.algos.SelectAll()
         else:
-            print('SelectAll selected')
+            print('SelectAll selected') if self.print_algos_msg else None
             algo_select = bt.algos.SelectAll()
             
         return algo_select
@@ -390,7 +418,7 @@ class BacktestManager():
         if n > 0:
             algo_freq = bt.algos.RunEveryNPeriods(n, offset=offset)
         else:
-            print('RunOnce selected')
+            print('RunOnce selected') if self.print_algos_msg else None
             algo_freq = bt.algos.RunOnce()
         return algo_freq
 
@@ -425,10 +453,12 @@ class BacktestManager():
             algo_weigh = bt.algos.WeighMeanVar(lookback=pd.DateOffset(months=lookback), 
                                               lag=pd.DateOffset(days=lag),
                                               rf=rf, bounds=bounds)
+            algo_weigh = bt.AlgoStack(bt.algos.SelectHasData(lookback=pd.DateOffset(months=lookback)), 
+                                      algo_weigh)
         elif cond(weigh, 'equally'):
             algo_weigh = bt.algos.WeighEqually()
         else:
-            print('WeighEqually selected')
+            print('WeighEqually selected') if self.print_algos_msg else None
             algo_weigh = bt.algos.WeighEqually()
             
         return algo_weigh
@@ -436,30 +466,33 @@ class BacktestManager():
 
     def build(self, name=None, 
               freq='M', offset=0,
-              select='all', n_equities=0, lookback=0, lag=0,
+              select='all', n_assets=0, lookback=0, lag=0,
               weigh='equally', weights=None, rf=0, bounds=(0.0, 1.0),
               initial_capital=None, commissions=None, algos=None, run_cv=False):
         """
         make backtest of a strategy
         lookback: month
         lag: day
-        commissions: %; same for all equities
+        commissions: %; same for all assets
         algos: set List of Algos to build backtest directly
         run_cv: flag to cross-validate
         """
-        dfs = self.df_equity
+        dfs = self.df_assets
         weights = self._check_weights(weights, dfs)
         name = self._check_name(name)
         initial_capital = self._check_var(initial_capital, self.initial_capital)
         commissions = self._check_var(commissions, self.commissions)
 
         # build args for self._get_algo_* from build args
-        select = {'select':select, 'n_equities':n_equities, 'lookback':lookback, 'lag':lag}
+        select = {'select':select, 'n_assets':n_assets, 'lookback':lookback, 'lag':lag}
         freq = {'freq':freq} # offset being saved when running backtest
         weigh = {'weigh':weigh, 'weights':weights, 'rf':rf, 'bounds':bounds,
                  'lookback':lookback, 'lag':lag}
         
-        if not run_cv: # no saving when run cross-validation
+        if run_cv:
+            self.print_algos_msg = False
+        else:
+            self.print_algos_msg = True
             self.cv_strategies[name] = {
                 # convert args for self.build_batch in self._cross_validate_strategy
                 **select, **freq, **weigh, 'algos':None,
@@ -476,7 +509,7 @@ class BacktestManager():
 
     def buy_n_hold(self, name=None, weights=None, **kwargs):
         """
-        weights: dict of ticker to weight. str if one equity portfolio
+        weights: dict of ticker to weight. str if one asset portfolio
         kwargs: set initial_capital or commissions
         """
         return self.build(name=name, freq=None, select='all', weigh='specified',
@@ -486,21 +519,21 @@ class BacktestManager():
     def benchmark(self, dfs, name=None, weights=None, 
                   initial_capital=None, commissions=None):
         """
-        dfs: str or list of str if dfs in self.df_equity or historical of tickers
+        dfs: str or list of str if dfs in self.df_assets or historical of tickers
         no cv possible with benchmark
         """
-        df_equity = self.df_equity
+        df_assets = self.df_assets
         
         if isinstance(dfs, str):
             dfs = [dfs]
 
-        if isinstance(dfs, list): # dfs is list of columns in self.df_equity
-            if pd.Index(dfs).isin(df_equity.columns).sum() != len(dfs):
+        if isinstance(dfs, list): # dfs is list of columns in self.df_assets
+            if pd.Index(dfs).isin(df_assets.columns).sum() != len(dfs):
                 return print('ERROR: check arg dfs')
             else:
-                dfs = df_equity[dfs]
+                dfs = df_assets[dfs]
         else:
-            dfs = dfs.loc[df_equity.index.min():df_equity.index.max()]
+            dfs = dfs.loc[df_assets.index.min():df_assets.index.max()]
 
         if isinstance(dfs, pd.Series):
             if dfs.name is None:
@@ -537,7 +570,7 @@ class BacktestManager():
         run_cv: set to True when runing self.cross_validate
         """
         if reset_portfolios:
-            self.portfolios = {}
+            self.portfolios = AssetDict(names=self.asset_names)
         else:
             #return print('WARNING: set reset_portfolios to True to run')
             pass
@@ -553,12 +586,7 @@ class BacktestManager():
         """
         # convert pf_list for printing msg purpose
         pf_list = self.check_portfolios(pf_list, run_results=None, convert_index=True, run_cv=False)
-        n = len(pf_list)
-        if n > 5:
-            pf_str = f"{', '.join(pf_list[:2])}, ... , {pf_list[-1]}"
-        else:
-            pf_str = ', '.join(pf_list)
-        print(f"Backtesting {n} strategies: {pf_str}")
+        self._print_strategies(pf_list, n_max=5, work='Backtesting')
         
         run_results = self._run(pf_list)
         if run_results is None:
@@ -598,8 +626,17 @@ class BacktestManager():
             return print(f'ERROR: {e}')
 
 
+    def _print_strategies(self, pf_list, n_max=5, work='Backtesting'):
+        n = len(pf_list)
+        if n > n_max:
+            pf_str = f"{', '.join(pf_list[:2])}, ... , {pf_list[-1]}"
+        else:
+            pf_str = ', '.join(pf_list)
+        print(f"{work} {n} strategies: {pf_str}")
+
+
     def cross_validate(self, pf_list=None, lag=None, n_sample=10, sampling='random',
-                       metrics=metrics, simplify=True):
+                       metrics=metrics, simplify=True, remove_portfolios=True):
         """
         pf_list: str, index, list of str or list of index
         simplify: result format mean ± std if True, dict of cv if False 
@@ -607,12 +644,12 @@ class BacktestManager():
         if len(self.cv_strategies) == 0:
             return print('ERROR: no strategy to evaluate')
         else:
-            n_given = len(pf_list)
+            n_given = 0 if pf_list is None else len(pf_list)
             pf_list = self.check_portfolios(pf_list, run_results=None, convert_index=True, run_cv=True)
-            if len(pf_list) != n_given:
+            if (n_given > 0) and len(pf_list) != n_given:
                 return print('ERROR: run after checking pf_list')
             else:
-                print(f"Cross-validation: {', '.join(pf_list)}")
+                self._print_strategies(pf_list, n_max=5, work='Cross-validating')
             
         metrics = self._check_var(metrics, self.metrics)
         
@@ -630,6 +667,11 @@ class BacktestManager():
         for name in pf_list:
             kwargs_build = self.cv_strategies[name]
             result[name] = self._cross_validate_strategy(name, offset_list, **kwargs_build)
+        
+        if remove_portfolios:
+            remove = [k for k in self.portfolios.keys() for name in pf_list if k.startswith(f'CV[{name}]')]
+            remain = {k: v for k, v in self.portfolios.items() if k not in remove}
+            self.portfolios = AssetDict(remain)
 
         if simplify:
             df_cv = None
@@ -646,7 +688,7 @@ class BacktestManager():
         
     def _cross_validate_strategy(self, name, offset_list, metrics=None, **kwargs_build):
         keys = ['name', 'offset']
-        kwa_list = [dict(zip(keys, [f'CV[{name}: offset {x}]', x])) for x in offset_list]
+        kwa_list = [dict(zip(keys, [f'CV[{name}]: offset {x}', x])) for x in offset_list]
         kwargs_build = {k:v for k,v in kwargs_build.items() if k not in keys}
         # no saving param study in cv_strategies by setting run_cv to True
         self.build_batch(*kwa_list, run_cv=True, **kwargs_build)
@@ -870,9 +912,9 @@ class BacktestManager():
         if name is None:
             name = symbol
 
-        df_equity = self.df_equity
-        start = df_equity.index[0].strftime(date_format)
-        end = df_equity.index[-1].strftime(date_format)
+        df_assets = self.df_assets
+        start = df_assets.index[0].strftime(date_format)
+        end = df_assets.index[-1].strftime(date_format)
         
         try:
             df = fdr.DataReader(symbol, start, end)
@@ -882,16 +924,16 @@ class BacktestManager():
 
     
     def util_check_days_in_year(self, df=None, days_in_year=None, freq='M', n_thr=10):
-        df = self._check_var(df, self.df_equity)
+        df = self._check_var(df, self.df_assets)
         days_in_year = self._check_var(days_in_year, self.days_in_year)
         return check_days_in_year(df, days_in_year=days_in_year, freq=freq, n_thr=n_thr)
-    
+
 
 
 class AssetEvaluator():
     def __init__(self, df_prices, days_in_year=252):
-        # df of equities (equities in columns) which of each might have its own periods.
-        # the periods of all equities will be aligned in every calculation.
+        # df of assets (assets in columns) which of each might have its own periods.
+        # the periods of all assets will be aligned in every calculation.
         df_prices = df_prices.to_frame() if isinstance(df_prices, pd.Series) else df_prices
         if df_prices.index.name is None:
             df_prices.index.name = 'date' # set index name to run check_days_in_year
@@ -922,7 +964,7 @@ class AssetEvaluator():
 
 
     def calc_cagr(self, df_prices=None, days_in_year=None, align_period=False):
-        # calc cagr's of equities
+        # calc cagr's of assets
         df_prices = self._check_var(df_prices, self.df_prices)
         days_in_year = self._check_var(days_in_year, self.days_in_year)
         if align_period:
@@ -931,7 +973,7 @@ class AssetEvaluator():
 
 
     def _calc_cagr(self, sr_prices, days_in_year):
-        # calc cagr of a equity
+        # calc cagr of a asset
         sr = sr_prices.ffill().dropna()
         t = days_in_year / len(sr)
         return (sr.iloc[-1]/sr.iloc[0]) ** t - 1
