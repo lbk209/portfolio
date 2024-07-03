@@ -235,6 +235,7 @@ class BacktestManager():
         # saving to apply the same rule in benchmark data
         self.align_axis = align_axis
         self.fill_na = fill_na
+        self.cv_strategies = dict() # dict of args of strategies to cross-validate
         
 
     def align_period(self, df_equity, axis=0, dt_format='%Y-%m-%d',
@@ -437,45 +438,57 @@ class BacktestManager():
               freq='M', offset=0,
               select='all', n_equities=0, lookback=0, lag=0,
               weigh='equally', weights=None, rf=0, bounds=(0.0, 1.0),
-              initial_capital=None, commissions=None, algos=None):
+              initial_capital=None, commissions=None, algos=None, cv=False):
         """
         make backtest of a strategy
         lookback: month
         lag: day
         commissions: %; same for all equities
         algos: set List of Algos to build backtest directly
+        cv: flag to cross-validate
         """
         dfs = self.df_equity
         weights = self._check_weights(weights, dfs)
         name = self._check_name(name)
         initial_capital = self._check_var(initial_capital, self.initial_capital)
         commissions = self._check_var(commissions, self.commissions)
-        
+
+        # build args for self._get_algo_* from build args
         select = {'select':select, 'n_equities':n_equities, 'lookback':lookback, 'lag':lag}
-        freq = {'freq':freq, 'offset':offset, 'days_in_year':self.days_in_year}
+        freq = {'freq':freq, 'offset':offset}
         weigh = {'weigh':weigh, 'weights':weights, 'rf':rf, 'bounds':bounds,
                  'lookback':lookback, 'lag':lag}
-
-        self.portfolios[name] = self.backtest(dfs, name=name, 
-                                              select=select, freq=freq, weigh=weigh, algos=algos,
-                                              initial_capital=initial_capital, 
-                                              commissions=commissions)
+ 
+        if cv:
+            freq.pop('offset', None)
+            self.cv_strategies[name] = {
+                # convert args for self.build_batch in self._cross_validate_strategy
+                **select, **freq, **weigh, 'algos':None,
+                'initial_capital':initial_capital, 'commissions':commissions
+            }
+        else:
+            freq.update({'days_in_year':self.days_in_year})
+            kwargs = {'select':select, 'freq':freq, 'weigh':weigh, 'algos':algos,
+                      'initial_capital':initial_capital, 'commissions':commissions}
+            self.portfolios[name] = self.backtest(dfs, name=name, **kwargs)
+        
         return None
     
     
-    def buy_n_hold(self, name=None, weights=None, **kwargs):
+    def buy_n_hold(self, name=None, weights=None, cv=False, **kwargs):
         """
         weights: dict of ticker to weight. str if one equity portfolio
-        kwargs: set initial_capital or commissions to use different onces with other strategies
+        kwargs: set initial_capital or commissions
         """
         return self.build(name=name, freq=None, select='all', weigh='specified',
-                          weights=weights, **kwargs)
+                          weights=weights, cv=cv, **kwargs)
 
 
     def benchmark(self, dfs, name=None, weights=None, 
                   initial_capital=None, commissions=None):
         """
         dfs: str or list of str if dfs in self.df_equity or historical of tickers
+        no cv possible with benchmark
         """
         df_equity = self.df_equity
         
@@ -518,7 +531,7 @@ class BacktestManager():
         return None
 
 
-    def build_batch(self, *kwa_list, reset_portfolios=False, **kwargs):
+    def build_batch(self, *kwa_list, reset_portfolios=False, cv=False, **kwargs):
         """
         kwa_list: list of k/w args for each backtest
         kwargs: k/w args common for all backtest
@@ -528,18 +541,22 @@ class BacktestManager():
         else:
             #return print('WARNING: set reset_portfolios to True to run')
             pass
-            
         for kwa in kwa_list:
-            self.build(**{**kwa, **kwargs})
+            self.build(**{**kwa, **kwargs, 'cv':cv})
         return None
 
     
-    def run(self, pf_list=None, metrics=None, plot=True, freq='D', figsize=None, stats=True):
+    def run(self, pf_list=None, metrics=None, stats=True, 
+            plot=True, freq='D', figsize=None, cv=False):
         """
         pf_list: List of backtests or list of index of backtest
+        cv: check if backtest for cross_validate
         """
         if len(self.portfolios) == 0:
             return print('ERROR: no strategy to backtest. build strategies first')
+
+        if (len(self.cv_strategies) > 0) and (not cv):
+            print('REMINDER: run cross_validate to evaludate the strategies in self.cv_strategies')
 
         if pf_list is None:
             bt_list = self.portfolios.values()
@@ -562,7 +579,7 @@ class BacktestManager():
             results.plot(freq=freq, figsize=figsize)
 
         if stats:
-            print('Returning stats')
+            print('Returning stats') if not cv else None
             # pf_list not given as self.run_results recreated
             return self.get_stats(metrics=metrics) 
         else:
@@ -570,7 +587,16 @@ class BacktestManager():
             return results
 
 
-    def cross_validate(self, lag=None, n_sample=10, sampling='random', cv_name='CV', **kwargs_build):
+    def cross_validate(self, lag=None, n_sample=10, sampling='random',
+                       metrics=metrics, simplify=True):
+        """
+        simplify: result format mean ± std if True, dict of cv if False 
+        """
+        if len(self.cv_strategies) == 0:
+            return print('ERROR: no strategy to evaluate')
+        else:
+            metrics = self._check_var(metrics, self.metrics)
+            
         lag = self._check_var(lag, self.days_in_year)
         if lag <= n_sample:
             n_sample = lag
@@ -580,17 +606,35 @@ class BacktestManager():
             offset_list = np.random.randint(lag, size=n_sample)
         else:
             offset_list = range(0, lag+1, round(lag/n_sample))
+
+        result = dict()
+        for name, kwargs_build in self.cv_strategies.items():
+            result[name] = self._cross_validate_strategy(name, offset_list, **kwargs_build)
+
+        if simplify:
+            df_cv = None
+            for name, stats in result.items():
+                df = stats.apply(lambda x: f'{x['mean']:.02f} ± {x['std']:.03f}', axis=1).to_frame(name)
+                if df_cv is None:
+                    df_cv = df
+                else:
+                    df_cv = df_cv.join(df)
+            result = df_cv
             
-        keys = ['name', 'offset']
-        kwa_list = [dict(zip(keys, [f'{cv_name}: offset {x}', x])) for x in offset_list]
-        kwargs_build = {k:v for k,v in kwargs_build.items() if k not in keys}
-        self.build_batch(*kwa_list, **kwargs_build)
+        return result
         
+        
+    def _cross_validate_strategy(self, name, offset_list, metrics=None, **kwargs_build):
+        keys = ['name', 'offset']
+        kwa_list = [dict(zip(keys, [f'CV[{name}: offset {x}]', x])) for x in offset_list]
+        kwargs_build = {k:v for k,v in kwargs_build.items() if k not in keys}
+        self.build_batch(*kwa_list, cv=False, **kwargs_build)
+            
         pf_list = [x['name'] for x in kwa_list]
-        stats = self.run(pf_list, plot=False, stats=True)
+        stats = self.run(pf_list, plot=False, stats=True, metrics=metrics, cv=True)
         idx = stats.index.difference(['start', 'end'])
         return stats.loc[idx].agg(['mean', 'std', 'min', 'max'], axis=1)
-        
+     
 
     def check_portfolios(self, pf_list=None, run=True, convert_index=True):
         """
