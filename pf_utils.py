@@ -7,6 +7,9 @@ import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
 
+import os, time, re
+from datetime import datetime, timedelta
+
 import bt
 from pf_custom import SelectKRatio
 
@@ -229,6 +232,88 @@ class AssetDict(dict):
                 return self.names[key]
             except KeyError:
                 return None
+
+
+
+def print_runtime(func):
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        print(f"Execution time of {func.__name__}: {end_time - start_time:.2f} secs")
+        return result
+    return wrapper
+
+
+
+class DataManager():
+    def __init__(self, file=None, path='.', 
+                 universe='KRX/INDEX/STOCK/1028', col_ticker='Code'):
+        self.file_historicals = file
+        self.path = path
+        self.universe = universe
+        self.col_ticker = col_ticker
+        #self.df_prices = None
+
+    
+    def upload(self, file=None, path=None):
+        """
+        load df_prices from saved file
+        """
+        file = self._check_var(file, self.file_historicals)
+        path = self._check_var(path, self.path)
+        if file is None:
+            return print('ERROR: no file to load.')
+        try:
+            df_prices = pd.read_csv(f'{path}/{file}', parse_dates=[0], index_col=[0])
+            return df_prices
+        except Exception as e:
+            return print(f'ERROR: {e}')
+        
+
+    @print_runtime
+    def download(self, start_date=None, n_years=3, save=True, date_format='%Y-%m-%d'):
+        """
+        download df_prices by using FinanceDataReader
+        """
+        if start_date is None:
+            today = datetime.today()
+            start_date = (today.replace(year=today.year - n_years)
+                               .replace(month=1, day=1).strftime(date_format))
+        try:
+            print('Downloading ...', end=' ')
+            tickers = fdr.SnapDataReader(self.universe)
+            tickers = tickers[self.col_ticker].to_list()
+            df_prices = fdr.DataReader(tickers, start_date)
+            print('done.')
+        except Exception as e:
+            return print(f'ERROR: {e}')
+            
+        if save:
+            self.save(df_prices)
+        return df_prices
+
+    
+    def save(self, df_prices, file=None, path=None, date_format='%y%m%d'):
+        file = self._check_var(file, self.file_historicals)
+        path = self._check_var(path, self.path)
+        #df_prices = self._check_var(df_prices, self.df_prices)
+        if (file is None) or (df_prices is None):
+            return print('ERROR: check file or df_prices')
+
+        today = datetime.now().strftime(date_format)
+        file = re.sub(r"_\d+(?=\.\w+$)", f'_{today}', file)
+        f = os.path.join(path, file)
+        if os.path.exists(f):
+            return print(f'ERROR: failed to save as {file} exists')
+        else:
+            df_prices.to_csv(f)    
+            return print(f'{f} saved.')
+
+    
+    def _check_var(self, var_arg, var_self):
+        return var_self if var_arg is None else var_arg
+        
         
 
 class BacktestManager():
@@ -894,7 +979,7 @@ class BacktestManager():
             print(f'{pf}: weights returned')
 
         if stack: 
-            df_w = df_w.stack()
+            df_w = df_w.stack().rename('weight')
             df_w = df_w.loc[df_w > 0]
         return df_w
         
@@ -925,10 +1010,11 @@ class BacktestManager():
             df_trans = df_trans.loc[df_trans.index.get_level_values(0) <= date]
     
         date = df_trans.index.get_level_values(0).strftime('%Y-%m-%d')[-1]
-        print(f'Quantity of securities {date}')
+        pf_list  = self.check_portfolios(pf, run_results=self.run_results, convert_index=True)
+        print(f'{pf_list[0]}: quantity of securities on {date} returned')
         
         df_bal = df_trans[col].unstack().fillna(0).sum()
-        df_bal = df_bal.rename('Volume').loc[df_bal>0].astype('int')
+        df_bal = df_bal.rename('volume').loc[df_bal>0].astype('int')
         if transpose:
             return df_bal.to_frame().T
         else:
