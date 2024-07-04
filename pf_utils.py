@@ -873,6 +873,11 @@ class BacktestManager():
 
     
     def get_security_weights(self, pf=0, transaction_only=True, stack=False):
+        """
+        stack: convert to mutiindex of date and tickers allocated if True
+        """
+        if isinstance(pf, list):
+            return print('WARNING: set one portfolio')
         run_results = self.run_results
         pf_list  = self.check_portfolios(pf, run_results=run_results, convert_index=True)
         if pf_list is None:
@@ -888,7 +893,7 @@ class BacktestManager():
         else:
             print(f'{pf}: weights returned')
 
-        if stack: # convert to mutiindex of date and tickers allocated
+        if stack: 
             df_w = df_w.stack()
             df_w = df_w.loc[df_w > 0]
         return df_w
@@ -908,6 +913,28 @@ class BacktestManager():
         return run_results.get_transactions(pf)
 
 
+    def get_balance(self, pf=0, date=None, transpose=False, col='quantity'):
+        """
+        cal volume of each security on date
+        """
+        df_trans = self.get_transactions(pf, msg=False)
+        if df_trans is None:
+            return None
+        
+        if date is not None:
+            df_trans = df_trans.loc[df_trans.index.get_level_values(0) <= date]
+    
+        date = df_trans.index.get_level_values(0).strftime('%Y-%m-%d')[-1]
+        print(f'Quantity of securities {date}')
+        
+        df_bal = df_trans[col].unstack().fillna(0).sum()
+        df_bal = df_bal.rename('Volume').loc[df_bal>0].astype('int')
+        if transpose:
+            return df_bal.to_frame().T
+        else:
+            return df_bal
+        
+        
     def util_import_data(self, symbol, col='Close', name=None, date_format='%Y-%m-%d'):
         """
         import historical of symbol by using FinanceDataReader.DataReader
