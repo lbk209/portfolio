@@ -401,19 +401,22 @@ class BacktestManager():
 
     def _get_algo_freq(self, freq='M', offset=0, days_in_year=252):
         """
-        freq: W, M, Q, Y
+        freq: W, M, Q, Y, or num of days
         """
-        cond = lambda x, y: False if x is None else x[0].lower() == y[0].lower()
-        if cond(freq, 'W'):
-            n = round(days_in_year / WEEKS_IN_YEAR)
-        elif cond(freq, 'M'):
-            n = round(days_in_year / 12)
-        elif cond(freq, 'Q'):
-            n = round(days_in_year / 4)
-        elif cond(freq, 'Y'):
-            n = days_in_year
-        else:  # default run once
-            n = -1
+        if isinstance(freq, int):
+            n = freq
+        else:
+            cond = lambda x, y: False if x is None else x[0].lower() == y[0].lower()
+            if cond(freq, 'W'):
+                n = round(days_in_year / WEEKS_IN_YEAR)
+            elif cond(freq, 'M'):
+                n = round(days_in_year / 12)
+            elif cond(freq, 'Q'):
+                n = round(days_in_year / 4)
+            elif cond(freq, 'Y'):
+                n = days_in_year
+            else:  # default run once
+                n = -1
 
         if n > 0:
             algo_freq = bt.algos.RunEveryNPeriods(n, offset=offset)
