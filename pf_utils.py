@@ -208,6 +208,15 @@ def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10):
     return df_days
 
 
+def print_runtime(func):
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        print(f"Execution time of {func.__name__}: {end_time - start_time:.2f} secs")
+        return result
+    return wrapper
+
 
 class AssetDict(dict):
     def __init__(self, *args, names=None, **kwargs):
@@ -232,18 +241,6 @@ class AssetDict(dict):
                 return self.names[key]
             except KeyError:
                 return None
-
-
-
-def print_runtime(func):
-    def wrapper(*args, **kwargs):
-        start_time = time.time()
-        result = func(*args, **kwargs)
-        end_time = time.time()
-        print(f"Execution time of {func.__name__}: {end_time - start_time:.2f} secs")
-        return result
-    return wrapper
-
 
 
 class DataManager():
@@ -313,8 +310,91 @@ class DataManager():
     
     def _check_var(self, var_arg, var_self):
         return var_self if var_arg is None else var_arg
+
+
+
+class MomentumPortfolio():
+    def __init__(self, df_assets, lookback=12, lag=0, days_in_year=246):
+        bm = BacktestManager(df_assets, days_in_year=days_in_year, align_axis=1)
+        self.df_assets = bm.df_assets
+        self.lookback = lookback 
+        self.lag = lag 
+        self.selected = None
         
+    
+    def select(self, date=None, n_assets=5, method='simple'):
+        df_assets = self.df_assets
+        if date is not None:
+            df_assets = df_assets.loc[:date]
+        date = df_assets.index.max()
+        dt1 = date - pd.DateOffset(days=self.lag)
+        dt0 = dt1 - pd.DateOffset(months=self.lookback)
+        df_data = df_assets.loc[dt0:dt1]
+
+        if method.lower() == 'k-ratio':
+            rank = df_data.pct_change(1).apply(lambda x: calc_kratio(x.dropna())).sort_values(ascending=False)[:n_assets]
+        else: # default simple
+            rank = bt.ffn.calc_total_return(df_data).sort_values(ascending=False)[:n_assets]
+
+        assets = rank.index
+        self.selected = {'date': date.strftime('%Y-%m-%d'),
+                         'rank': rank, 'data': df_data[assets]}
+        return None
+
+    
+    def weigh(self, method='erc'):
+        selected = self.selected
+        if selected is None:
+            return print('ERROR')
+        else:
+            df_data = selected['data']
+            assets = df_data.columns
+            
+        if method.lower() == 'erc':
+            weights = bt.ffn.calc_erc_weights(df_data.pct_change(1).dropna())
+        elif method.lower() == 'invvol':
+            weights = bt.ffn.calc_inv_vol_weights(df_data.pct_change(1).dropna())
+        else: # default equal
+            weights = {x:1/len(assets) for x in assets}
+            weights = pd.Series(weights)
+        self.selected['weights'] = weights
+        return weights
         
+
+    def balance(self, holding=None, capital=10000000, commissions=0):
+        """
+        calc number of each asset with price and weights
+        holding: dict of asset-number of holdings
+        """
+        selected = self.selected
+        if selected is None:
+            return print('ERROR')
+        
+        try:
+            date = selected['date']
+            weights = selected['weights']
+            assets = weights.index
+        except KeyError as e:
+            return print('ERROR')
+
+        df_prc = self.df_assets.loc[date]
+        a = capital / (1+commissions/100)
+        df_bal = a * pd.Series(weights).mul(1/df_prc.loc[assets]).rename('balance')
+
+        if holding is not None:
+            if isinstance(holding, dict):
+                holding = pd.Sereis(holding)
+            df_bal = (df_bal.sub(holding, fill_value=0).to_frame('transaction')
+                            .join(df_bal, how='outer').fillna(0))
+
+        df_bal = df_prc.apply(lambda x: f'{x:,}').to_frame('price').join(df_bal.apply(np.floor).astype(int), how='right')
+        return df_bal
+
+    
+    def _check_var(self, arg, arg_self):
+        return arg_self if arg is None else arg
+
+
 
 class BacktestManager():
     def __init__(self, df_assets, name_prfx='Portfolio',

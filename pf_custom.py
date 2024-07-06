@@ -52,6 +52,9 @@ class StatKRatio(Algo):
 
 
 def calc_kratio(ret):
+    """
+    ret: pandas series
+    """
     ret_cs = np.log(1 + ret).cumsum() 
     X = list(range(len(ret)))
     Y = ret_cs
@@ -64,4 +67,4 @@ def calc_kratio(ret):
         else:
             return coef / std_err
     except ValueError as e:
-        return None
+        return print(f'ERROR: {e}')
