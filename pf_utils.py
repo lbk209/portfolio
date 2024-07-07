@@ -261,6 +261,7 @@ class DataManager():
         self.file_historicals = file
         self.path = path
         self.universe = universe
+        self.asset_names = None
 
     
     def upload(self, file=None, path=None):
@@ -292,10 +293,13 @@ class DataManager():
             
         print('Downloading ...', end=' ')
         if tickers is None:
-            tickers = self._get_tickers(self.universe)
-            if tickers is None:
+            asset_names = self._get_tickers(self.universe)
+            if asset_names is None:
                 return None
-
+            else:
+                tickers = list(asset_names.keys())
+                self.asset_names = asset_names
+            
         try:
             df_prices = fdr.DataReader(tickers, start_date)
             print('done.')
@@ -351,25 +355,29 @@ class DataManager():
             return print(f'ERROR: failed to download tickers as {e}')
             
 
-    def _get_tickers_kospi200(self, ticker='KRX/INDEX/STOCK/1028', col_asset='Code'):
+    def _get_tickers_kospi200(self, ticker='KRX/INDEX/STOCK/1028', 
+                              col_asset='Code', col_name='Name'):
         tickers = fdr.SnapDataReader(ticker)
-        tickers = tickers[col_asset].to_list()
-        return tickers
+        return tickers.set_index(col_asset)[col_name].to_dict()
 
     
-    def _get_tickers_etf(self, ticker='ETF/KR', col_asset='Symbol'):
+    def _get_tickers_etf(self, ticker='ETF/KR', 
+                         col_asset='Symbol', col_name='Name'):
         tickers = fdr.StockListing(ticker) # 한국 ETF 전종목
-        tickers = tickers[col_asset].to_list()
-        return tickers
-
+        return tickers.set_index(col_asset)[col_name].to_dict()
+        
     
-    def get_names(self, tickers, name_space='KOSPI', col_ticker='Symbol', col_name='Name'):
-        """
-        get names of tickers by using fdr
-        """
-        df = fdr.StockListing(name_space)
-        df = df.loc[df.Symbol.isin(tickers)].set_index(col_ticker)[col_name]
-        return AssetDict(df)
+    def get_names(self, tickers=None, reset=False):
+        asset_names = self.asset_names
+        if reset or (asset_names is None):
+            asset_names = self._get_tickers(self.universe)
+            self.asset_names = asset_names
+            
+        if tickers is None:
+            return asset_names
+        else:
+            res = {k:v for k,v in asset_names.items() if k in tickers}
+            return AssetDict(res, names=asset_names)
 
 
 
