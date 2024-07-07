@@ -224,6 +224,11 @@ def print_runtime(func):
 
 
 class AssetDict(dict):
+    """
+    A dictionary subclass that associates keys (ex:asset tickers) with names.
+    Attributes:
+        names (dict): Optional dictionary mapping tickers to names.
+    """
     def __init__(self, *args, names=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.names = names
@@ -249,13 +254,13 @@ class AssetDict(dict):
 
 
 class DataManager():
-    def __init__(self, file=None, path='.', 
-                 universe='KRX/INDEX/STOCK/1028', col_ticker='Code'):
+    def __init__(self, file=None, path='.', universe='kospi200'):
+        """
+        universe: kospi200, etf
+        """
         self.file_historicals = file
         self.path = path
         self.universe = universe
-        self.col_ticker = col_ticker
-        #self.df_prices = None
 
     
     def upload(self, file=None, path=None):
@@ -287,11 +292,9 @@ class DataManager():
             
         print('Downloading ...', end=' ')
         if tickers is None:
-            try:
-                tickers = fdr.SnapDataReader(self.universe)
-                tickers = tickers[self.col_ticker].to_list()
-            except Exception as e:
-                return print(f'ERROR: failed to download tickers as {e}')
+            tickers = self._get_tickers(self.universe)
+            if tickers is None:
+                return None
 
         try:
             df_prices = fdr.DataReader(tickers, start_date)
@@ -332,6 +335,41 @@ class DataManager():
         dt1 = df_prices.index.max().strftime(date_format)
         n = df_prices.columns.size
         return print(f'{str_pfx} {n} assets from {dt0} to {dt1} {str_sfx}')
+
+
+    def _get_tickers(self, universe='kospi200'):
+        if universe.lower() == 'kospi200':
+            func = self._get_tickers_kospi200
+        elif universe.lower() == 'etf':
+            func = self._get_tickers_etf
+        else:
+            func = lambda: None
+
+        try:
+            return func()
+        except Exception as e:
+            return print(f'ERROR: failed to download tickers as {e}')
+            
+
+    def _get_tickers_kospi200(self, ticker='KRX/INDEX/STOCK/1028', col_asset='Code'):
+        tickers = fdr.SnapDataReader(ticker)
+        tickers = tickers[col_asset].to_list()
+        return tickers
+
+    
+    def _get_tickers_etf(self, ticker='ETF/KR', col_asset='Symbol'):
+        tickers = fdr.StockListing(ticker) # 한국 ETF 전종목
+        tickers = tickers[col_asset].to_list()
+        return tickers
+
+    
+    def get_names(self, tickers, name_space='KOSPI', col_ticker='Symbol', col_name='Name'):
+        """
+        get names of tickers by using fdr
+        """
+        df = fdr.StockListing(name_space)
+        df = df.loc[df.Symbol.isin(tickers)].set_index(col_ticker)[col_name]
+        return AssetDict(df)
 
 
 
