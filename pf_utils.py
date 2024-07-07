@@ -137,8 +137,10 @@ def convert_rate_to_price(data, n_headers=1, path=None,
         return df
 
 
-def get_date_range(dfs, symbol_name=None, slice_input=False):
+def get_date_range(dfs, symbol_name=None, return_intersection=False):
     """
+    get datetime range of each ticker (columns) or datetime index of intersection
+    dfs: index date, columns tickers
     symbol_name: dict of symbols to names
     """
     df = dfs.apply(lambda x: x[x.notna()].index.min()).to_frame('start date')
@@ -146,7 +148,7 @@ def get_date_range(dfs, symbol_name=None, slice_input=False):
     if symbol_name is not None:
         df = pd.Series(symbol_name).to_frame('name').join(df)
 
-    if slice_input:
+    if return_intersection:
         start_date = df.iloc[:, 0].max()
         end_date = df.iloc[:, 1].min()
         return dfs.loc[start_date:end_date]
@@ -192,18 +194,21 @@ def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10):
 
     # calc mean days for each asset
     df_days = (df.assign(gb=df.index.strftime(grp_format)).set_index('gb')
-                 .apply(lambda x: x.dropna().groupby('gb').count()[1:-1]
-                 .mul(factor).mean().round()))
+                 .apply(lambda x: x.dropna().groupby('gb').count()[1:-1])
+                 .mul(factor).mean().round())
 
     cond = (df_days != days_in_year)
     if cond.sum() > 0:
         df = df_days.loc[cond]
         n = len(df)
         if n < n_thr:
-            print(f'WARNING: the number of days in a year with followings is not {days_in_year} in setting:')
+            #print(f'WARNING: the number of days in a year with followings is not {days_in_year} in setting:')
+            print(f'WARNING: the number of days in a year with followings is {df.mean()} in avg.:')
             _ = [print(f'{k}: {int(v)}') for k,v in df.to_dict().items()]
         else:
-            print(f'WARNING: the number of days in a year with {n} assets is not {days_in_year} in setting:')
+            p = n / len(df_days) * 100
+            #print(f'WARNING: the number of days in a year with {n} assets ({p:.0f}%) is not {days_in_year} in setting:')
+            print(f'WARNING: the number of days in a year with {n} assets ({p:.0f}%) is {df.mean()} in avg.')
     
     return df_days
 
@@ -263,13 +268,15 @@ class DataManager():
             return print('ERROR: no file to load.')
         try:
             df_prices = pd.read_csv(f'{path}/{file}', parse_dates=[0], index_col=[0])
+            self._print_info(df_prices, str_sfx='uploaded.')
             return df_prices
         except Exception as e:
             return print(f'ERROR: {e}')
         
 
     @print_runtime
-    def download(self, start_date=None, n_years=3, save=True, date_format='%Y-%m-%d'):
+    def download(self, start_date=None, n_years=3, tickers=None,
+                 save=True, date_format='%Y-%m-%d'):
         """
         download df_prices by using FinanceDataReader
         """
@@ -277,17 +284,25 @@ class DataManager():
             today = datetime.today()
             start_date = (today.replace(year=today.year - n_years)
                                .replace(month=1, day=1).strftime(date_format))
+            
+        print('Downloading ...', end=' ')
+        if tickers is None:
+            try:
+                tickers = fdr.SnapDataReader(self.universe)
+                tickers = tickers[self.col_ticker].to_list()
+            except Exception as e:
+                return print(f'ERROR: failed to download tickers as {e}')
+
         try:
-            print('Downloading ...', end=' ')
-            tickers = fdr.SnapDataReader(self.universe)
-            tickers = tickers[self.col_ticker].to_list()
             df_prices = fdr.DataReader(tickers, start_date)
             print('done.')
+            self._print_info(df_prices, str_sfx='downloaded.')
         except Exception as e:
             return print(f'ERROR: {e}')
             
         if save:
             self.save(df_prices)
+            
         return df_prices
 
     
@@ -310,6 +325,13 @@ class DataManager():
     
     def _check_var(self, var_arg, var_self):
         return var_self if var_arg is None else var_arg
+
+
+    def _print_info(self, df_prices, str_pfx='', str_sfx='', date_format='%Y-%m-%d'):
+        dt0 = df_prices.index.min().strftime(date_format)
+        dt1 = df_prices.index.max().strftime(date_format)
+        n = df_prices.columns.size
+        return print(f'{str_pfx} {n} assets from {dt0} to {dt1} {str_sfx}')
 
 
 
@@ -411,8 +433,6 @@ class BacktestManager():
             return print('ERROR: df_assets must be Dataframe')
         
         df_assets = self.align_period(df_assets, axis=align_axis, fill_na=fill_na, print_msg2=False)
-        _ = check_days_in_year(df_assets, days_in_year, freq='M')
-
         self.df_assets = df_assets
         self.portfolios = AssetDict(names=asset_names) # dict of bt.backtest.Backtest
         self.cv_strategies = AssetDict(names=asset_names) # dict of args of strategies to cross-validate
@@ -429,7 +449,11 @@ class BacktestManager():
         self.fill_na = fill_na
         self.asset_names = asset_names
         self.print_algos_msg = True # control msg print in self._get_algo_*
-        
+
+        # run after set self.df_assets
+        print('running self.util_check_days_in_year to check days in a year')
+        _ = self.util_check_days_in_year(df_assets, days_in_year, freq='M')
+
 
     def align_period(self, df_assets, axis=0, dt_format='%Y-%m-%d',
                      fill_na=True, print_msg1=True, print_msg2=True, n_indent=2):
@@ -440,7 +464,7 @@ class BacktestManager():
         """
         msg1 = None
         if axis == 0:
-            df_aligned = get_date_range(df_assets, slice_input=True)
+            df_aligned = get_date_range(df_assets, return_intersection=True)
             if len(df_aligned) < len(df_assets):
                 dts = [x.strftime(dt_format) for x in (df_aligned.index.min(), df_aligned.index.max())]
                 msg1 = f"period reset: {' ~ '.join(dts)}"
