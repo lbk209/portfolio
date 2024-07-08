@@ -7,8 +7,9 @@ import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
 
-import os, time, re
+import os, time, re, sys
 from datetime import datetime, timedelta
+from contextlib import contextmanager
 
 import bt
 from pf_custom import SelectKRatio
@@ -253,8 +254,34 @@ class AssetDict(dict):
                 return None
 
 
+class IndentOutput:
+    def __init__(self, indent=4):
+        self.indent = ' ' * indent
+        self.old_target = sys.stdout
+    
+    def write(self, text):
+        if text.strip():  # Only indent non-empty lines
+            indented_text = f"{self.indent}{text.replace('\n', f'\n{self.indent}')}"
+            self.old_target.write(indented_text)
+        else:
+            self.old_target.write(text)
+    
+    def flush(self):
+        pass  # This method is needed to match the interface of sys.stdout
+
+    @contextmanager
+    def indented_output(self):
+        old_stdout = sys.stdout
+        sys.stdout = self
+        try:
+            yield
+        finally:
+            sys.stdout = old_stdout
+            
+
 class DataManager():
-    def __init__(self, file=None, path='.', universe='kospi200'):
+    def __init__(self, file=None, path='.', 
+                 universe='kospi200', upload_type='price'):
         """
         universe: kospi200, etf
         """
@@ -262,6 +289,8 @@ class DataManager():
         self.path = path
         self.universe = universe
         self.asset_names = None
+        self.upload_type = upload_type
+        self.df_prices = None
 
     
     def upload(self, file=None, path=None):
@@ -272,12 +301,10 @@ class DataManager():
         path = self._check_var(path, self.path)
         if file is None:
             return print('ERROR: no file to load.')
-        try:
-            df_prices = pd.read_csv(f'{path}/{file}', parse_dates=[0], index_col=[0])
-            self._print_info(df_prices, str_sfx='uploaded.')
-            return df_prices
-        except Exception as e:
-            return print(f'ERROR: {e}')
+        else:
+            df_prices = self._upload(file, path, upload_type=self.upload_type)
+        self.df_prices = df_prices
+        return print('df_prices updated')
         
 
     @print_runtime
@@ -310,13 +337,14 @@ class DataManager():
         if save:
             self.save(df_prices)
             
-        return df_prices
+        self.df_prices = df_prices
+        return print('df_prices updated')
 
     
-    def save(self, df_prices, file=None, path=None, date_format='%y%m%d'):
+    def save(self, file=None, path=None, date_format='%y%m%d'):
         file = self._check_var(file, self.file_historicals)
         path = self._check_var(path, self.path)
-        #df_prices = self._check_var(df_prices, self.df_prices)
+        df_prices = self.df_prices
         if (file is None) or (df_prices is None):
             return print('ERROR: check file or df_prices')
 
@@ -338,7 +366,9 @@ class DataManager():
         dt0 = df_prices.index.min().strftime(date_format)
         dt1 = df_prices.index.max().strftime(date_format)
         n = df_prices.columns.size
-        return print(f'{str_pfx} {n} assets from {dt0} to {dt1} {str_sfx}')
+        s1  = str_pfx + " " if str_pfx else ""
+        s2  = " " + str_sfx if str_sfx else ""
+        return print(f'{s1}{n} assets from {dt0} to {dt1}{s2}')
 
 
     def _get_tickers(self, universe='kospi200'):
@@ -346,6 +376,8 @@ class DataManager():
             func = self._get_tickers_kospi200
         elif universe.lower() == 'etf':
             func = self._get_tickers_etf
+        elif universe.lower() == 'tdf':
+            func = self._get_tickers_tdf
         else:
             func = lambda: None
 
@@ -365,19 +397,75 @@ class DataManager():
                          col_asset='Symbol', col_name='Name'):
         tickers = fdr.StockListing(ticker) # 한국 ETF 전종목
         return tickers.set_index(col_asset)[col_name].to_dict()
+
+
+    def _get_tickers_tdf(self, col_asset='ticker', col_name='name'):
+        file = self.file_historicals
+        path = self.path
+        tickers = pd.read_csv(f'{path}/{file}')
+        return tickers.set_index(col_asset)[col_name].to_dict()
         
+
+    def _upload(self, file, path, upload_type='price'):
+        if upload_type.lower() == 'rate':
+            func = self._upload_from_rate
+        else: # default price
+            func = lambda f, p: pd.read_csv(f'{p}/{f}', parse_dates=[0], index_col=[0])
+        
+        try:
+            df_prices = func(file, path)
+            self._print_info(df_prices, str_sfx='uploaded.')
+            return df_prices
+        except Exception as e:
+            return print(f'ERROR: {e}')
+
+
+    def _upload_from_rate(self, file, path):
+        """
+        master file of assets with ticker, file, adjusting data, etc
+        """
+        df_info = pd.read_csv(f'{path}/{file}')
+        df_info = df_info.iloc[:-1]
+        df_prices = None
+        print('Estimating price from rate ...')
+        for _, data in df_info.iterrows():
+            # Using the combined class with the context manager
+            with IndentOutput(indent=2).indented_output():
+                df = convert_rate_to_price(data, path=path)
+            if df_prices is None:
+                df_prices = df.to_frame()
+            else:
+                df_prices = df_prices.join(df, how='outer')
+        #print('Done.')
+        return df_prices
+
     
     def get_names(self, tickers=None, reset=False):
         asset_names = self.asset_names
+        df_prices = self.df_prices
         if reset or (asset_names is None):
             asset_names = self._get_tickers(self.universe)
             self.asset_names = asset_names
-            
-        if tickers is None:
-            return asset_names
-        else:
-            res = {k:v for k,v in asset_names.items() if k in tickers}
+
+        try:
+            if tickers is None:
+                if df_prices is None:
+                    res = asset_names
+                else:
+                    res = {k: asset_names[k] for k in df_prices.columns}
+            else:
+                res = {k: asset_names[k] for k in tickers}
             return AssetDict(res, names=asset_names)
+        except KeyError as e:
+            return print(f'ERROR: {e}')
+
+
+    def get_date_range(self, return_intersection=False):
+        df_prices = self.df_prices
+        if df_prices is None:
+            return print('ERROR')
+        else:
+            return get_date_range(df_prices, return_intersection=return_intersection)
 
 
 
