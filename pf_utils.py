@@ -214,6 +214,48 @@ def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10):
     return df_days
 
 
+def align_period(df_assets, axis=0, dt_format='%Y-%m-%d',
+                 fill_na=True, print_msg1=True, print_msg2=True, n_indent=2):
+    """
+    axis: Determines the operation for handling missing data.
+        0 : Drop rows (time index) with missing prices.
+        1 : Drop columns (assets) with a count of non-missing prices less than the maximum found.
+    fill_na: set False to drop nan fields
+    """
+    msg1 = None
+    if axis == 0:
+        df_aligned = get_date_range(df_assets, return_intersection=True)
+        if len(df_aligned) < len(df_assets):
+            dts = [x.strftime(dt_format) for x in (df_aligned.index.min(), df_aligned.index.max())]
+            msg1 = f"period reset: {' ~ '.join(dts)}"
+    elif axis == 1:
+        c_all = df_assets.columns
+        df_cnt = df_assets.apply(lambda x: x.dropna().count())
+        cond = (df_cnt < df_cnt.max())
+        c_drop = c_all[cond]
+        df_aligned = df_assets[c_all.difference(c_drop)]
+        n_c = len(c_drop)
+        if n_c > 0:
+            n_all = len(c_all)
+            msg1 = f'{n_c} assets removed for shorter periods ({n_c/n_all*100:.1f}%)'
+    else:
+        pass
+
+    if print_msg1:
+        print(msg1) if msg1 is not None else None
+        if print_msg2:
+            stats = df_aligned.isna().sum().div(df_aligned.count())
+            t = 'filled forward' if fill_na else 'dropped'
+            print(f'ratio of nan {t}::')
+            indent = ' '*n_indent
+            _ = [print(f'{indent}{i}: {stats[i]:.3f}') for i in stats.index]
+
+    if fill_na:
+        return df_aligned.ffill()
+    else:
+        return df_aligned.dropna()
+
+
 def print_runtime(func):
     def wrapper(*args, **kwargs):
         start_time = time.time()
@@ -601,44 +643,8 @@ class BacktestManager():
 
     def align_period(self, df_assets, axis=0, dt_format='%Y-%m-%d',
                      fill_na=True, print_msg1=True, print_msg2=True, n_indent=2):
-        """
-        axis: Determines the operation for handling missing data.
-            0 : Drop rows (time index) with missing prices.
-            1 : Drop columns (assets) with a count of non-missing prices less than the maximum found.
-        fill_na: set False to drop nan fields
-        """
-        msg1 = None
-        if axis == 0:
-            df_aligned = get_date_range(df_assets, return_intersection=True)
-            if len(df_aligned) < len(df_assets):
-                dts = [x.strftime(dt_format) for x in (df_aligned.index.min(), df_aligned.index.max())]
-                msg1 = f"period reset: {' ~ '.join(dts)}"
-        elif axis == 1:
-            c_all = df_assets.columns
-            df_cnt = df_assets.apply(lambda x: x.dropna().count())
-            cond = (df_cnt < df_cnt.max())
-            c_drop = c_all[cond]
-            df_aligned = df_assets[c_all.difference(c_drop)]
-            n_c = len(c_drop)
-            if n_c > 0:
-                n_all = len(c_all)
-                msg1 = f'{n_c} assets removed for shorter periods ({n_c/n_all*100:.1f}%)'
-        else:
-            pass
-
-        if print_msg1:
-            print(msg1) if msg1 is not None else None
-            if print_msg2:
-                stats = df_aligned.isna().sum().div(df.count())
-                t = 'filled forward' if fill_na else 'dropped'
-                print(f'ratio of nan {t}::')
-                indent = ' '*n_indent
-                _ = [print(f'{indent}{i}: {stats[i]:.3f}') for i in stats.index]
-
-        if fill_na:
-            return df_aligned.ffill()
-        else:
-            return df_aligned.dropna()
+        return align_period(df_assets, axis=axis, dt_format=dt_format,
+                     fill_na=fill_na, print_msg1=print_msg1, print_msg2=print_msg2, n_indent=n_indent)
 
 
     def _check_name(self, name=None):
@@ -900,6 +906,11 @@ class BacktestManager():
         return None
 
 
+    def benchmark_ticker(self, ticker='069500', name='KOSPI'):
+        df = self.util_import_data(ticker, name=name)
+        return self.benchmark(df)
+
+
     def build_batch(self, *kwa_list, reset_portfolios=False, run_cv=False, **kwargs):
         """
         kwa_list: list of k/w args for each backtest
@@ -1072,7 +1083,8 @@ class BacktestManager():
         return pf_list
 
 
-    def get_stats(self, pf_list=None, metrics=None, sort_by=None, run_results=None):
+    def get_stats(self, pf_list=None, metrics=None, sort_by=None, run_results=None,
+                  idx_dt=['start', 'end']):
         """
         run_results: arg for cross_validate. use self.run_results if set to None
         """
@@ -1087,8 +1099,12 @@ class BacktestManager():
         if (metrics is None) or (metrics == 'all'):
             df_stats = run_results.stats[pf_list]
         else:
-            metrics = ['start', 'end'] + metrics
+            metrics = idx_dt + metrics
             df_stats = run_results.stats.loc[metrics, pf_list]
+
+        for i in df_stats.index:
+            if i in idx_dt:
+                df_stats.loc[i] = df_stats.loc[i].apply(lambda x: x.strftime('%Y-%m-%d'))
 
         if sort_by is not None:
             try:
@@ -1523,4 +1539,4 @@ class AssetEvaluator():
 
 
     def align_period(self, df, axis=0, fill_na=True, **kwargs):
-        return Backtest(pd.Series()).align_period(df, axis=0, fill_na=fill_na, **kwargs)
+        return align_period(df, axis=axis, fill_na=fill_na, **kwargs)
