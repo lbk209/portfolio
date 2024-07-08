@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from contextlib import contextmanager
 
 import bt
-from pf_custom import SelectKRatio
+from pf_custom import SelectKRatio, calc_kratio
 
 import warnings
 
@@ -309,7 +309,7 @@ class DataManager():
 
     @print_runtime
     def download(self, start_date=None, n_years=3, tickers=None,
-                 save=True, date_format='%Y-%m-%d'):
+                 save=True, date_format='%Y-%m-%d', close_today=False):
         """
         download df_prices by using FinanceDataReader
         """
@@ -329,27 +329,32 @@ class DataManager():
             
         try:
             df_prices = fdr.DataReader(tickers, start_date)
+            if not close_today: # market today not closed yet
+                df_prices = df_prices.loc[:datetime.today() - timedelta(days=1)]
             print('done.')
             self._print_info(df_prices, str_sfx='downloaded.')
         except Exception as e:
             return print(f'ERROR: {e}')
             
-        if save:
-            self.save(df_prices)
-            
         self.df_prices = df_prices
+        if save:
+            self.save(date=df_prices.index.max())
         return print('df_prices updated')
 
     
-    def save(self, file=None, path=None, date_format='%y%m%d'):
+    def save(self, file=None, path=None, date=None, date_format='%y%m%d'):
         file = self._check_var(file, self.file_historicals)
         path = self._check_var(path, self.path)
         df_prices = self.df_prices
         if (file is None) or (df_prices is None):
             return print('ERROR: check file or df_prices')
 
-        today = datetime.now().strftime(date_format)
-        file = re.sub(r"_\d+(?=\.\w+$)", f'_{today}', file)
+        if date is None:
+            date = datetime.now()
+        if not isinstance(date, str):
+            date = date.strftime(date_format)
+        
+        file = re.sub(r"_\d+(?=\.\w+$)", f'_{date}', file)
         f = os.path.join(path, file)
         if os.path.exists(f):
             return print(f'ERROR: failed to save as {file} exists')
@@ -479,6 +484,9 @@ class MomentumPortfolio():
         
     
     def select(self, date=None, n_assets=5, method='simple'):
+        """
+        method: simple, k-ratio
+        """
         df_assets = self.df_assets
         if date is not None:
             df_assets = df_assets.loc[:date]
@@ -490,12 +498,14 @@ class MomentumPortfolio():
         if method.lower() == 'k-ratio':
             rank = df_data.pct_change(1).apply(lambda x: calc_kratio(x.dropna())).sort_values(ascending=False)[:n_assets]
         else: # default simple
-            rank = bt.ffn.calc_total_return(df_data).sort_values(ascending=False)[:n_assets]
+            #rank = bt.ffn.calc_total_return(df_data).sort_values(ascending=False)[:n_assets]
+            # no difference with calc_total_return as align_axis=1
+            rank = df_data.apply(lambda x: x.dropna().iloc[-1]/x.dropna().iloc[0]-1).sort_values(ascending=False)[:n_assets]
 
         assets = rank.index
         self.selected = {'date': date.strftime('%Y-%m-%d'),
                          'rank': rank, 'data': df_data[assets]}
-        return None
+        return rank
 
     
     def weigh(self, method='erc'):
@@ -592,8 +602,9 @@ class BacktestManager():
     def align_period(self, df_assets, axis=0, dt_format='%Y-%m-%d',
                      fill_na=True, print_msg1=True, print_msg2=True, n_indent=2):
         """
-        axis: 0 : Drop time index which contain missing prices.
-              1 : Drop asset columns whose length is less than max from missing value.
+        axis: Determines the operation for handling missing data.
+            0 : Drop rows (time index) with missing prices.
+            1 : Drop columns (assets) with a count of non-missing prices less than the maximum found.
         fill_na: set False to drop nan fields
         """
         msg1 = None
