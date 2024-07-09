@@ -595,7 +595,7 @@ class MomentumPortfolio():
             return print('ERROR')
         
         try:
-            date = selected['date']
+            date = pd.to_datetime(selected['date']) # cast to datetime
             weights = selected['weights']
             assets = weights.index
         except KeyError as e:
@@ -607,18 +607,24 @@ class MomentumPortfolio():
         df_n = df_n.apply(np.floor).astype(int).to_frame(col_n)
         df_n = df_n.assign(date=date)
         df_n = df_prc.loc[date].to_frame(col_prc).join(df_n, how='right')
-        df_n = df_n.rename_axis(col_ast)[[col_dat, col_prc, col_n]]
+        # index is multiindex of asset and date
+        df_n = df_n.rename_axis(col_ast).set_index(col_dat, append=True)[[col_prc, col_n]]
 
         if holding is not None:
+            # get latest balance and drop transaction if existing
+            dt = holding.index.get_level_values(col_dat).max()
+            if dt == date:
+                return print('ERROR: the date of old balance is same as new date')
+            else:
+                holding = holding.loc[(slice(None), dt), [col_prc, col_n]]
+            
             # calc subtotal for net profit first
             stl = lambda d, x: d[col_prc].mul(d[x]).sum()
             net = stl(df_n, col_n) - stl(holding, col_n)
             
             # concat new and old holding
-            df_n = pd.concat([holding, df_n])
-            df_n = (df_n.assign(date=pd.to_datetime(df_n[col_dat])) # cast date to datetime
-                        .set_index(col_dat, append=True))
-
+            df_n = pd.concat([holding, df_n]) #.reset_index(col_dat)
+            
             # fill missing prices (ex: old price of new assets, new price of old assets)
             # use old prices in the holding before possible adjustment
             lidx = [df_n.index.get_level_values(i).unique() for i in range(2)]
@@ -630,7 +636,7 @@ class MomentumPortfolio():
             # calc and join amount of buy or sell for each asset
             df_trs = (df_n[col_n].unstack().fillna(0) # fillna needed even if added later at final step
                         .apply(lambda x: x[1]-x[0], axis=1).to_frame(col_trs)
-                        .assign(date=pd.to_datetime(date))
+                        .assign(date=date)
                         .set_index(col_dat, append=True))
             df_n = df_n.join(df_trs).fillna(0).astype(int)
 
