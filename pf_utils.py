@@ -214,7 +214,7 @@ def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10):
     return df_days
 
 
-def align_period(df_assets, axis=0, dt_format='%Y-%m-%d',
+def align_period(df_assets, axis=0, date_format='%Y-%m-%d',
                  fill_na=True, print_msg1=True, print_msg2=True, n_indent=2):
     """
     axis: Determines the operation for handling missing data.
@@ -226,7 +226,7 @@ def align_period(df_assets, axis=0, dt_format='%Y-%m-%d',
     if axis == 0:
         df_aligned = get_date_range(df_assets, return_intersection=True)
         if len(df_aligned) < len(df_assets):
-            dts = [x.strftime(dt_format) for x in (df_aligned.index.min(), df_aligned.index.max())]
+            dts = [x.strftime(date_format) for x in (df_aligned.index.min(), df_aligned.index.max())]
             msg1 = f"period reset: {' ~ '.join(dts)}"
     elif axis == 1:
         c_all = df_assets.columns
@@ -363,8 +363,8 @@ class DataManager():
         print('Downloading ...', end=' ')
         if tickers is None:
             asset_names = self._get_tickers(self.universe)
-            if asset_names is None:
-                return None
+            if (asset_names is None) or len(asset_names) == 0:
+                return print('ERROR: no ticker found')
             else:
                 tickers = list(asset_names.keys())
                 self.asset_names = asset_names
@@ -525,8 +525,9 @@ class MomentumPortfolio():
         self.selected = None
         
     
-    def select(self, date=None, n_assets=5, method='simple'):
+    def select(self, date=None, n_assets=5, method='simple', date_format='%Y-%m-%d'):
         """
+        date: transaction date
         method: simple, k-ratio
         """
         df_assets = self.df_assets
@@ -537,20 +538,30 @@ class MomentumPortfolio():
         dt0 = dt1 - pd.DateOffset(months=self.lookback)
         df_data = df_assets.loc[dt0:dt1]
 
+        dts = df_data.index
+        dts = [x.strftime(date_format) for x in (dts.min(), dts.max())]
+        info_date = f'from {dts[0]} to {dts[1]}'
+        
         if method.lower() == 'k-ratio':
             rank = df_data.pct_change(1).apply(lambda x: calc_kratio(x.dropna())).sort_values(ascending=False)[:n_assets]
+            method = 'K-ratio'
         else: # default simple
             #rank = bt.ffn.calc_total_return(df_data).sort_values(ascending=False)[:n_assets]
             # no difference with calc_total_return as align_axis=1
             rank = df_data.apply(lambda x: x.dropna().iloc[-1]/x.dropna().iloc[0]-1).sort_values(ascending=False)[:n_assets]
+            method = 'Total return'
 
         assets = rank.index
-        self.selected = {'date': date.strftime('%Y-%m-%d'),
+        self.selected = {'date': date.strftime(date_format),
                          'rank': rank, 'data': df_data[assets]}
+        print(f'{n_assets} assets selected by {method} {info_date}')
         return rank
 
     
     def weigh(self, method='erc'):
+        """
+        method: ERC, InvVol, Equally
+        """
         selected = self.selected
         if selected is None:
             return print('ERROR')
@@ -565,14 +576,16 @@ class MomentumPortfolio():
         else: # default equal
             weights = {x:1/len(assets) for x in assets}
             weights = pd.Series(weights)
+            
         self.selected['weights'] = weights
+        print('Weights of assets determined.')
         return weights
         
 
     def balance(self, holding=None, capital=10000000, commissions=0):
         """
         calc number of each asset with price and weights
-        holding: dict of asset-number of holdings
+        holding: dict of asset-number of holdings, pd.Series
         """
         selected = self.selected
         if selected is None:
@@ -588,14 +601,18 @@ class MomentumPortfolio():
         df_prc = self.df_assets.loc[date]
         a = capital / (1+commissions/100)
         df_bal = a * pd.Series(weights).mul(1/df_prc.loc[assets]).rename('balance')
-
+        
+        # add tranaction and final balnace if holding exists
         if holding is not None:
             if isinstance(holding, dict):
                 holding = pd.Sereis(holding)
             df_bal = (df_bal.sub(holding, fill_value=0).to_frame('transaction')
-                            .join(df_bal, how='outer').fillna(0))
+                            .join(df_bal, how='outer'))
+            df_bal = holding.to_frame('before').join(df_bal, how='outer').fillna(0)
 
         df_bal = df_prc.apply(lambda x: f'{x:,}').to_frame('price').join(df_bal.apply(np.floor).astype(int), how='right')
+        #df_bal = df_bal.assign(date=date)
+        print(f'Portfolio on {date}')
         return df_bal
 
     
@@ -641,9 +658,9 @@ class BacktestManager():
         _ = self.util_check_days_in_year(df_assets, days_in_year, freq='M')
 
 
-    def align_period(self, df_assets, axis=0, dt_format='%Y-%m-%d',
+    def align_period(self, df_assets, axis=0, date_format='%Y-%m-%d',
                      fill_na=True, print_msg1=True, print_msg2=True, n_indent=2):
-        return align_period(df_assets, axis=axis, dt_format=dt_format,
+        return align_period(df_assets, axis=axis, date_format=date_format,
                      fill_na=fill_na, print_msg1=print_msg1, print_msg2=print_msg2, n_indent=n_indent)
 
 
@@ -906,7 +923,8 @@ class BacktestManager():
         return None
 
 
-    def benchmark_ticker(self, ticker='069500', name='KOSPI'):
+    def benchmark_ticker(self, ticker='069500', name='KODEX200'):
+        print(f'Benchmark is {name}')
         df = self.util_import_data(ticker, name=name)
         return self.benchmark(df)
 
