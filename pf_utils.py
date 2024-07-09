@@ -582,13 +582,13 @@ class MomentumPortfolio():
         return weights
         
 
-    def balance(self, holding=None, capital=10000000, commissions=0,
-               cols =['asset', 'date', 'price', 'n', 'transaction']):
+    def balance(self, record=None, capital=10000000, commissions=0,
+               cols =['date', 'asset', 'price', 'transaction', 'net']):
         """
         calc number of each asset with price and weights
-        holding: dict of asset-number of holdings, pd.Series
+        record: record of transactions, pd.DataFrame
         """
-        col_ast, col_dat, col_prc, col_n, col_trs = cols
+        col_date, col_ast, col_prc, col_trs, col_net = cols
         
         selected = self.selected
         if selected is None:
@@ -603,55 +603,61 @@ class MomentumPortfolio():
 
         df_prc = self.df_assets
         a = capital / (1+commissions/100)
-        df_n = a * pd.Series(weights).mul(1/df_prc.loc[date, assets])
-        df_n = df_n.apply(np.floor).astype(int).to_frame(col_n)
-        df_n = df_n.assign(date=date)
-        df_n = df_prc.loc[date].to_frame(col_prc).join(df_n, how='right')
-        # index is multiindex of asset and date
-        df_n = df_n.rename_axis(col_ast).set_index(col_dat, append=True)[[col_prc, col_n]]
+        df_net = a * pd.Series(weights).mul(1/df_prc.loc[date, assets])
+        df_net = df_net.apply(np.floor).astype(int).to_frame(col_net)
+        df_net = df_net.assign(**{col_date: date})
+        df_net = df_prc.loc[date].to_frame(col_prc).join(df_net, how='right')
+        # index is multiindex of date and asset
+        df_net = df_net.rename_axis(col_ast).set_index(col_date, append=True).swaplevel()
 
-        if holding is not None:
-            # get latest balance and drop transaction if existing
-            dt = holding.index.get_level_values(col_dat).max()
-            if dt == date:
-                return print('ERROR: the date of old balance is same as new date')
-            else:
-                holding = holding.loc[(slice(None), dt), [col_prc, col_n]]
-            
-            # calc subtotal for net profit first
-            stl = lambda d, x: d[col_prc].mul(d[x]).sum()
-            net = stl(df_n, col_n) - stl(holding, col_n)
-            
-            # concat new and old holding
-            df_n = pd.concat([holding, df_n]) #.reset_index(col_dat)
+        if record is None:
+            df_net = df_net.assign(**{col_trs: df_net[col_net]})
+        else:
+            dt = record.index.get_level_values(col_date).max()
+            if dt >= date:
+                print('ERROR: check the date as no new transaction')
+            else: # add new to record
+                df_net = pd.concat([record, df_net])
             
             # fill missing prices (ex: old price of new assets, new price of old assets)
-            # use old prices in the holding before possible adjustment
-            lidx = [df_n.index.get_level_values(i).unique() for i in range(2)]
-            midx = pd.MultiIndex.from_product(lidx).difference(df_n.index)
-            df_m = (df_prc[lidx[0]].stack().swaplevel().loc[midx]
-                     .rename_axis([col_ast, col_dat]).to_frame(col_prc))
-            df_n = pd.concat([df_n, df_m]).fillna(0).sort_index(level=[0,1])
+            # use purchase prices in the record before possible adjustment of stock prices
+            lidx = [df_net.index.get_level_values(i).unique() for i in range(2)]
+            midx = pd.MultiIndex.from_product(lidx).difference(df_net.index)
+            df_m = (df_prc[lidx[1]].stack().loc[midx]
+                     .rename_axis([col_date, col_ast]).to_frame(col_prc))
+            df_net = pd.concat([df_net, df_m])
+            
+            # the net amount of the assets not in hold on the date is 0
+            cond = df_net[col_net].isna()
+            cond = cond & (df_net.index.get_level_values(0) == date)
+            df_net.loc[cond, col_net] = 0  
+            
+            # update transaction on the date by using the assets on the date 
+            # and all the transaction before the date
+            df_trs = (df_net.loc[date, col_net]
+                      .sub(df_net.groupby(col_ast)[col_trs].sum())
+                      .to_frame(col_trs).assign(**{col_date:date})
+                      .set_index(col_date, append=True).swaplevel())
+            df_net.update(df_trs)
+            df_net = df_net.dropna() # drop new assets before the date
 
-            # calc and join amount of buy or sell for each asset
-            df_trs = (df_n[col_n].unstack().fillna(0) # fillna needed even if added later at final step
-                        .apply(lambda x: x[1]-x[0], axis=1).to_frame(col_trs)
-                        .assign(date=date)
-                        .set_index(col_dat, append=True))
-            df_n = df_n.join(df_trs).fillna(0).astype(int)
+        c = [col_prc, col_trs, col_net]
+        df_net = df_net[c].astype(int).sort_index(level=[0,1])
 
-            net -= stl(df_n, col_trs)
-            print(f'Net profit: {net:,}')
+        # calc net profit
+        cost = df_net[col_prc].mul(df_net[col_trs]).sum()
+        val = df_net.loc[date].apply(lambda x: x[col_prc] * x[col_net], axis=1).sum()
+        print(f'Net profit: {val-cost}')
+        
+        return df_net
+        
 
-        return df_n
-
-
-    def balance_quick(self, holding=None, date=None, 
+    def balance_quick(self, record=None, date=None, 
                  n_assets=5, method_select='simple', method_weigh='erc',
                  capital=10000000, commissions=0):
         self.select(date=date, n_assets=n_assets, method=method_select)
         self.weigh(method_weigh)
-        return self.balance(holding=holding, capital=capital, commissions=commissions)
+        return self.balance(record=record, capital=capital, commissions=commissions)
 
     
     def _check_var(self, arg, arg_self):
