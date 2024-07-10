@@ -516,13 +516,219 @@ class DataManager():
 
 
 
-class MomentumPortfolio():
-    def __init__(self, df_assets, lookback=12, lag=0, days_in_year=246):
-        bm = BacktestManager(df_assets, days_in_year=days_in_year, align_axis=1)
-        self.df_assets = bm.df_assets
+class StaticPortfolio():
+    def __init__(self, df_universe, file, path='.', 
+                 lookback=12, lag=0, days_in_year=246,
+                 align_axis=0, asset_names=None):
+        bm = BacktestManager(df_universe, days_in_year=days_in_year, align_axis=align_axis)
+        self.df_universe = bm.df_assets
+        
+        record = self._load_transaction(file, path)
+        if record is None:
+            print('REMINDER: make sure this is 1st transaction as no records provided')
+        self.record = record
+        
+        self.selected = None
         self.lookback = lookback 
         self.lag = lag 
-        self.selected = None
+        self.file = file
+        self.path = path
+        self.asset_names = asset_names
+        
+        
+    def select(self, date=None, date_format='%Y-%m-%d'):
+        """
+        date: transaction date
+        """
+        df_data = self.df_universe 
+        if date is not None:
+            df_data = df_data.loc[:date]
+
+        # prepare data for weigh procedure
+        date = df_data.index.max()
+        dt1 = date - pd.DateOffset(days=self.lag)
+        dt0 = dt1 - pd.DateOffset(months=self.lookback)
+        df_data = df_data.loc[dt0:dt1] 
+
+        dts = df_data.index
+        dts = [x.strftime(date_format) for x in (dts.min(), dts.max())]
+        n_assets = df_data.columns.size # all assets in the universe selected
+        print(f'{n_assets} assets from {dts[0]} to {dts[1]} prepared for weight analysis')
+        
+        self.selected = {'date': date.strftime(date_format),
+                         'data': df_data}
+        return None
+
+    
+    def weigh(self, method='erc'):
+        """
+        method: ERC, InvVol, Equally
+        """
+        selected = self.selected
+        if selected is None:
+            return print('ERROR')
+        else:
+            df_data = selected['data']
+            assets = df_data.columns
+            
+        if method.lower() == 'erc':
+            weights = bt.ffn.calc_erc_weights(df_data.pct_change(1).dropna())
+            method = 'ERC'
+        elif method.lower() == 'invvol':
+            weights = bt.ffn.calc_inv_vol_weights(df_data.pct_change(1).dropna())
+            method = 'Inv.Vol'
+        else: # default equal
+            weights = {x:1/len(assets) for x in assets}
+            weights = pd.Series(weights)
+            method = 'Equal weights'
+        weigths = AssetDict(weights, names=self.asset_names)
+
+        self.selected['weights'] = weights
+        print(f'Weights of assets determined by {method}.')
+        return weights
+        
+
+    def allocate(self, capital=10000000, commissions=0,
+                 cols =['date', 'asset', 'price', 'transaction', 'net']):
+        """
+        calc number of each asset with price and weights
+        """
+        col_date, col_ast, col_prc, _, col_net = cols
+        
+        selected = self.selected
+        if selected is None:
+            return print('ERROR')
+        
+        try:
+            date = pd.to_datetime(selected['date']) # cast to datetime
+            weights = selected['weights']
+            assets = weights.index
+        except KeyError as e:
+            return print('ERROR')
+
+        df_prc = self.df_universe
+        a = capital / (1+commissions/100)
+        df_net = a * pd.Series(weights).mul(1/df_prc.loc[date, assets])
+        df_net = df_net.apply(np.floor).astype(int).to_frame(col_net)
+        df_net = df_net.assign(**{col_date: date})
+        df_net = df_prc.loc[date].to_frame(col_prc).join(df_net, how='right')
+        # index is multiindex of date and asset
+        df_net = df_net.rename_axis(col_ast).set_index(col_date, append=True).swaplevel()
+        return df_net
+        
+
+    def transaction(self, df_net, record=None, cols=['date', 'asset', 'price', 'transaction', 'net']):
+        """
+        add new transaction to records
+        df_net: output of self.allocate
+        record: transaction record given as dataframe
+        """
+        col_date, col_ast, col_prc, col_trs, col_net = cols
+        cols_rec = [col_prc, col_trs, col_net]
+        date = df_net.index.get_level_values(0).max()
+
+        record = self._check_var(record, self.record)
+        if record is None:
+            df_rec = df_net.assign(**{col_trs: df_net[col_net]})
+        else:
+            dt = record.index.get_level_values(col_date).max()
+            if dt >= date:
+                print('ERROR: check the date as no new transaction')
+                return record
+            else: # add new to record
+                # remove additional info except for cols_rec in record
+                df_rec = pd.concat([record[cols_rec], df_net])
+                df_prc = self.df_universe
+            
+            # fill missing prices (ex: old price of new assets, new price of old assets)
+            # use purchase prices in the record before possible adjustment of stock prices
+            lidx = [df_rec.index.get_level_values(i).unique() for i in range(2)]
+            midx = pd.MultiIndex.from_product(lidx).difference(df_rec.index)
+            df_m = (df_prc[lidx[1]].stack().loc[midx]
+                     .rename_axis([col_date, col_ast]).to_frame(col_prc))
+            df_rec = pd.concat([df_rec, df_m])
+            
+            # the net amount of the assets not in hold on the date is 0
+            cond = df_rec[col_net].isna()
+            cond = cond & (df_rec.index.get_level_values(0) == date)
+            df_rec.loc[cond, col_net] = 0  
+            
+            # update transaction on the date by using the assets on the date 
+            # and all the transaction before the date
+            df_trs = (df_rec.loc[date, col_net]
+                      .sub(df_rec.groupby(col_ast)[col_trs].sum())
+                      .to_frame(col_trs).assign(**{col_date:date})
+                      .set_index(col_date, append=True).swaplevel())
+            df_rec.update(df_trs)
+            df_rec = df_rec.dropna() # drop new assets before the date
+
+        df_rec = df_rec[cols_rec].astype(int).sort_index(level=[0,1])
+
+        # calc net profit
+        cost = df_rec[col_prc].mul(df_rec[col_trs]).sum()
+        val = df_rec.loc[date].apply(lambda x: x[col_prc] * x[col_net], axis=1).sum()
+        print(f'Net profit: {val-cost:,}')
+
+        # add weights as additinoal info
+        v = df_rec[col_prc].mul(df_rec[col_net])
+        df_rec = df_rec.assign(weights=v.mul(1/v.groupby(col_date).sum()).apply(lambda x: f'{x:.2f}'))
+        return df_rec
+        
+
+    def transaction_pipeline(self, date=None, method_weigh='erc',
+                             capital=10000000, commissions=0, 
+                             record=None, save=False):
+        self.select(date=date)
+        _ = self.weigh(method_weigh)
+        df_net = self.allocate(capital=capital, commissions=commissions)
+        df_rec = self.transaction(df_net, record=record)
+        if df_rec is not None:
+            if save:
+                self.save_transaction(df_rec)
+            else:
+                print('Set save=True to save transaction record')
+        return df_rec
+
+
+    def save_transaction(self, df_rec, file=None, path=None):
+        file = self._check_var(file, self.file)
+        path = self._check_var(path, self.path)
+        return self._save_transaction(df_rec, file, path)
+        
+
+    def _load_transaction(self, file, path, print_msg=True, date_format='%Y-%m-%d'):
+        f = os.path.join(path, file)
+        if os.path.exists(f):
+            df_rec = pd.read_csv(f, parse_dates=[0], index_col=[0,1], dtype={'asset':str})
+        else:
+            return None
+            
+        if print_msg:
+            dt = df_rec.index.get_level_values(0).max().strftime(date_format)
+            print(f'Transaction record to {dt} loaded.')
+        return df_rec
+        
+
+    def _save_transaction(self, df_rec, file, path, date_format='%Y-%m-%d'):
+        dt = df_rec.index.get_level_values(0).max()
+        file = re.sub(r"_\d+(?=\.\w+$)", f"_{dt.strftime('%y%m%d')}", file)
+        
+        f = os.path.join(path, file)
+        if os.path.exists(f):
+            return print(f'ERROR: failed to save as {file} exists')
+        else:    
+            df_rec.to_csv(f)
+            print(f'All transactions saved to {file}')
+        
+    
+    def _check_var(self, arg, arg_self):
+        return arg_self if arg is None else arg
+
+
+
+class MomentumPortfolio(StaticPortfolio):
+    def __init__(self, *args, align_axis=1, **kwargs):
+        super().__init__(*args, align_axis=align_axis, **kwargs)
         
     
     def select(self, date=None, n_assets=5, method='simple', date_format='%Y-%m-%d'):
@@ -530,13 +736,15 @@ class MomentumPortfolio():
         date: transaction date
         method: simple, k-ratio
         """
-        df_assets = self.df_assets
+        df_data = self.df_universe
         if date is not None:
-            df_assets = df_assets.loc[:date]
-        date = df_assets.index.max()
+            df_data = df_data.loc[:date]
+
+        # prepare data for weigh procedure
+        date = df_data.index.max()
         dt1 = date - pd.DateOffset(days=self.lag)
         dt0 = dt1 - pd.DateOffset(months=self.lookback)
-        df_data = df_assets.loc[dt0:dt1]
+        df_data = df_data.loc[dt0:dt1]
 
         dts = df_data.index
         dts = [x.strftime(date_format) for x in (dts.min(), dts.max())]
@@ -558,110 +766,20 @@ class MomentumPortfolio():
         return rank
 
     
-    def weigh(self, method='erc'):
-        """
-        method: ERC, InvVol, Equally
-        """
-        selected = self.selected
-        if selected is None:
-            return print('ERROR')
-        else:
-            df_data = selected['data']
-            assets = df_data.columns
-            
-        if method.lower() == 'erc':
-            weights = bt.ffn.calc_erc_weights(df_data.pct_change(1).dropna())
-        elif method.lower() == 'invvol':
-            weights = bt.ffn.calc_inv_vol_weights(df_data.pct_change(1).dropna())
-        else: # default equal
-            weights = {x:1/len(assets) for x in assets}
-            weights = pd.Series(weights)
-            
-        self.selected['weights'] = weights
-        print('Weights of assets determined.')
-        return weights
-        
-
-    def balance(self, record=None, capital=10000000, commissions=0,
-               cols =['date', 'asset', 'price', 'transaction', 'net']):
-        """
-        calc number of each asset with price and weights
-        record: record of transactions, pd.DataFrame
-        """
-        col_date, col_ast, col_prc, col_trs, col_net = cols
-        
-        selected = self.selected
-        if selected is None:
-            return print('ERROR')
-        
-        try:
-            date = pd.to_datetime(selected['date']) # cast to datetime
-            weights = selected['weights']
-            assets = weights.index
-        except KeyError as e:
-            return print('ERROR')
-
-        df_prc = self.df_assets
-        a = capital / (1+commissions/100)
-        df_net = a * pd.Series(weights).mul(1/df_prc.loc[date, assets])
-        df_net = df_net.apply(np.floor).astype(int).to_frame(col_net)
-        df_net = df_net.assign(**{col_date: date})
-        df_net = df_prc.loc[date].to_frame(col_prc).join(df_net, how='right')
-        # index is multiindex of date and asset
-        df_net = df_net.rename_axis(col_ast).set_index(col_date, append=True).swaplevel()
-
-        if record is None:
-            df_net = df_net.assign(**{col_trs: df_net[col_net]})
-        else:
-            dt = record.index.get_level_values(col_date).max()
-            if dt >= date:
-                print('ERROR: check the date as no new transaction')
-            else: # add new to record
-                df_net = pd.concat([record, df_net])
-            
-            # fill missing prices (ex: old price of new assets, new price of old assets)
-            # use purchase prices in the record before possible adjustment of stock prices
-            lidx = [df_net.index.get_level_values(i).unique() for i in range(2)]
-            midx = pd.MultiIndex.from_product(lidx).difference(df_net.index)
-            df_m = (df_prc[lidx[1]].stack().loc[midx]
-                     .rename_axis([col_date, col_ast]).to_frame(col_prc))
-            df_net = pd.concat([df_net, df_m])
-            
-            # the net amount of the assets not in hold on the date is 0
-            cond = df_net[col_net].isna()
-            cond = cond & (df_net.index.get_level_values(0) == date)
-            df_net.loc[cond, col_net] = 0  
-            
-            # update transaction on the date by using the assets on the date 
-            # and all the transaction before the date
-            df_trs = (df_net.loc[date, col_net]
-                      .sub(df_net.groupby(col_ast)[col_trs].sum())
-                      .to_frame(col_trs).assign(**{col_date:date})
-                      .set_index(col_date, append=True).swaplevel())
-            df_net.update(df_trs)
-            df_net = df_net.dropna() # drop new assets before the date
-
-        c = [col_prc, col_trs, col_net]
-        df_net = df_net[c].astype(int).sort_index(level=[0,1])
-
-        # calc net profit
-        cost = df_net[col_prc].mul(df_net[col_trs]).sum()
-        val = df_net.loc[date].apply(lambda x: x[col_prc] * x[col_net], axis=1).sum()
-        print(f'Net profit: {val-cost}')
-        
-        return df_net
-        
-
-    def balance_quick(self, record=None, date=None, 
-                 n_assets=5, method_select='simple', method_weigh='erc',
-                 capital=10000000, commissions=0):
-        self.select(date=date, n_assets=n_assets, method=method_select)
-        self.weigh(method_weigh)
-        return self.balance(record=record, capital=capital, commissions=commissions)
-
-    
-    def _check_var(self, arg, arg_self):
-        return arg_self if arg is None else arg
+    def transaction_pipeline(self, date=None, n_assets=5, 
+                             method_select='simple', method_weigh='erc',
+                             capital=10000000, commissions=0, 
+                             record=None, save=False):
+        _ = self.select(date=date, n_assets=n_assets, method=method_select)
+        _ = self.weigh(method_weigh)
+        df_net = self.allocate(capital=capital, commissions=commissions)
+        df_rec = self.transaction(df_net, record=record)
+        if df_rec is not None:
+            if save:
+                self.save_transaction(df_rec)
+            else:
+                print('Set save=True to save transaction record')
+        return df_rec
 
 
 
