@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from contextlib import contextmanager
 
 import bt
-from pf_custom import SelectKRatio, calc_kratio
+from pf_custom import AlgoSelectKRatio, calc_kratio
 
 import warnings
 
@@ -903,18 +903,21 @@ class BacktestManager():
             # as StatTotalReturn uses values of temp[‘selected’]
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'k-ratio'):
-            algo_select = SelectKRatio(n=n_assets, lookback=pd.DateOffset(months=lookback),
+            algo_select = AlgoSelectKRatio(n=n_assets, lookback=pd.DateOffset(months=lookback),
                                        lag=pd.DateOffset(days=lag))
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'randomly'):
+            algo_after = AlgoRunAfter(lookback=pd.DateOffset(months=lookback), 
+                                      lag=pd.DateOffset(days=lag))
             algo_select = bt.algos.SelectRandomly(n=n_assets)
-            algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
-        elif cond(select, 'all'):
-            algo_select = bt.algos.SelectAll()
+            algo_select = bt.AlgoStack(algo_after, bt.algos.SelectAll(), algo_select)
         else:
-            print('SelectAll selected') if self.print_algos_msg else None
-            algo_select = bt.algos.SelectAll()
-            
+            algo_after = AlgoRunAfter(lookback=pd.DateOffset(months=lookback), 
+                                      lag=pd.DateOffset(days=lag))
+            algo_select = bt.AlgoStack(algo_after, bt.algos.SelectAll())
+            if not cond(select, 'all'):
+                print('SelectAll selected') if self.print_algos_msg else None
+          
         return algo_select
         
 
@@ -1039,10 +1042,12 @@ class BacktestManager():
 
 
     def benchmark(self, dfs, name=None, weights=None, 
-                  initial_capital=None, commissions=None):
+                  initial_capital=None, commissions=None,
+                  lookback=0, lag=0):
         """
         dfs: str or list of str if dfs in self.df_assets or historical of tickers
         no cv possible with benchmark
+        lookback & lag to set start date same as momentum stragegy with lookback & lag
         """
         df_assets = self.df_assets
         
@@ -1075,20 +1080,21 @@ class BacktestManager():
         dfs = self.align_period(dfs, axis=self.align_axis, fill_na=self.fill_na, print_msg2=False)
         weights = self._check_weights(weights, dfs)
         weigh = {'weigh':'specified', 'weights':weights}
+        select = {'select':'all', 'lookback':lookback, 'lag':lag}
         initial_capital = self._check_var(initial_capital, self.initial_capital)
         commissions = self._check_var(commissions, self.commissions)
        
-        self.portfolios[name] = self.backtest(dfs, name=name, select={'select':'all'}, 
+        self.portfolios[name] = self.backtest(dfs, name=name, select=select, 
                                               freq={'freq':None}, weigh=weigh, 
                                               initial_capital=initial_capital, 
                                               commissions=commissions)
         return None
 
 
-    def benchmark_ticker(self, ticker='069500', name='KODEX200'):
+    def benchmark_ticker(self, ticker='069500', name='KODEX200', **kwargs):
         print(f'Benchmark is {name}')
         df = self.util_import_data(ticker, name=name)
-        return self.benchmark(df)
+        return self.benchmark(df, **kwargs)
 
 
     def build_batch(self, *kwa_list, reset_portfolios=False, run_cv=False, **kwargs):
