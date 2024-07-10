@@ -6,7 +6,27 @@ import statsmodels.api as sm
 import numpy as np
 
 
-class SelectKRatio(AlgoStack):
+def calc_kratio(ret):
+    """
+    ret: pandas series
+    """
+    ret_cs = np.log(1 + ret).cumsum() 
+    X = list(range(len(ret)))
+    Y = ret_cs
+    try:
+        reg = sm.OLS(Y, X).fit()
+        coef = reg.params.values[0]
+        std_err = reg.bse.values[0]
+        if std_err == 0:
+            return None
+        else:
+            return coef / std_err
+    except ValueError as e:
+        return print(f'ERROR: {e}')
+
+
+
+class AlgoSelectKRatio(AlgoStack):
     """
     Sets temp['selected'] based on a k-ratio momentum filter.
     """
@@ -18,18 +38,18 @@ class SelectKRatio(AlgoStack):
         sort_descending=True,
         all_or_none=False,
     ):
-        super(SelectKRatio, self).__init__(
-            StatKRatio(lookback=lookback, lag=lag),
+        super(AlgoSelectKRatio, self).__init__(
+            AlgoStatKRatio(lookback=lookback, lag=lag),
             SelectN(n=n, sort_descending=sort_descending, all_or_none=all_or_none),
         )
 
 
-class StatKRatio(Algo):
+class AlgoStatKRatio(Algo):
     """
     Sets temp['stat'] with k-ratio over a given period.
     """
     def __init__(self, lookback=pd.DateOffset(months=3), lag=pd.DateOffset(days=0)):
-        super(StatKRatio, self).__init__()
+        super(AlgoStatKRatio, self).__init__()
         self.lookback = lookback
         self.lag = lag
 
@@ -50,21 +70,21 @@ class StatKRatio(Algo):
         return True
 
 
+class AlgoRunAfter(Algo):
+    def __init__(self, lookback=pd.DateOffset(months=0), lag=pd.DateOffset(days=0)):
+        """
+        start trading after date offset by lookback and lag
+        """
+        super(AlgoRunAfter, self).__init__()
+        self.lookback = lookback
+        self.lag = lag
 
-def calc_kratio(ret):
-    """
-    ret: pandas series
-    """
-    ret_cs = np.log(1 + ret).cumsum() 
-    X = list(range(len(ret)))
-    Y = ret_cs
-    try:
-        reg = sm.OLS(Y, X).fit()
-        coef = reg.params.values[0]
-        std_err = reg.bse.values[0]
-        if std_err == 0:
-            return None
+    def __call__(self, target):
+        t0 = target.now - self.lag - self.lookback
+        if t0 in target.universe.index:
+            return True
         else:
-            return coef / std_err
-    except ValueError as e:
-        return print(f'ERROR: {e}')
+            return False
+
+
+
