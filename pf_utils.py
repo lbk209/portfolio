@@ -517,12 +517,15 @@ class DataManager():
 
 
 class StaticPortfolio():
-    def __init__(self, df_universe, file, path='.', 
-                 lookback=12, lag=0, days_in_year=246,
-                 align_axis=0, asset_names=None):
+    def __init__(self, df_universe, file=None, path='.', 
+                 method_weigh='ERC', lookback=12, lag=0, 
+                 days_in_year=246, align_axis=0, asset_names=None):
         bm = BacktestManager(df_universe, days_in_year=days_in_year, align_axis=align_axis)
         self.df_universe = bm.df_assets
-        
+
+        if file is None:
+            file = 'tmp.csv'
+
         record = self._load_transaction(file, path)
         if record is None:
             print('REMINDER: make sure this is 1st transaction as no records provided')
@@ -531,6 +534,7 @@ class StaticPortfolio():
         self.selected = None
         self.lookback = lookback 
         self.lag = lag 
+        self.method_weigh = method_weigh
         self.file = file
         self.path = path
         self.asset_names = asset_names
@@ -560,11 +564,12 @@ class StaticPortfolio():
         return None
 
     
-    def weigh(self, method='erc'):
+    def weigh(self, method=None):
         """
         method: ERC, InvVol, Equally
         """
         selected = self.selected
+        method = self._check_var(method, self.method_weigh)
         if selected is None:
             return print('ERROR')
         else:
@@ -675,9 +680,10 @@ class StaticPortfolio():
         return df_rec
         
 
-    def transaction_pipeline(self, date=None, method_weigh='erc',
+    def transaction_pipeline(self, date=None, method_weigh=None,
                              capital=10000000, commissions=0, 
                              record=None, save=False):
+        method_weigh = self._check_var(method_weigh, self.method_weigh)
         self.select(date=date)
         _ = self.weigh(method_weigh)
         df_net = self.allocate(capital=capital, commissions=commissions)
@@ -727,16 +733,18 @@ class StaticPortfolio():
 
 
 class MomentumPortfolio(StaticPortfolio):
-    def __init__(self, *args, align_axis=1, **kwargs):
+    def __init__(self, *args, align_axis=1, method_select='simple', **kwargs):
         super().__init__(*args, align_axis=align_axis, **kwargs)
+        self.method_select = method_select
         
     
-    def select(self, date=None, n_assets=5, method='simple', date_format='%Y-%m-%d'):
+    def select(self, date=None, n_assets=5, method=None, date_format='%Y-%m-%d'):
         """
         date: transaction date
         method: simple, k-ratio
         """
         df_data = self.df_universe
+        method = self._check_var(method, self.method_select)
         if date is not None:
             df_data = df_data.loc[:date]
 
@@ -767,9 +775,11 @@ class MomentumPortfolio(StaticPortfolio):
 
     
     def transaction_pipeline(self, date=None, n_assets=5, 
-                             method_select='simple', method_weigh='erc',
+                             method_select=None, method_weigh=None,
                              capital=10000000, commissions=0, 
                              record=None, save=False):
+        method_select = self._check_var(method_select, self.method_select)
+        method_weigh = self._check_var(method_weigh, self.method_weigh)
         _ = self.select(date=date, n_assets=n_assets, method=method_select)
         _ = self.weigh(method_weigh)
         df_net = self.allocate(capital=capital, commissions=commissions)
@@ -1170,7 +1180,7 @@ class BacktestManager():
 
 
     def cross_validate(self, pf_list=None, lag=None, n_sample=10, sampling='random',
-                       metrics=metrics, simplify=True, remove_portfolios=True):
+                       metrics=None, simplify=True, remove_portfolios=True):
         """
         pf_list: str, index, list of str or list of index
         simplify: result format mean ± std if True, dict of cv if False 
