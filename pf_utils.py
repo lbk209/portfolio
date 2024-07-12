@@ -11,6 +11,9 @@ import os, time, re, sys
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 
+from os import listdir
+from os.path import isfile, join, splitext
+
 import bt
 from pf_custom import AlgoSelectKRatio, AlgoRunAfter, calc_kratio
 
@@ -157,7 +160,6 @@ def get_date_range(dfs, symbol_name=None, return_intersection=False):
         return df.sort_values('start date')
 
 
-
 def valuate_bond(face, rate, year, ytm, n_pay=1):
     """
     face: face value
@@ -264,6 +266,20 @@ def print_runtime(func):
         print(f"Execution time of {func.__name__}: {end_time - start_time:.2f} secs")
         return result
     return wrapper
+
+
+def get_file_list(file, path='.'):
+    """
+    find files starting with str file
+    """
+    name, ext = splitext(file)
+    name = name.replace('*', r'(.*?)')
+    try:
+        flist = [f for f in listdir(path) if isfile(join(path, f)) and re.search(name, f)]
+    except Exception as e:
+        print(f'ERROR: {e}')
+        flist = []
+    return sorted(flist)
 
 
 class AssetDict(dict):
@@ -520,12 +536,16 @@ class StaticPortfolio():
     def __init__(self, df_universe, file=None, path='.', 
                  method_weigh='ERC', lookback=12, lag=0, 
                  days_in_year=246, align_axis=0, asset_names=None):
+        """
+        asset_names: dict of ticker to name
+        """
         bm = BacktestManager(df_universe, days_in_year=days_in_year, align_axis=align_axis)
         self.df_universe = bm.df_assets
 
         if file is None:
-            file = 'tmp.csv'
-
+            file = 'tmp.csv' # set temp name for self._load_transaction
+        file = self._retrieve_transaction_file(file, path)
+        
         record = self._load_transaction(file, path)
         if record is None:
             print('REMINDER: make sure this is 1st transaction as no records provided')
@@ -631,6 +651,7 @@ class StaticPortfolio():
         col_date, col_ast, col_prc, col_trs, col_net = cols
         cols_rec = [col_prc, col_trs, col_net]
         date = df_net.index.get_level_values(0).max()
+        asset_names = self.asset_names
 
         record = self._check_var(record, self.record)
         if record is None:
@@ -669,14 +690,20 @@ class StaticPortfolio():
 
         df_rec = df_rec[cols_rec].astype(int).sort_index(level=[0,1])
 
+        # add additinoal info:
+        # asset names
+        if asset_names is not None:
+            df_rec = df_rec.join(pd.Series(asset_names, name='name'), on=col_ast)
+            df_rec = df_rec[['name', *cols_rec]]
+        # addet weights
+        v = df_rec[col_prc].mul(df_rec[col_net])
+        df_rec = df_rec.assign(weights=v.mul(1/v.groupby(col_date).sum()).apply(lambda x: f'{x:.2f}'))
+                
         # calc net profit
         cost = df_rec[col_prc].mul(df_rec[col_trs]).sum()
         val = df_rec.loc[date].apply(lambda x: x[col_prc] * x[col_net], axis=1).sum()
         print(f'Net profit: {val-cost:,}')
 
-        # add weights as additinoal info
-        v = df_rec[col_prc].mul(df_rec[col_net])
-        df_rec = df_rec.assign(weights=v.mul(1/v.groupby(col_date).sum()).apply(lambda x: f'{x:.2f}'))
         return df_rec
         
 
@@ -715,10 +742,18 @@ class StaticPortfolio():
         return df_rec
         
 
-    def _save_transaction(self, df_rec, file, path, date_format='%Y-%m-%d'):
+    def _save_transaction(self, df_rec, file, path, 
+                          pattern=r"_\d+(?=\.\w+$)", date_format='%Y-%m-%d'):
+        # add date to file name
         dt = df_rec.index.get_level_values(0).max()
-        file = re.sub(r"_\d+(?=\.\w+$)", f"_{dt.strftime('%y%m%d')}", file)
-        
+        dt = f"_{dt.strftime('%y%m%d')}"
+        match = re.search(pattern, file)
+        if bool(match):
+            file = re.sub(match[0], dt, file)
+        else:
+            name, ext = splitext(file)
+            file = f'{name}{dt}{ext}'
+        # save after duplicate chekc
         f = os.path.join(path, file)
         if os.path.exists(f):
             return print(f'ERROR: failed to save as {file} exists')
@@ -729,6 +764,18 @@ class StaticPortfolio():
     
     def _check_var(self, arg, arg_self):
         return arg_self if arg is None else arg
+
+
+    def _retrieve_transaction_file(self, file, path):
+        """
+        get the latest transaction file
+        """
+        files = get_file_list(file, path)
+        if len(files) == 0:
+            print(f'WARNING: no {file} exists')
+            return file
+        else:
+            return files[-1]
 
 
 
