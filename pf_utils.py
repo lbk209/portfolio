@@ -17,6 +17,8 @@ from os.path import isfile, join, splitext
 import bt
 from pf_custom import AlgoSelectKRatio, AlgoRunAfter, calc_kratio
 
+from ffn import calc_stats, calc_perf_stats
+
 import warnings
 
 warnings.filterwarnings(action='ignore', category=FutureWarning)
@@ -973,7 +975,7 @@ class BacktestManager():
                                       lag=pd.DateOffset(days=lag))
             algo_select = bt.AlgoStack(algo_after, bt.algos.SelectAll())
             if not cond(select, 'all'):
-                print('SelectAll selected') if self.print_algos_msg else None
+                print('WARNING:SelectAll selected') if self.print_algos_msg else None
           
         return algo_select
         
@@ -996,11 +998,12 @@ class BacktestManager():
                 n = days_in_year
             else:  # default run once
                 n = -1
-
+                if freq.lower() != 'once':
+                    print('WARNING:RunOnce selected') if self.print_algos_msg else None
+            
         if n > 0:
             algo_freq = bt.algos.RunEveryNPeriods(n, offset=offset)
         else:
-            print('RunOnce selected') if self.print_algos_msg else None
             algo_freq = bt.algos.RunOnce()
         return algo_freq
 
@@ -1037,11 +1040,10 @@ class BacktestManager():
                                               rf=rf, bounds=bounds)
             algo_weigh = bt.AlgoStack(bt.algos.SelectHasData(lookback=pd.DateOffset(months=lookback)), 
                                       algo_weigh)
-        elif cond(weigh, 'equally'):
-            algo_weigh = bt.algos.WeighEqually()
         else:
-            print('WeighEqually selected') if self.print_algos_msg else None
             algo_weigh = bt.algos.WeighEqually()
+            if not cond(weigh, 'equally'):
+                print('WARNING:WeighEqually selected') if self.print_algos_msg else None
             
         return algo_weigh
         
@@ -1094,7 +1096,7 @@ class BacktestManager():
         weights: dict of ticker to weight. str if one asset portfolio
         kwargs: set initial_capital or commissions
         """
-        return self.build(name=name, freq=None, select='all', weigh='specified',
+        return self.build(name=name, freq='once', select='all', weigh='specified',
                           weights=weights, **kwargs)
 
 
@@ -1142,7 +1144,7 @@ class BacktestManager():
         commissions = self._check_var(commissions, self.commissions)
        
         self.portfolios[name] = self.backtest(dfs, name=name, select=select, 
-                                              freq={'freq':None}, weigh=weigh, 
+                                              freq={'freq':'once'}, weigh=weigh, 
                                               initial_capital=initial_capital, 
                                               commissions=commissions)
         return None
@@ -1170,7 +1172,7 @@ class BacktestManager():
         return None
 
     
-    def run(self, pf_list=None, metrics=None, stats=True, 
+    def run(self, pf_list=None, metrics=None, stats=True, stats_sort_by=None,
             plot=True, freq='D', figsize=None):
         """
         pf_list: List of backtests or list of index of backtest
@@ -1191,7 +1193,7 @@ class BacktestManager():
         if stats:
             print('Returning stats')
             # pf_list not given as self.run_results recreated
-            return self.get_stats(metrics=metrics, run_results=run_results) 
+            return self.get_stats(metrics=metrics, run_results=run_results, sort_by=stats_sort_by) 
         else:
             print('Returning backtest results')
             return run_results
@@ -1555,7 +1557,7 @@ class BacktestManager():
 
 
 class AssetEvaluator():
-    def __init__(self, df_prices, days_in_year=252):
+    def __init__(self, df_prices, days_in_year=252, metrics=metrics):
         # df of assets (assets in columns) which of each might have its own periods.
         # the periods of all assets will be aligned in every calculation.
         df_prices = df_prices.to_frame() if isinstance(df_prices, pd.Series) else df_prices
@@ -1565,7 +1567,34 @@ class AssetEvaluator():
         
         self.df_prices = df_prices
         self.days_in_year = days_in_year
+        self.metrics = metrics
         self.bayesian_data = None
+
+
+    def get_stats(self, metrics=None, sort_by=None, align_period=True, idx_dt=['start', 'end']):
+        metrics = self._check_var(metrics, self.metrics)
+        df_prices = self.df_prices
+        if align_period:
+            df_stats = calc_stats(df_prices).stats
+        else:
+            #df_stats = df_prices.apply(lambda x: calc_stats(x.dropna()).stats)
+            df_stats = df_prices.apply(lambda x: calc_perf_stats(x.dropna()).stats)
+
+        if (metrics is not None) and (metrics != 'all'):
+            metrics = idx_dt + metrics
+            df_stats = df_stats.loc[metrics]
+
+        for i in df_stats.index:
+            if i in idx_dt:
+                df_stats.loc[i] = df_stats.loc[i].apply(lambda x: x.strftime('%Y-%m-%d'))
+
+        if sort_by is not None:
+            try:
+                df_stats = df_stats.sort_values(sort_by, axis=1, ascending=False)
+            except KeyError as e:
+                print(f'WARNING: no sorting as {e}')
+
+        return df_stats
 
 
     def get_freq_days(self, freq='daily'):
@@ -1587,80 +1616,38 @@ class AssetEvaluator():
         return var_arg
 
 
-    def calc_cagr(self, df_prices=None, days_in_year=None, align_period=False):
-        # calc cagr's of assets
-        df_prices = self._check_var(df_prices, self.df_prices)
-        days_in_year = self._check_var(days_in_year, self.days_in_year)
-        if align_period:
-            df_prices = self.align_period(df_prices, axis=0, fill_na=True)
-        return df_prices.apply(lambda x: self._calc_cagr(x, days_in_year))
-
-
-    def _calc_cagr(self, sr_prices, days_in_year):
-        # calc cagr of a asset
-        sr = sr_prices.ffill().dropna()
-        t = days_in_year / len(sr)
-        return (sr.iloc[-1]/sr.iloc[0]) ** t - 1
-
-
-    def calc_mean_return(self, df_prices=None, days_in_year=None, freq='daily', annualize=True):
-        df_prices = self._check_var(df_prices, self.df_prices)
-        days_in_year = self._check_var(days_in_year, self.days_in_year)
-        periods, _ = self.get_freq_days(freq)
+    def _calc_mean_return(self, df_prices, periods, days_in_year, annualize=True):
         scale = (days_in_year/periods) if annualize else 1
-        return df_prices.apply(lambda x: self._calc_mean_return(x, periods, scale))
+        return df_prices.apply(lambda x: x.pct_change(periods).dropna().mean() * scale)
         
 
-    def _calc_mean_return(self, sr_prices, periods, scale):
-        return sr_prices.pct_change(periods).dropna().mean() * scale
-    
-
-    def calc_volatility(self, df_prices=None, days_in_year=None, freq='daily', annualize=True):
-        df_prices = self._check_var(df_prices, self.df_prices)
-        days_in_year = self._check_var(days_in_year, self.days_in_year)
-        periods, _ = self.get_freq_days(freq)
+    def _calc_volatility(self, df_prices, periods, days_in_year, annualize=True):
         scale = (days_in_year/periods) ** .5 if annualize else 1
-        return df_prices.apply(lambda x: self._calc_volatility(x, periods, scale))
+        return df_prices.apply(lambda x: x.pct_change(periods).dropna().std() * scale)
         
 
-    def _calc_volatility(self, sr_prices, periods, scale):
-        return sr_prices.pct_change(periods).dropna().std() * scale
-    
-
-    def calc_sharpe(self, df_prices=None, days_in_year=None, freq='daily', annualize=True, rf=0):
-        df_prices = self._check_var(df_prices, self.df_prices)
-        days_in_year = self._check_var(days_in_year, self.days_in_year)
-        periods, _ = self.get_freq_days(freq)
+    def _calc_sharpe(self, df_prices, periods, days_in_year, annualize=True, rf=0):
+        mean = self._calc_mean_return(df_prices, periods, 0, False)
+        std = self._calc_volatility(df_prices, periods, 0, False)
         scale = (days_in_year/periods) ** .5 if annualize else 1
-        return df_prices.apply(lambda x: self._calc_sharpe(x, periods, scale, rf))
-        
-
-    def _calc_sharpe(self, sr_prices, periods, scale, rf):
-        mean = self._calc_mean_return(sr_prices, periods, 1)
-        std = self._calc_volatility(sr_prices, periods, 1)
         return (mean - rf) / std * scale
 
 
-    def summary(self, freq='yearly', annualize=True, rf=0, align_period=False):
+    def get_ref_val(self, freq='yearly', annualize=True, rf=0, align_period=False):
+        """
+        get ref val for 
+        """
         df_prices = self.df_prices
         if align_period:
             df_prices = self.align_period(df_prices, axis=0, fill_na=True)
-
-        _, freq = self.get_freq_days(freq) # check freq for naming
-        kwargs = dict(
-            df_prices=df_prices, freq=freq, annualize=annualize
-        )
-        df = df_prices.apply(lambda x: f'{len(x.dropna())/self.days_in_year:.1f}')
-        # work even with df_prices of single asset as df_prices is always series (see __init__)
-        return df.to_frame('years').join(
-            self.calc_cagr(df_prices).to_frame('cagr').join(
-                self.calc_mean_return(**kwargs).to_frame(f'{freq}_mean').join(
-                    self.calc_volatility(**kwargs).to_frame(f'{freq}_vol').join(
-                        self.calc_sharpe(rf=rf, **kwargs).to_frame(f'{freq}_sharpe')
-                    )
-                )
-            )
-        ).T
+        days_in_year = self.days_in_year
+        periods, freq = self.get_freq_days(freq)
+        args = [df_prices, periods, days_in_year, annualize]
+        return {
+            f'{freq}_mean': self._calc_mean_return(*args).to_dict(),
+            f'{freq}_vol': self._calc_volatility(*args).to_dict(),
+            f'{freq}_sharpe': self._calc_sharpe(*args).to_dict()
+        }
 
 
     def bayesian_sample(self, freq='yearly', annualize=True, rf=0, align_period=False,
@@ -1751,9 +1738,7 @@ class AssetEvaluator():
             align_period = self.bayesian_data['align_period']
 
         if ref_val is None:
-            df = self.summary(freq=freq, annualize=annualize, rf=rf, align_period=align_period)
-            metrics = [x for x in df.index if x.startswith(freq)]
-            ref_val = df.loc[metrics].to_dict(orient='index')
+            ref_val = self.get_ref_val(freq=freq, annualize=annualize, rf=rf, align_period=align_period)
             col_name = list(coords.keys())[0]
             ref_val = {k: [{col_name:at, 'ref_val':rv} for at, rv in v.items()] for k,v in ref_val.items()}
         ref_val.update({'mean diff': [{'ref_val': 0}], 'sharpe diff': [{'ref_val': 0}]})
