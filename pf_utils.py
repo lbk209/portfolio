@@ -1443,8 +1443,17 @@ class BacktestManager():
         return df_all
 
 
-    def get_historical(self, pf_list=None):
-        func_result = lambda x: self.run_results[x].prices
+    def get_historical(self, pf_list=None, raw=False):
+        """
+        drop dates before 1st transaction if raw=False
+        """
+        if raw:
+            func_result = lambda x: self.run_results[x].prices
+        else:
+            def func_result(x):
+                df = self.get_transactions(x, msg=False)
+                start = df.index.get_level_values(0).min()
+                return self.run_results[x].prices.loc[start:]
         return self._retrieve_results(pf_list, func_result)
 
 
