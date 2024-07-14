@@ -284,6 +284,34 @@ def get_file_list(file, path='.'):
     return sorted(flist)
 
 
+def performance_stats(df_prices, metrics=None, sort_by=None, align_period=True, idx_dt=['start', 'end']):
+    if isinstance(df_prices, pd.Series):
+        df_prices = df_prices.to_frame()
+        
+    if align_period:
+        df_stats = calc_stats(df_prices).stats
+    else:
+        #df_stats = df_prices.apply(lambda x: calc_stats(x.dropna()).stats)
+        df_stats = df_prices.apply(lambda x: calc_perf_stats(x.dropna()).stats)
+
+    if (metrics is not None) and (metrics != 'all'):
+        metrics = idx_dt + metrics
+        df_stats = df_stats.loc[metrics]
+
+    for i in df_stats.index:
+        if i in idx_dt:
+            df_stats.loc[i] = df_stats.loc[i].apply(lambda x: x.strftime('%Y-%m-%d'))
+
+    if sort_by is not None:
+        try:
+            df_stats = df_stats.sort_values(sort_by, axis=1, ascending=False)
+        except KeyError as e:
+            print(f'WARNING: no sorting as {e}')
+
+    return df_stats
+
+
+
 class AssetDict(dict):
     """
     A dictionary subclass that associates keys (ex:asset tickers) with names.
@@ -537,7 +565,10 @@ class DataManager():
 class StaticPortfolio():
     def __init__(self, df_universe, file=None, path='.', 
                  method_weigh='ERC', lookback=12, lag=0, 
-                 days_in_year=246, align_axis=0, asset_names=None):
+                 days_in_year=246, align_axis=0, asset_names=None, name='portfolio',
+                 cols_record = {'date':'date', 'ast':'asset', 'name':'name', 'prc':'price', 
+                                'trs':'transaction', 'net':'net', 'wgt':'weight'}
+                ):
         """
         asset_names: dict of ticker to name
         """
@@ -552,6 +583,7 @@ class StaticPortfolio():
         if record is None:
             print('REMINDER: make sure this is 1st transaction as no records provided')
         self.record = record
+        self.cols_record = cols_record
         
         self.selected = None
         self.lookback = lookback 
@@ -560,6 +592,8 @@ class StaticPortfolio():
         self.file = file
         self.path = path
         self.asset_names = asset_names
+        self.df_rec = None # record updated with new transaction
+        self.name = name # portfolio name
         
         
     def select(self, date=None, date_format='%Y-%m-%d'):
@@ -581,8 +615,7 @@ class StaticPortfolio():
         n_assets = df_data.columns.size # all assets in the universe selected
         print(f'{n_assets} assets from {dts[0]} to {dts[1]} prepared for weight analysis')
         
-        self.selected = {'date': date.strftime(date_format),
-                         'data': df_data}
+        self.selected = {'date': date, 'data': df_data}
         return None
 
     
@@ -615,24 +648,36 @@ class StaticPortfolio():
         return weights
         
 
-    def allocate(self, capital=10000000, commissions=0,
-                 cols =['date', 'asset', 'price', 'transaction', 'net']):
+    def allocate(self, capital=10000000, commissions=0, rebalance=True):
         """
         calc number of each asset with price and weights
+        commissions: percentage
         """
-        col_date, col_ast, col_prc, _, col_net = cols
+        col_date = self.cols_record['date']
+        col_ast = self.cols_record['ast']
+        col_prc = self.cols_record['prc']
+        col_net = self.cols_record['net']
         
         selected = self.selected
         if selected is None:
             return print('ERROR')
         
         try:
-            date = pd.to_datetime(selected['date']) # cast to datetime
+            date = selected['date']
             weights = selected['weights']
             assets = weights.index
         except KeyError as e:
             return print('ERROR')
 
+        if rebalance:
+            record = self.record
+            if record is None:
+                print('WARNING: No rebalance as no record loaded')
+            else:
+                msg = 'WARNING: No rebalance as no new transaction'
+                if self._check_new_transaction(date, record, col_date, msg):
+                    capital = self.calc_value(record)
+        
         df_prc = self.df_universe
         a = capital / (1+commissions/100)
         df_net = a * pd.Series(weights).mul(1/df_prc.loc[date, assets])
@@ -642,16 +687,23 @@ class StaticPortfolio():
         # index is multiindex of date and asset
         df_net = df_net.rename_axis(col_ast).set_index(col_date, append=True).swaplevel()
         return df_net
-        
+    
 
-    def transaction(self, df_net, record=None, cols=['date', 'asset', 'price', 'transaction', 'net']):
+    def transaction(self, df_net, record=None):
         """
         add new transaction to records
         df_net: output of self.allocate
         record: transaction record given as dataframe
         """
-        col_date, col_ast, col_prc, col_trs, col_net = cols
+        col_date = self.cols_record['date']
+        col_ast = self.cols_record['ast']
+        col_name = self.cols_record['name']
+        col_prc = self.cols_record['prc']
+        col_trs = self.cols_record['trs']
+        col_net = self.cols_record['net']
+        col_wgt = self.cols_record['wgt']
         cols_rec = [col_prc, col_trs, col_net]
+        
         date = df_net.index.get_level_values(0).max()
         asset_names = self.asset_names
 
@@ -659,14 +711,12 @@ class StaticPortfolio():
         if record is None:
             df_rec = df_net.assign(**{col_trs: df_net[col_net]})
         else:
-            dt = record.index.get_level_values(col_date).max()
-            if dt >= date:
-                print('ERROR: check the date as no new transaction')
-                return record
-            else: # add new to record
-                # remove additional info except for cols_rec in record
+            if self._check_new_transaction(date, record, col_date):
+                # add new to record after removing additional info except for cols_rec in record
                 df_rec = pd.concat([record[cols_rec], df_net])
                 df_prc = self.df_universe
+            else:
+                return None
             
             # fill missing prices (ex: old price of new assets, new price of old assets)
             # use purchase prices in the record before possible adjustment of stock prices
@@ -695,18 +745,31 @@ class StaticPortfolio():
         # add additinoal info:
         # asset names
         if asset_names is not None:
-            df_rec = df_rec.join(pd.Series(asset_names, name='name'), on=col_ast)
-            df_rec = df_rec[['name', *cols_rec]]
+            df_rec = df_rec.join(pd.Series(asset_names, name=col_name), on=col_ast)
+            df_rec = df_rec[[col_name, *cols_rec]]
         # addet weights
         v = df_rec[col_prc].mul(df_rec[col_net])
-        df_rec = df_rec.assign(weights=v.mul(1/v.groupby(col_date).sum()).apply(lambda x: f'{x:.2f}'))
+        df_rec = df_rec.assign(**{col_wgt: v.mul(1/v.groupby(col_date).sum()).apply(lambda x: f'{x:.2f}')})
                 
         # calc net profit
-        cost = df_rec[col_prc].mul(df_rec[col_trs]).sum()
-        val = df_rec.loc[date].apply(lambda x: x[col_prc] * x[col_net], axis=1).sum()
-        print(f'Net profit: {val-cost:,}')
-
+        profit = self.calc_value(df_rec, True)
+        print(f'Net profit: {profit:,}')
+        
+        self.df_rec = df_rec
         return df_rec
+
+
+    def calc_value(self, record, profit=False):
+        col_prc = self.cols_record['prc']
+        col_trs = self.cols_record['trs']
+        col_net = self.cols_record['net']
+        cost = record[col_prc].mul(record[col_trs]).sum()
+        date = record.index.get_level_values(0).max()
+        val = record.loc[date].apply(lambda x: x[col_prc] * x[col_net], axis=1).sum()
+        if profit: # return profit
+            return val-cost
+        else: # return total value (asset value + profit)
+            return 2*val-cost
         
 
     def transaction_pipeline(self, date=None, method_weigh=None,
@@ -714,15 +777,122 @@ class StaticPortfolio():
                              record=None, save=False):
         method_weigh = self._check_var(method_weigh, self.method_weigh)
         self.select(date=date)
+        if not self.check_new_transaction():
+            return self.record
+
         _ = self.weigh(method_weigh)
         df_net = self.allocate(capital=capital, commissions=commissions)
+        if df_net is None:
+            return None
+            
         df_rec = self.transaction(df_net, record=record)
-        if df_rec is not None:
+        if df_rec is not None: # new transaction updated
             if save:
                 self.save_transaction(df_rec)
             else:
                 print('Set save=True to save transaction record')
+        else:
+            print('Nothing to save')
         return df_rec
+
+
+    def _calc_historical(self, df_rec, name):
+        """
+        calc historical of portfolio value from tranaction
+        """
+        col_net = self.cols_record['net']
+        end = datetime.today()
+        sr_tot = pd.Series()
+        dates_trs = df_rec.index.get_level_values(0).unique()
+        
+        # loop for transaction dates in descending order
+        for start in dates_trs.sort_values(ascending=False):
+            n_assets = df_rec.loc[start, col_net]
+            # calc combined asset value history from prv transaction (start) to current (end) 
+            sr_i = (self.df_universe.loc[start:end, n_assets.index]
+                    .apply(lambda x: x*n_assets.loc[x.name]).sum(axis=1)) # x.name: index name
+            # add to history the profit by substracting initial value of the history from total value (to start)
+            sr_i += self.calc_value(df_rec.loc[:start], profit=False) - sr_i[0] 
+            # concat histories        
+            sr_tot = pd.concat([sr_tot, sr_i])
+            end = start - pd.DateOffset(days=1)
+        # sort by date
+        return sr_tot.rename(name).sort_index()
+
+
+    def get_historical(self):
+        df_rec = self._check_result()
+        if df_rec is None:
+            return None
+        else:
+            return self._calc_historical(df_rec, self.name)
+
+    
+    def plot(self, figsize=(10,4)):
+        """
+        plot total value of portfolio
+        """
+        df_rec = self._check_result()
+        if df_rec is None:
+            return None
+        else:
+            sr_historical = self._calc_historical(df_rec, self.name)
+            dates_trs = df_rec.index.get_level_values(0).unique()
+            
+        ax = sr_historical.plot(figsize=figsize, title='Portfolio Growth')
+        ax.vlines(dates_trs, 0, 1, transform=ax.get_xaxis_transform(), lw=0.5, color='grey')
+        ax.autoscale(enable=True, axis='x', tight=True)
+        ax2 = ax.twinx()
+        _ = sr_historical.mul(1/sr_historical[0]).plot(ax=ax2)
+        ax2.autoscale(enable=True, axis='x', tight=True)
+        return None
+
+
+    def performance(self, metrics=None, sort_by=None):
+        df_rec = self._check_result()
+        if df_rec is None:
+            return None
+        else:
+            sr_historical = self._calc_historical(df_rec, self.name)
+            return performance_stats(sr_historical, metrics=metrics, sort_by=sort_by)
+
+
+    def _check_result(self):
+        if self.df_rec is None:
+            if self.record is None:
+                return print('ERROR')
+            else:
+                return self.record
+        else:
+            return self.df_rec
+    
+
+    def check_new_transaction(self):
+        record = self.record
+        if record is None:
+            print('WARNING: no record loaded')
+            return True
+        else:
+            col_date = record.index.names[0]
+        
+        selected = self.selected
+        if selected is None:
+            print('ERROR: run select first')
+            return False
+        else:
+            date = selected['date']
+        
+        return self._check_new_transaction(date, record, col_date)
+    
+    
+    def _check_new_transaction(self, date, record, col_date, 
+                               msg='ERROR: check the date as no new transaction'):
+        dt = record.index.get_level_values(col_date).max()
+        if dt >= date:
+            print(msg) if msg is not None else None
+            return False
+        else:
+            return True
 
 
     def save_transaction(self, df_rec, file=None, path=None):
@@ -817,8 +987,7 @@ class MomentumPortfolio(StaticPortfolio):
             method = 'Total return'
 
         assets = rank.index
-        self.selected = {'date': date.strftime(date_format),
-                         'rank': rank, 'data': df_data[assets]}
+        self.selected = {'date': date, 'rank': rank, 'data': df_data[assets]}
         print(f'{n_assets} assets selected by {method} {info_date}')
         return rank
 
@@ -829,15 +998,24 @@ class MomentumPortfolio(StaticPortfolio):
                              record=None, save=False):
         method_select = self._check_var(method_select, self.method_select)
         method_weigh = self._check_var(method_weigh, self.method_weigh)
-        _ = self.select(date=date, n_assets=n_assets, method=method_select)
+        
+        self.select(date=date, n_assets=n_assets, method=method_select)
+        if not self.check_new_transaction():
+            return self.record
+
         _ = self.weigh(method_weigh)
         df_net = self.allocate(capital=capital, commissions=commissions)
+        if df_net is None:
+            return None
+            
         df_rec = self.transaction(df_net, record=record)
-        if df_rec is not None:
+        if df_rec is not None: # new transaction updated
             if save:
                 self.save_transaction(df_rec)
             else:
                 print('Set save=True to save transaction record')
+        else:
+            print('Nothing to save')
         return df_rec
 
 
@@ -1583,28 +1761,8 @@ class AssetEvaluator():
     def get_stats(self, metrics=None, sort_by=None, align_period=True, idx_dt=['start', 'end']):
         metrics = self._check_var(metrics, self.metrics)
         df_prices = self.df_prices
-        if align_period:
-            df_stats = calc_stats(df_prices).stats
-        else:
-            #df_stats = df_prices.apply(lambda x: calc_stats(x.dropna()).stats)
-            df_stats = df_prices.apply(lambda x: calc_perf_stats(x.dropna()).stats)
-
-        if (metrics is not None) and (metrics != 'all'):
-            metrics = idx_dt + metrics
-            df_stats = df_stats.loc[metrics]
-
-        for i in df_stats.index:
-            if i in idx_dt:
-                df_stats.loc[i] = df_stats.loc[i].apply(lambda x: x.strftime('%Y-%m-%d'))
-
-        if sort_by is not None:
-            try:
-                df_stats = df_stats.sort_values(sort_by, axis=1, ascending=False)
-            except KeyError as e:
-                print(f'WARNING: no sorting as {e}')
-
-        return df_stats
-
+        return performance_stats(df_prices, metrics=metrics, sort_by=sort_by, align_period=align_period, idx_dt=idx_dt)
+        
 
     def get_freq_days(self, freq='daily'):
         if freq == 'yearly':
