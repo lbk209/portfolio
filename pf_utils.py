@@ -676,7 +676,7 @@ class StaticPortfolio():
             else:
                 msg = 'WARNING: No rebalance as no new transaction'
                 if self._check_new_transaction(date, record, col_date, msg):
-                    capital = self.calc_value(record)
+                    capital = self.calc_value(record, False)
         
         df_prc = self.df_universe
         a = capital / (1+commissions/100)
@@ -751,9 +751,9 @@ class StaticPortfolio():
         v = df_rec[col_prc].mul(df_rec[col_net])
         df_rec = df_rec.assign(**{col_wgt: v.mul(1/v.groupby(col_date).sum()).apply(lambda x: f'{x:.2f}')})
                 
-        # calc net profit
-        profit = self.calc_value(df_rec, True)
-        print(f'Net profit: {profit:,}')
+        # calc value and profit
+        v, p = [self.calc_value(df_rec, x) for x in [False, True]]
+        print(f'Value {v:,}, Profit {p:,}')
         
         self.df_rec = df_rec
         return df_rec
@@ -778,6 +778,9 @@ class StaticPortfolio():
         method_weigh = self._check_var(method_weigh, self.method_weigh)
         self.select(date=date)
         if not self.check_new_transaction():
+            # calc profit at the last transaction
+            p = self.calc_value(self.record, True)
+            print(f'The profit from the most recent transaction: {p:,}')
             return self.record
 
         _ = self.weigh(method_weigh)
@@ -1001,6 +1004,9 @@ class MomentumPortfolio(StaticPortfolio):
         
         self.select(date=date, n_assets=n_assets, method=method_select)
         if not self.check_new_transaction():
+            # calc profit at the last transaction
+            p = self.calc_value(self.record, True)
+            print(f'The profit from the most recent transaction: {p:,}')
             return self.record
 
         _ = self.weigh(method_weigh)
@@ -1762,6 +1768,16 @@ class AssetEvaluator():
         metrics = self._check_var(metrics, self.metrics)
         df_prices = self.df_prices
         return performance_stats(df_prices, metrics=metrics, sort_by=sort_by, align_period=align_period, idx_dt=idx_dt)
+
+        
+    def plot_historical(self, figsize=(10,4), title='Portfolio Growth'):
+        """
+        plot total value of portfolio
+        """
+        df_prices = self.df_prices
+        ax = df_prices.plot(figsize=figsize, title=title)
+        ax.autoscale(enable=True, axis='x', tight=True)
+        return None
         
 
     def get_freq_days(self, freq='daily'):
