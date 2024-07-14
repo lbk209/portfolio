@@ -1762,6 +1762,16 @@ class AssetEvaluator():
         metrics = self._check_var(metrics, self.metrics)
         df_prices = self.df_prices
         return performance_stats(df_prices, metrics=metrics, sort_by=sort_by, align_period=align_period, idx_dt=idx_dt)
+
+        
+    def plot_historical(self, figsize=(10,4), title='Portfolio Growth'):
+        """
+        plot total value of portfolio
+        """
+        df_prices = self.df_prices
+        ax = df_prices.plot(figsize=figsize, title=title)
+        ax.autoscale(enable=True, axis='x', tight=True)
+        return None
         
 
     def get_freq_days(self, freq='daily'):
