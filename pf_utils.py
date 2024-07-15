@@ -200,6 +200,7 @@ def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10):
     # calc mean days for each asset
     df_days = (df.assign(gb=df.index.strftime(grp_format)).set_index('gb')
                  .apply(lambda x: x.dropna().groupby('gb').count()[1:-1])
+                 .fillna(0) # fill nan with zero for assets invested recently
                  .mul(factor).mean().round())
 
     cond = (df_days != days_in_year)
@@ -564,16 +565,20 @@ class DataManager():
 
 class StaticPortfolio():
     def __init__(self, df_universe, file=None, path='.', 
-                 method_weigh='ERC', lookback=12, lag=0, 
+                 method_weigh='ERC', lookback=12, lag=0,
                  days_in_year=246, align_axis=0, asset_names=None, name='portfolio',
                  cols_record = {'date':'date', 'ast':'asset', 'name':'name', 'prc':'price', 
                                 'trs':'transaction', 'net':'net', 'wgt':'weight'}
                 ):
         """
+        file: file of transaction history. 
+              Do not update the asset prices with the actual purchase price, 
+               as the new df_universe may be adjusted with updated prices after the purchase.
         asset_names: dict of ticker to name
         """
         bm = BacktestManager(df_universe, days_in_year=days_in_year, align_axis=align_axis)
         self.df_universe = bm.df_assets
+        self._check_weights = bm._check_weights
 
         if file is None:
             file = 'tmp.csv' # set temp name for self._load_transaction
@@ -596,7 +601,7 @@ class StaticPortfolio():
         self.name = name # portfolio name
         
         
-    def select(self, date=None, date_format='%Y-%m-%d'):
+    def select(self, date=None):
         """
         date: transaction date
         """
@@ -611,7 +616,7 @@ class StaticPortfolio():
         df_data = df_data.loc[dt0:dt1] 
 
         dts = df_data.index
-        dts = [x.strftime(date_format) for x in (dts.min(), dts.max())]
+        dts = [x.strftime('%Y-%m-%d') for x in (dts.min(), dts.max())]
         n_assets = df_data.columns.size # all assets in the universe selected
         print(f'{n_assets} assets from {dts[0]} to {dts[1]} prepared for weight analysis')
         
@@ -619,9 +624,10 @@ class StaticPortfolio():
         return None
 
     
-    def weigh(self, method=None):
+    def weigh(self, method=None, weights=None):
         """
-        method: ERC, InvVol, Equally
+        method: ERC, InvVol, Equally, Specified
+        weights: str, list of str, dict, or None
         """
         selected = self.selected
         method = self._check_var(method, self.method_weigh)
@@ -637,13 +643,19 @@ class StaticPortfolio():
         elif method.lower() == 'invvol':
             weights = bt.ffn.calc_inv_vol_weights(df_data.pct_change(1).dropna())
             method = 'Inv.Vol'
-        else: # default equal
+        elif method.lower() == 'specified':
+            w = self._check_weights(weights, df_data)
+            weights = {x:0 for x in assets}
+            weights.update(w)
+            weights = pd.Series(weights)
+            method = 'Specified'
+        else: # default equal. no need to set arg weights
             weights = {x:1/len(assets) for x in assets}
             weights = pd.Series(weights)
             method = 'Equal weights'
         weigths = AssetDict(weights, names=self.asset_names)
 
-        self.selected['weights'] = weights
+        self.selected['weights'] = weights # weights is series
         print(f'Weights of assets determined by {method}.')
         return weights
         
@@ -772,7 +784,7 @@ class StaticPortfolio():
             return 2*val-cost
         
 
-    def transaction_pipeline(self, date=None, method_weigh=None,
+    def transaction_pipeline(self, date=None, method_weigh=None, weights=None,
                              capital=10000000, commissions=0, 
                              record=None, save=False):
         method_weigh = self._check_var(method_weigh, self.method_weigh)
@@ -783,7 +795,7 @@ class StaticPortfolio():
             print(f'The profit from the most recent transaction: {p:,}')
             return self.record
 
-        _ = self.weigh(method_weigh)
+        _ = self.weigh(method_weigh, weights)
         df_net = self.allocate(capital=capital, commissions=commissions)
         if df_net is None:
             return None
@@ -863,7 +875,7 @@ class StaticPortfolio():
     def _check_result(self):
         if self.df_rec is None:
             if self.record is None:
-                return print('ERROR')
+                return print('ERROR: No transaction record')
             else:
                 return self.record
         else:
@@ -960,7 +972,7 @@ class MomentumPortfolio(StaticPortfolio):
         self.method_select = method_select
         
     
-    def select(self, date=None, n_assets=5, method=None, date_format='%Y-%m-%d'):
+    def select(self, date=None, n_assets=5, method=None):
         """
         date: transaction date
         method: simple, k-ratio
@@ -977,7 +989,7 @@ class MomentumPortfolio(StaticPortfolio):
         df_data = df_data.loc[dt0:dt1]
 
         dts = df_data.index
-        dts = [x.strftime(date_format) for x in (dts.min(), dts.max())]
+        dts = [x.strftime('%Y-%m-%d') for x in (dts.min(), dts.max())]
         info_date = f'from {dts[0]} to {dts[1]}'
         
         if method.lower() == 'k-ratio':
@@ -996,7 +1008,7 @@ class MomentumPortfolio(StaticPortfolio):
 
     
     def transaction_pipeline(self, date=None, n_assets=5, 
-                             method_select=None, method_weigh=None,
+                             method_select=None, method_weigh=None, weights=None,
                              capital=10000000, commissions=0, 
                              record=None, save=False):
         method_select = self._check_var(method_select, self.method_select)
@@ -1009,7 +1021,7 @@ class MomentumPortfolio(StaticPortfolio):
             print(f'The profit from the most recent transaction: {p:,}')
             return self.record
 
-        _ = self.weigh(method_weigh)
+        _ = self.weigh(method_weigh, weights)
         df_net = self.allocate(capital=capital, commissions=commissions)
         if df_net is None:
             return None
