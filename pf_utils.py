@@ -127,6 +127,7 @@ def convert_rate_to_price(data, n_headers=1, path=None,
     ticker = data['ticker']
     name = data['name']
     file = f'{data['file']}.csv'
+    file = get_file_latest(file, path) # latest file
     data_check = [
         (data['check1_date'], data['check1_price']),
         (data['check2_date'], data['check2_price']),
@@ -285,6 +286,14 @@ def get_file_list(file, path='.'):
     return sorted(flist)
 
 
+def get_file_latest(file, path='.'):
+    files = get_file_list(file, path)
+    if len(files) == 0:
+        return None
+    else:
+        return files[-1] # latest file
+
+
 def performance_stats(df_prices, metrics=None, sort_by=None, align_period=True, idx_dt=['start', 'end']):
     if isinstance(df_prices, pd.Series):
         df_prices = df_prices.to_frame()
@@ -374,7 +383,7 @@ class DataManager():
         """
         universe: kospi200, etf
         """
-        self.file_historicals = file
+        self.file_historicals = get_file_latest(file, path) # latest file
         self.path = path
         self.universe = universe
         self.asset_names = None
@@ -519,7 +528,6 @@ class DataManager():
         master file of assets with ticker, file, adjusting data, etc
         """
         df_info = pd.read_csv(f'{path}/{file}')
-        df_info = df_info.iloc[:-1]
         df_prices = None
         print('Estimating price from rate ...')
         for _, data in df_info.iterrows():
