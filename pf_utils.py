@@ -863,7 +863,7 @@ class StaticPortfolio():
     def _check_result(self):
         if self.df_rec is None:
             if self.record is None:
-                return print('ERROR')
+                return print('ERROR: No transaction record')
             else:
                 return self.record
         else:
