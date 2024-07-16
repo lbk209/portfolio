@@ -202,7 +202,9 @@ def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10):
     df_days = (df.assign(gb=df.index.strftime(grp_format)).set_index('gb')
                  .apply(lambda x: x.dropna().groupby('gb').count()[1:-1])
                  .fillna(0) # fill nan with zero for assets invested recently
-                 .mul(factor).mean().round())
+                 .mul(factor).mean().round()
+                 .fillna(0) # for the case no asset has enough days for the calc
+              )
 
     cond = (df_days != days_in_year)
     if cond.sum() > 0:
@@ -668,9 +670,10 @@ class StaticPortfolio():
         return weights
         
 
-    def allocate(self, capital=10000000, commissions=0, rebalance=True):
+    def allocate(self, capital=10000000, commissions=0):
         """
         calc number of each asset with price and weights
+        capital: rebalance capital from record if set to 0
         commissions: percentage
         """
         col_date = self.cols_record['date']
@@ -689,7 +692,7 @@ class StaticPortfolio():
         except KeyError as e:
             return print('ERROR')
 
-        if rebalance:
+        if capital == 0: # rebalance from prv assets
             record = self.record
             if record is None:
                 print('WARNING: No rebalance as no record loaded')
