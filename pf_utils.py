@@ -673,7 +673,7 @@ class StaticPortfolio():
     def allocate(self, capital=10000000, commissions=0):
         """
         calc number of each asset with price and weights
-        capital: rebalance capital from record if set to 0
+        capital: rebalance assets without cash flows if set to 0
         commissions: percentage
         """
         col_date = self.cols_record['date']
@@ -692,14 +692,16 @@ class StaticPortfolio():
         except KeyError as e:
             return print('ERROR')
 
-        if capital == 0: # rebalance from prv assets
-            record = self.record
-            if record is None:
-                print('WARNING: No rebalance as no record loaded')
-            else:
-                msg = 'WARNING: No rebalance as no new transaction'
-                if self._check_new_transaction(date, record, col_date, msg):
-                    capital = self.calc_value(record, False)
+        # sum capital and asset value
+        record = self.record
+        if record is None:
+            if capital == 0:
+                return print('ERROR: Neither capital nor assets to rebalance exists')
+        else:
+            msg = 'WARNING: No rebalance as no new transaction'
+            if self._check_new_transaction(date, record, col_date, msg):
+                # the arg capital is now cash flows
+                capital += self.calc_value(record, False)
         
         df_prc = self.df_universe
         a = capital / (1+commissions/100)
