@@ -812,11 +812,23 @@ class StaticPortfolio():
         col_net = self.cols_record['net']
         cost = record[col_prc].mul(record[col_trs]).sum()
         date = record.index.get_level_values(0).max()
-        val = record.loc[date].apply(lambda x: x[col_prc] * x[col_net], axis=1).sum()
+        bal = record.loc[date].apply(lambda x: x[col_prc] * x[col_net], axis=1).sum()
         if profit: # return profit
-            return val-cost
+            return bal-cost
         else: # return total value (asset value + profit)
-            return 2*val-cost
+            return 2*bal-cost
+
+
+    def calc_cashflow(self, record):
+        """
+        Returns a series of cash flows for each transaction.
+         negative for outflows, positive for inflows.
+        """
+        col_prc = self.cols_record['prc']
+        col_trs = self.cols_record['trs']
+        col_date = self.cols_record['date']
+        return (record[col_prc].mul(record[col_trs])
+                 .groupby(col_date).sum().cumsum().mul(-1))
         
 
     def transaction_pipeline(self, date=None, method_weigh=None, weights=None,
@@ -888,15 +900,32 @@ class StaticPortfolio():
         else:
             sr_historical = self._calc_historical(df_rec, self.name)
             dates_trs = df_rec.index.get_level_values(0).unique()
-            
-        ax = sr_historical.plot(figsize=figsize, title='Portfolio Growth')
-        ax.vlines(dates_trs, 0, 1, transform=ax.get_xaxis_transform(), lw=0.5, color='grey')
-        ax.autoscale(enable=True, axis='x', tight=True)
-        ax2 = ax.twinx()
-        _ = sr_historical.mul(1/sr_historical[0]).plot(ax=ax2)
-        ax2.autoscale(enable=True, axis='x', tight=True)
+            sr_cf = self.calc_cashflow(df_rec)
+            xmax = sr_historical.index.max()
+        # plot historical of portfolio value
+        ax1 = sr_historical.plot(figsize=figsize, label='Total Value', title='Portfolio Growth')
+        ax1.vlines(dates_trs, 0, 1, transform=ax1.get_xaxis_transform(), lw=0.5, color='grey')
+        ax1.autoscale(enable=True, axis='x', tight=True)
+        # plot cash flows
+        ax2 = ax1.twinx()
+        self._plot_cashflow(ax2, sr_cf, xmax)
+        # set legend
+        h1, _ = ax1.get_legend_handles_labels()
+        h2, _ = ax2.get_legend_handles_labels()
+        ax1.legend(handles=[h1[0], h2[0]])
         return None
 
+
+    def _plot_cashflow(self, ax, sr_cashflow, xmax, 
+                       label='Cash Flows', alpha=0.4, colors=('r','g')):
+        df_cf = sr_cashflow.rename('y').rename_axis('x1').reset_index()
+        df_cf = df_cf.join(df_cf.x1.shift(-1).rename('x2')).fillna(xmax)
+        df_cf = df_cf[['y', 'x1', 'x2']]
+        args_vline = [x.to_list() for _, x in df_cf.iterrows()]
+        kwargs = dict(label=label, alpha=alpha)
+        return [ax.hlines(*args, color= colors[0] if args[0] < 0 else colors[1], **kwargs)
+                for args in args_vline]
+    
 
     def performance(self, metrics=None, sort_by=None):
         df_rec = self._check_result()
