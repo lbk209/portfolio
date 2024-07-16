@@ -772,9 +772,10 @@ class StaticPortfolio():
         if asset_names is not None:
             df_rec = df_rec.join(pd.Series(asset_names, name=col_name), on=col_ast)
             df_rec = df_rec[[col_name, *cols_rec]]
-        # addet weights
-        v = df_rec[col_prc].mul(df_rec[col_net])
-        df_rec = df_rec.assign(**{col_wgt: v.mul(1/v.groupby(col_date).sum()).apply(lambda x: f'{x:.2f}')})
+        # asset weights
+        w = df_rec[col_prc].mul(df_rec[col_net])
+        w = w.mul(1/w.groupby(col_date).sum())
+        df_rec = df_rec.assign(**{f'{col_wgt}*': w.apply(lambda x: f'{x:.2f}')})
                 
         # calc value and profit
         v, p = [self.calc_value(df_rec, x) for x in [False, True]]
