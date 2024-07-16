@@ -805,7 +805,7 @@ class StaticPortfolio():
 
     def calc_value(self, record, profit=False):
         """
-        calc asset value and profit
+        calc asset value profit
         """
         col_prc = self.cols_record['prc']
         col_trs = self.cols_record['trs']
