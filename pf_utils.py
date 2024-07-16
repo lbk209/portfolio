@@ -578,7 +578,7 @@ class StaticPortfolio():
                  method_weigh='ERC', lookback=12, lag=0,
                  days_in_year=246, align_axis=0, asset_names=None, name='portfolio',
                  cols_record = {'date':'date', 'ast':'asset', 'name':'name', 'prc':'price', 
-                                'trs':'transaction', 'net':'net', 'wgt':'weight'}
+                                'trs':'transaction', 'net':'net', 'wgt':'weight', 'wgta':'weight*'}
                 ):
         """
         file: file of transaction history. 
@@ -680,7 +680,12 @@ class StaticPortfolio():
         col_ast = self.cols_record['ast']
         col_prc = self.cols_record['prc']
         col_net = self.cols_record['net']
+        col_wgt = self.cols_record['wgt']
+        col_wgta = self.cols_record['wgta']
+        col_name = self.cols_record['name']
+        cols_all = [col_name, col_prc, col_net, col_wgt, col_wgta]
         
+        asset_names = self.asset_names
         selected = self.selected
         if selected is None:
             return print('ERROR')
@@ -702,16 +707,36 @@ class StaticPortfolio():
             if self._check_new_transaction(date, record, col_date, msg):
                 # the arg capital is now cash flows
                 capital += self.calc_value(record, False)
-        
+
+        # calc quantity of each asset by weights and capital
         df_prc = self.df_universe
-        a = capital / (1+commissions/100)
-        df_net = a * pd.Series(weights).mul(1/df_prc.loc[date, assets])
-        df_net = df_net.apply(np.floor).astype(int).to_frame(col_net)
+        wi = pd.Series(weights, name=col_wgt).rename_axis(col_ast) # ideal weights
+        wvi = wi * capital / (1+commissions/100) # weighted asset value
+        df_net = wvi / df_prc.loc[date, assets] # stock quantity float
+        df_net = df_net.apply(np.floor).astype(int).to_frame(col_net) # stock quant int
         df_net = df_net.assign(**{col_date: date})
         df_net = df_prc.loc[date].to_frame(col_prc).join(df_net, how='right')
         # index is multiindex of date and asset
-        df_net = df_net.rename_axis(col_ast).set_index(col_date, append=True).swaplevel()
-        return df_net
+        df_net = df_net.set_index(col_date, append=True).swaplevel()
+
+        # calc error between ideal and actual weights of assets 
+        wva = df_net[col_prc].mul(df_net[col_net]).rename(col_wgta) # actual value of each asset
+        mae = (wva.to_frame().join(wvi)
+                  .apply(lambda x: x[col_wgta]/x[col_wgt] - 1, axis=1).abs().mean() * 100)
+        print(f'Mean absolute error of weights: {mae:.0f} %')
+        
+        # add weights as new cols
+        func = lambda x: f'{x:.03f}'
+        wa = wva / wva.groupby(col_date).sum()
+        df_net = df_net.join(wi.apply(func)).join(wa.apply(func))
+
+        # add asset names
+        if asset_names is None:
+            df_net[col_name] = None
+        else:
+            df_net = df_net.join(pd.Series(asset_names, name=col_name), on=col_ast)
+            
+        return df_net[cols_all]
     
 
     def transaction(self, df_net, record=None):
@@ -727,18 +752,20 @@ class StaticPortfolio():
         col_trs = self.cols_record['trs']
         col_net = self.cols_record['net']
         col_wgt = self.cols_record['wgt']
-        cols_rec = [col_prc, col_trs, col_net]
-        
+        col_wgta = self.cols_record['wgta']
+        cols_short = [col_net, col_wgt, col_wgta]
+        cols_all = [col_name, col_prc, col_trs, *cols_short]
+        cols_int = [col_prc, col_trs, col_net]
+                
         date = df_net.index.get_level_values(0).max()
-        asset_names = self.asset_names
-
         record = self._check_var(record, self.record)
         if record is None:
+            # allocation is same as transaction for the 1st time
             df_rec = df_net.assign(**{col_trs: df_net[col_net]})
         else:
             if self._check_new_transaction(date, record, col_date):
-                # add new to record after removing additional info except for cols_rec in record
-                df_rec = pd.concat([record[cols_rec], df_net])
+                # add new to record after removing additional info except for cols_all in record
+                df_rec = pd.concat([record[cols_all], df_net])
                 df_prc = self.df_universe
             else:
                 return None
@@ -754,7 +781,7 @@ class StaticPortfolio():
             # the net amount of the assets not in hold on the date is 0
             cond = df_rec[col_net].isna()
             cond = cond & (df_rec.index.get_level_values(0) == date)
-            df_rec.loc[cond, col_net] = 0  
+            df_rec.loc[cond, cols_short] = 0  
             
             # update transaction on the date by using the assets on the date 
             # and all the transaction before the date
@@ -763,19 +790,11 @@ class StaticPortfolio():
                       .to_frame(col_trs).assign(**{col_date:date})
                       .set_index(col_date, append=True).swaplevel())
             df_rec.update(df_trs)
-            df_rec = df_rec.dropna() # drop new assets before the date
+            df_rec = df_rec.dropna(subset=cols_short) # drop new assets before the date
 
-        df_rec = df_rec[cols_rec].astype(int).sort_index(level=[0,1])
+        df_rec = df_rec[cols_all]
+        df_rec[cols_int] = df_rec[cols_int].astype(int).sort_index(level=[0,1])
 
-        # add additinoal info:
-        # asset names
-        if asset_names is not None:
-            df_rec = df_rec.join(pd.Series(asset_names, name=col_name), on=col_ast)
-            df_rec = df_rec[[col_name, *cols_rec]]
-        # addet weights
-        v = df_rec[col_prc].mul(df_rec[col_net])
-        df_rec = df_rec.assign(**{col_wgt: v.mul(1/v.groupby(col_date).sum()).apply(lambda x: f'{x:.2f}')})
-                
         # calc value and profit
         v, p = [self.calc_value(df_rec, x) for x in [False, True]]
         print(f'Value {v:,}, Profit {p:,}')
@@ -785,6 +804,9 @@ class StaticPortfolio():
 
 
     def calc_value(self, record, profit=False):
+        """
+        calc asset value and profit
+        """
         col_prc = self.cols_record['prc']
         col_trs = self.cols_record['trs']
         col_net = self.cols_record['net']
@@ -972,7 +994,8 @@ class StaticPortfolio():
         """
         files = get_file_list(file, path)
         if len(files) == 0:
-            print(f'WARNING: no {file} exists')
+            name, ext = splitext(file)
+            print(f'WARNING: no {name}* exists')
             return file
         else:
             return files[-1]
