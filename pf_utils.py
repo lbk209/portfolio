@@ -201,7 +201,7 @@ def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10):
     # calc mean days for each asset
     df_days = (df.assign(gb=df.index.strftime(grp_format)).set_index('gb')
                  .apply(lambda x: x.dropna().groupby('gb').count()[1:-1])
-                 .fillna(0) # fill nan with zero for assets invested recently
+                 #.fillna(0) # comment as it distorts mean
                  .mul(factor).mean().round()
                  .fillna(0) # for the case no asset has enough days for the calc
               )
@@ -212,12 +212,12 @@ def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10):
         n = len(df)
         if n < n_thr:
             #print(f'WARNING: the number of days in a year with followings is not {days_in_year} in setting:')
-            print(f'WARNING: the number of days in a year with followings is {df.mean()} in avg.:')
+            print(f'WARNING: the number of days in a year with followings is {df.mean():.0f} in avg.:')
             _ = [print(f'{k}: {int(v)}') for k,v in df.to_dict().items()]
         else:
             p = n / len(df_days) * 100
             #print(f'WARNING: the number of days in a year with {n} assets ({p:.0f}%) is not {days_in_year} in setting:')
-            print(f'WARNING: the number of days in a year with {n} assets ({p:.0f}%) is {df.mean()} in avg.')
+            print(f'WARNING: the number of days in a year with {n} assets ({p:.0f}%) is {df.mean():.0f} in avg.')
     
     return df_days
 
@@ -299,6 +299,9 @@ def get_file_latest(file, path='.'):
 def performance_stats(df_prices, metrics=None, sort_by=None, align_period=True, idx_dt=['start', 'end']):
     if isinstance(df_prices, pd.Series):
         df_prices = df_prices.to_frame()
+
+    if len(df_prices) <= 1:
+        return print('ERROR: Need more data to measure')
         
     if align_period:
         df_stats = calc_stats(df_prices).stats
@@ -902,6 +905,10 @@ class StaticPortfolio():
             dates_trs = df_rec.index.get_level_values(0).unique()
             sr_cf = self.calc_cashflow(df_rec)
             xmax = sr_historical.index.max()
+
+        if len(sr_historical) <= 1:
+            return print('ERROR: Need more data to plot')
+            
         # plot historical of portfolio value
         ax1 = sr_historical.plot(figsize=figsize, label='Total Value', title='Portfolio Growth')
         ax1.vlines(dates_trs, 0, 1, transform=ax1.get_xaxis_transform(), lw=0.5, color='grey')
