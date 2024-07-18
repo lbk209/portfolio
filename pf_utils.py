@@ -6,20 +6,17 @@ import arviz as az
 import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
-
+import xml.etree.ElementTree as ET
 import os, time, re, sys
+import bt
+import warnings
+
 from datetime import datetime, timedelta
 from contextlib import contextmanager
-
 from os import listdir
 from os.path import isfile, join, splitext
-
-import bt
 from pf_custom import AlgoSelectKRatio, AlgoRunAfter, calc_kratio
-
 from ffn import calc_stats, calc_perf_stats
-
-import warnings
 
 warnings.filterwarnings(action='ignore', category=FutureWarning)
 warnings.filterwarnings(action='ignore', category=pd.errors.PerformanceWarning)
@@ -75,6 +72,30 @@ def import_rate2(file, path='.', cols=['date', None], n_headers=1):
     df_rate.name = col_data
 
     return df_rate
+
+
+def import_xml_rate(file, path='.', cols=['date', None], 
+                    tag_iter='prfRtList', tag_date='standardDt', 
+                    tag_val='managePrfRate'):
+    """
+    file: xml. historical of cumulative rate of return in long format
+    data_check: [(기준일1, 기준가1), (기준일2, 기준가2)]
+    """
+    tree = ET.parse(f'{path}/{file}')
+    root = tree.getroot()
+    
+    data = list()
+    for x in root.iter(tag_iter):
+        date = x.find(tag_date).text
+        val = x.find(tag_val).text
+        data.append((date,val))
+    
+    df_val = pd.DataFrame().from_records(data, columns=cols).set_index(cols[0]).astype(float)
+    df_val.index = pd.to_datetime(df_val.index)
+    # make sure to get series
+    df_val = df_val.iloc[:, 0]
+    
+    return df_val
     
 
 def get_price(df_rate, data_check, rate_is_percent=True):
@@ -118,6 +139,8 @@ def convert_rate_to_price(data, n_headers=1, path=None,
         import_rate = import_rate1
     elif data_type == 2:
         import_rate = lambda *args, **kwargs: import_rate2(*args, n_headers=n_headers, **kwargs)
+    elif data_type == 3:
+        import_rate = import_xml_rate
     else:
         if df_rate is None:
             return print(f'ERROR: no data type {data_type} exists')
@@ -126,8 +149,7 @@ def convert_rate_to_price(data, n_headers=1, path=None,
     
     ticker = data['ticker']
     name = data['name']
-    file = f'{data['file']}.csv'
-    file = get_file_latest(file, path) # latest file
+    file = get_file_latest(data['file'], path) # latest file
     data_check = [
         (data['check1_date'], data['check1_price']),
         (data['check2_date'], data['check2_price']),
@@ -281,7 +303,8 @@ def get_file_list(file, path='.'):
     name, ext = splitext(file)
     name = name.replace('*', r'(.*?)')
     try:
-        flist = [f for f in listdir(path) if isfile(join(path, f)) and re.search(name, f)]
+        rex = f'{name}.*{ext}'
+        flist = [f for f in listdir(path) if isfile(join(path, f)) and re.search(rex, f)]
     except Exception as e:
         print(f'ERROR: {e}')
         flist = []
@@ -386,7 +409,7 @@ class DataManager():
     def __init__(self, file=None, path='.', 
                  universe='kospi200', upload_type='price'):
         """
-        universe: kospi200, etf
+        universe: kospi200, etf, fund. used only for ticker name
         """
         self.file_historicals = get_file_latest(file, path) # latest file
         self.path = path
@@ -406,8 +429,12 @@ class DataManager():
             return print('ERROR: no file to load.')
         else:
             df_prices = self._upload(file, path, upload_type=self.upload_type)
-        self.df_prices = df_prices
-        return print('df_prices updated')
+
+        if df_prices is None:
+            return None # error msg printed out by self._upload
+        else:
+            self.df_prices = df_prices
+            return print('df_prices updated')
         
 
     @print_runtime
@@ -484,8 +511,8 @@ class DataManager():
             func = self._get_tickers_kospi200
         elif universe.lower() == 'etf':
             func = self._get_tickers_etf
-        elif universe.lower() == 'tdf':
-            func = self._get_tickers_tdf
+        elif universe.lower() == 'fund':
+            func = self._get_tickers_fund
         else:
             func = lambda: None
 
@@ -507,7 +534,7 @@ class DataManager():
         return tickers.set_index(col_asset)[col_name].to_dict()
 
 
-    def _get_tickers_tdf(self, col_asset='ticker', col_name='name'):
+    def _get_tickers_fund(self, col_asset='ticker', col_name='name'):
         file = self.file_historicals
         path = self.path
         tickers = pd.read_csv(f'{path}/{file}')
@@ -525,12 +552,12 @@ class DataManager():
             self._print_info(df_prices, str_sfx='uploaded.')
             return df_prices
         except Exception as e:
-            return print(f'ERROR: {e}')
+            return print(f'ERROR: uploading failed as {e}')
 
 
     def _upload_from_rate(self, file, path):
         """
-        master file of assets with ticker, file, adjusting data, etc
+        file: master file of assets with ticker, file, adjusting data, etc
         """
         df_info = pd.read_csv(f'{path}/{file}')
         df_prices = None
