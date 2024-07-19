@@ -187,6 +187,7 @@ def get_date_range(dfs, symbol_name=None, return_intersection=False):
 
 def valuate_bond(face, rate, year, ytm, n_pay=1):
     """
+    Bond Valuation: see www.investopedia.com/terms/b/bond-valuation.asp
     face: face value
     rate: coupon rate (annual)
     year: years to maturity
@@ -411,7 +412,7 @@ class DataManager():
         """
         universe: kospi200, etf, fund. used only for ticker name
         """
-        self.file_historicals = get_file_latest(file, path) # latest file
+        self.file_historical = get_file_latest(file, path) # latest file
         self.path = path
         self.universe = universe
         self.asset_names = None
@@ -423,7 +424,7 @@ class DataManager():
         """
         load df_prices from saved file
         """
-        file = self._check_var(file, self.file_historicals)
+        file = self._check_var(file, self.file_historical)
         path = self._check_var(path, self.path)
         if file is None:
             return print('ERROR: no file to load.')
@@ -473,7 +474,7 @@ class DataManager():
 
     
     def save(self, file=None, path=None, date=None, date_format='%y%m%d'):
-        file = self._check_var(file, self.file_historicals)
+        file = self._check_var(file, self.file_historical)
         path = self._check_var(path, self.path)
         df_prices = self.df_prices
         if (file is None) or (df_prices is None):
@@ -535,7 +536,7 @@ class DataManager():
 
 
     def _get_tickers_fund(self, col_asset='ticker', col_name='name'):
-        file = self.file_historicals
+        file = self.file_historical
         path = self.path
         tickers = pd.read_csv(f'{path}/{file}')
         return tickers.set_index(col_asset)[col_name].to_dict()
