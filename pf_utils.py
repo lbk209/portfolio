@@ -350,6 +350,15 @@ def performance_stats(df_prices, metrics=None, sort_by=None, align_period=True, 
     return df_stats
 
 
+def convert_to_daily(df):
+    """
+    convert df to daily time series
+    """
+    start = df.index.min()
+    end = df.index.max()
+    index = pd.date_range(start, end)
+    return df.reindex(index, method='ffill')
+
 
 class AssetDict(dict):
     """
@@ -1858,6 +1867,17 @@ class BacktestManager():
         df = self._check_var(df, self.df_assets)
         days_in_year = self._check_var(days_in_year, self.days_in_year)
         return check_days_in_year(df, days_in_year=days_in_year, freq=freq, n_thr=n_thr)
+
+
+    def util_convert_to_daily(self, confirm=False):
+        if confirm:
+            self.df_assets = convert_to_daily(self.df_assets)
+            self.days_in_year = 365
+            print(f'REMINDER: df_assets converted to daily and days_in_year set to {self.days_in_year}')
+            print('Daily metrics in Performance statistics must be meaningless')
+            return None
+        else:
+            return print('WARNING: set confirm to True to convert df_assets to daily')
 
 
 
