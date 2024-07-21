@@ -373,14 +373,14 @@ class AssetDict(dict):
     def __repr__(self):
         output = ""
         for i, key in enumerate(self.keys()):
-            name = self.get_name(key)
+            name = self.get_names(key)
             if name is None:
                 output += f"{i}) {key}\n"
             else:
                 output += f"{i}) {key}: {name}\n"
         return output
 
-    def get_name(self, key):
+    def get_names(self, key):
         if self.names is None:
             return None
         else:
@@ -601,7 +601,7 @@ class DataManager():
                 res = {k: asset_names[k] for k in tickers}
             return AssetDict(res, names=asset_names)
         except KeyError as e:
-            return print(f'ERROR: {e}')
+            return print(f'ERROR from get_names: {e}')
 
 
     def get_date_range(self, return_intersection=False):
@@ -610,6 +610,29 @@ class DataManager():
             return print('ERROR')
         else:
             return get_date_range(df_prices, return_intersection=return_intersection)
+
+
+    def check_days_in_year(self, days_in_year=251, freq='M', n_thr=10):
+        df_prices = self.df_prices
+        if df_prices is None:
+            return print('ERROR')
+        else:
+            return check_days_in_year(df_prices, days_in_year=days_in_year, freq=freq, n_thr=n_thr)
+
+
+    def convert_to_daily(self, confirm=False):
+        df_prices = self.df_prices
+        if df_prices is None:
+            return print('ERROR')
+            
+        if confirm:
+            self.df_prices = convert_to_daily(df_prices)
+            days_in_year = 365
+            print(f'REMINDER: data converted to daily (days in year: {days_in_year})')
+            print('Daily metrics in Performance statistics must be meaningless')
+            return None
+        else:
+            return print('WARNING: set confirm to True to convert df_assets to daily')
 
 
 
@@ -949,6 +972,7 @@ class StaticPortfolio():
         # plot historical of portfolio value
         ax1 = sr_historical.plot(figsize=figsize, label='Total Value', title='Portfolio Growth')
         ax1.vlines(dates_trs, 0, 1, transform=ax1.get_xaxis_transform(), lw=0.5, color='grey')
+        ax1.tick_params(axis='y', labelcolor=ax1.get_lines()[0].get_color())
         ax1.autoscale(enable=True, axis='x', tight=True)
         # plot cash flows
         ax2 = ax1.twinx()
@@ -1867,17 +1891,6 @@ class BacktestManager():
         df = self._check_var(df, self.df_assets)
         days_in_year = self._check_var(days_in_year, self.days_in_year)
         return check_days_in_year(df, days_in_year=days_in_year, freq=freq, n_thr=n_thr)
-
-
-    def util_convert_to_daily(self, confirm=False):
-        if confirm:
-            self.df_assets = convert_to_daily(self.df_assets)
-            self.days_in_year = 365
-            print(f'REMINDER: df_assets converted to daily and days_in_year set to {self.days_in_year}')
-            print('Daily metrics in Performance statistics must be meaningless')
-            return None
-        else:
-            return print('WARNING: set confirm to True to convert df_assets to daily')
 
 
 
