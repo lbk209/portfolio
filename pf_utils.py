@@ -657,11 +657,11 @@ class StaticPortfolio():
             file = 'tmp.csv' # set temp name for self._load_transaction
         file = self._retrieve_transaction_file(file, path)
         
+        self.cols_record = cols_record # set before self._load_transaction
         record = self._load_transaction(file, path)
         if record is None:
             print('REMINDER: make sure this is 1st transaction as no records provided')
         self.record = record
-        self.cols_record = cols_record
         
         self.selected = None
         self.lookback = lookback 
@@ -769,7 +769,7 @@ class StaticPortfolio():
             msg = 'WARNING: No rebalance as no new transaction'
             if self._check_new_transaction(date, record, col_date, msg):
                 # the arg capital is now cash flows
-                capital += self.calc_value(record, False)
+                capital += self._calc_record_value(record, False)
 
         # calc quantity of each asset by weights and capital
         df_prc = self.df_universe
@@ -859,16 +859,43 @@ class StaticPortfolio():
         df_rec[cols_int] = df_rec[cols_int].astype(int).sort_index(level=[0,1])
 
         # calc value and profit
-        v, p = [self.calc_value(df_rec, x) for x in [False, True]]
+        v, p = [self._calc_record_value(df_rec, x) for x in [False, True]]
         print(f'Value {v:,}, Profit {p:,}')
         
         self.df_rec = df_rec
         return df_rec
 
 
-    def calc_value(self, record, profit=False):
+    def calc_value(self, date=None, plot=True, figsize=(10,4)):
+        sr_historical = self.get_historical()
+        if sr_historical is None:
+            return None
+        else:
+            record = self.record
+            
+        dt_trs = record.index.get_level_values(0).max()
+        if date is None:
+            dt_latest = sr_historical.index.max()
+        else:
+            dt_latest = datetime.strptime(date)
+        if dt_trs == dt_latest:
+            return None
+            
+        p = self._calc_record_value(record, profit=True)
+        p += -sr_historical.loc[dt_trs] + sr_historical.loc[dt_latest]
+        v = self._calc_record_value(record, profit=False)
+        v += -2 * sr_historical.loc[dt_trs] + 2 * sr_historical.loc[dt_latest]
+        print(f'Value {v:,}, Profit {p:,}')
+
+        if plot:
+            self.plot(figsize=figsize)
+
+        return None
+
+
+    def _calc_record_value(self, record, profit=False):
         """
-        calc asset value and profit
+        calc asset value and profit based on record
         """
         col_prc = self.cols_record['prc']
         col_trs = self.cols_record['trs']
@@ -882,9 +909,9 @@ class StaticPortfolio():
             return 2*bal-cost
 
 
-    def calc_cashflow(self, record):
+    def _calc_cashflow(self, record):
         """
-        Returns a series of cash flows for each transaction.
+        Returns a series of resultant cash flows at each transaction.
          negative for outflows, positive for inflows.
         """
         col_prc = self.cols_record['prc']
@@ -901,7 +928,7 @@ class StaticPortfolio():
         self.select(date=date)
         if not self.check_new_transaction():
             # calc profit at the last transaction
-            p = self.calc_value(self.record, True)
+            p = self._calc_record_value(self.record, True)
             print(f'The profit from the most recent transaction: {p:,}')
             return self.record
 
@@ -909,7 +936,7 @@ class StaticPortfolio():
         df_net = self.allocate(capital=capital, commissions=commissions)
         if df_net is None:
             return None
-            
+        
         df_rec = self.transaction(df_net, record=record)
         if df_rec is not None: # new transaction updated
             if save:
@@ -933,16 +960,22 @@ class StaticPortfolio():
         # loop for transaction dates in descending order
         for start in dates_trs.sort_values(ascending=False):
             n_assets = df_rec.loc[start, col_net]
+            df_i = self.df_universe.loc[start:end, n_assets.index]
+            if len(df_i) == 0: # no price data from transaction date start
+                continue
             # calc combined asset value history from prv transaction (start) to current (end) 
-            sr_i = (self.df_universe.loc[start:end, n_assets.index]
-                    .apply(lambda x: x*n_assets.loc[x.name]).sum(axis=1)) # x.name: index name
+            sr_i = df_i.apply(lambda x: x*n_assets.loc[x.name]).sum(axis=1) # x.name: index name
             # add to history the profit by substracting initial value of the history from total value (to start)
-            sr_i += self.calc_value(df_rec.loc[:start], profit=False) - sr_i[0] 
+            sr_i += self._calc_record_value(df_rec.loc[:start], profit=False) - sr_i[0] 
             # concat histories        
             sr_tot = pd.concat([sr_tot, sr_i])
             end = start - pd.DateOffset(days=1)
-        # sort by date
-        return sr_tot.rename(name).sort_index()
+
+        if len(sr_tot) > 0:
+            # sort by date
+            return sr_tot.rename(name).sort_index()
+        else:
+            return print('ERROR: no historical')
 
 
     def get_historical(self):
@@ -960,14 +993,14 @@ class StaticPortfolio():
         df_rec = self._check_result()
         if df_rec is None:
             return None
-        else:
-            sr_historical = self._calc_historical(df_rec, self.name)
-            dates_trs = df_rec.index.get_level_values(0).unique()
-            sr_cf = self.calc_cashflow(df_rec)
-            xmax = sr_historical.index.max()
-
-        if len(sr_historical) <= 1:
-            return print('ERROR: Need more data to plot')
+        
+        sr_historical = self._calc_historical(df_rec, self.name)
+        if sr_historical is None:
+            return None
+            
+        dates_trs = df_rec.index.get_level_values(0).unique()
+        sr_cf = self._calc_cashflow(df_rec)
+        xmax = sr_historical.index.max()
             
         # plot historical of portfolio value
         ax1 = sr_historical.plot(figsize=figsize, label='Total Value', title='Portfolio Growth')
@@ -999,8 +1032,11 @@ class StaticPortfolio():
         df_rec = self._check_result()
         if df_rec is None:
             return None
+        
+        sr_historical = self._calc_historical(df_rec, self.name)
+        if sr_historical is None:
+            return None
         else:
-            sr_historical = self._calc_historical(df_rec, self.name)
             return performance_stats(sr_historical, metrics=metrics, sort_by=sort_by)
 
 
@@ -1049,12 +1085,17 @@ class StaticPortfolio():
         
 
     def _load_transaction(self, file, path, print_msg=True, date_format='%Y-%m-%d'):
+        col_ast = self.cols_record['ast']
         f = os.path.join(path, file)
         if os.path.exists(f):
-            df_rec = pd.read_csv(f, parse_dates=[0], index_col=[0,1], dtype={'asset':str})
+            df_rec = pd.read_csv(f, parse_dates=[0], index_col=[0,1], dtype={col_ast:str})
         else:
             return None
-            
+        # check if ticker of asset is 6 digits
+        df_rec = (df_rec.reset_index(level=1)
+                        .assign(asset=lambda x: x.asset.str.zfill(6))
+                        .set_index(col_ast, append=True))
+        
         if print_msg:
             dt = df_rec.index.get_level_values(0).max().strftime(date_format)
             print(f'Transaction record to {dt} loaded.')
@@ -1150,7 +1191,7 @@ class MomentumPortfolio(StaticPortfolio):
         self.select(date=date, n_assets=n_assets, method=method_select)
         if not self.check_new_transaction():
             # calc profit at the last transaction
-            p = self.calc_value(self.record, True)
+            p = self._calc_record_value(self.record, True)
             print(f'The profit from the most recent transaction: {p:,}')
             return self.record
 
