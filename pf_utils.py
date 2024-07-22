@@ -860,7 +860,8 @@ class StaticPortfolio():
 
         # calc value and profit
         v, p = [self._calc_record_value(df_rec, x) for x in [False, True]]
-        print(f'Value {v:,}, Profit {p:,}')
+        #print(f'Value {v:,}, Profit {p:,}')
+        print(f'Value {round(v):,}, Profit {p/(v-p):.1%}')
         
         self.df_rec = df_rec
         return df_rec
@@ -870,22 +871,18 @@ class StaticPortfolio():
         sr_historical = self.get_historical()
         if sr_historical is None:
             return None
-        else:
-            record = self.record
             
-        dt_trs = record.index.get_level_values(0).max()
         if date is None:
-            dt_latest = sr_historical.index.max()
+            date = sr_historical.index.max()
         else:
-            dt_latest = datetime.strptime(date)
-        if dt_trs == dt_latest:
+            date = datetime.strptime(date)
+
+        if date < sr_historical.index.min():
             return None
-            
-        p = self._calc_record_value(record, profit=True)
-        p += -sr_historical.loc[dt_trs] + sr_historical.loc[dt_latest]
-        v = self._calc_record_value(record, profit=False)
-        v += -2 * sr_historical.loc[dt_trs] + 2 * sr_historical.loc[dt_latest]
-        print(f'Value {v:,}, Profit {p:,}')
+
+        v1 = sr_historical.iloc[0]
+        v2 = sr_historical.loc[date]
+        print(f'Value {round(v2):,}, Profit {v2/v1 - 1:.1%}')
 
         if plot:
             self.plot(figsize=figsize)
@@ -900,13 +897,18 @@ class StaticPortfolio():
         col_prc = self.cols_record['prc']
         col_trs = self.cols_record['trs']
         col_net = self.cols_record['net']
+        # cost to lead to the portfolio value on dt2
         cost = record[col_prc].mul(record[col_trs]).sum()
-        date = record.index.get_level_values(0).max()
-        bal = record.loc[date].apply(lambda x: x[col_prc] * x[col_net], axis=1).sum()
-        if profit: # return profit
-            return bal-cost
-        else: # return total value (asset value + profit)
-            return 2*bal-cost
+        # the 1st and last transaction dates
+        dt1 = record.index.get_level_values(0).min()
+        dt2 = record.index.get_level_values(0).max()
+        # portfolio value on dt1 & dt2
+        bal1 = record.loc[dt1].apply(lambda x: x[col_prc] * x[col_net], axis=1).sum()
+        bal2 = record.loc[dt2].apply(lambda x: x[col_prc] * x[col_net], axis=1).sum()
+        if profit: # profit = current pf value - cost to make current portfolio
+            return bal2 - cost
+        else: # total value (pf value + cash)
+            return bal2 + (bal1 - cost)
 
 
     def _calc_cashflow(self, record):
