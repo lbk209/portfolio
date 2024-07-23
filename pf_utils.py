@@ -641,7 +641,8 @@ class StaticPortfolio():
                  method_weigh='ERC', lookback=12, lag=0,
                  days_in_year=246, align_axis=0, asset_names=None, name='portfolio',
                  cols_record = {'date':'date', 'ast':'asset', 'name':'name', 'prc':'price', 
-                                'trs':'transaction', 'net':'net', 'wgt':'weight', 'wgta':'weight*'}
+                                'trs':'transaction', 'net':'net', 'wgt':'weight', 'wgta':'weight*'},
+                 profit_on_transaction_date=True
                 ):
         """
         file: file of transaction history. 
@@ -661,6 +662,10 @@ class StaticPortfolio():
         record = self._load_transaction(file, path)
         if record is None:
             print('REMINDER: make sure this is 1st transaction as no records provided')
+        else:
+            if profit_on_transaction_date:
+                record = self._update_transaction_dates(record, self.df_universe, self.cols_record['date'])
+                print('Transaction dates updated for profit/loss on the dates')
         self.record = record
         
         self.selected = None
@@ -997,8 +1002,8 @@ class StaticPortfolio():
             return None
         
         sr_historical = self._calc_historical(df_rec, self.name)
-        if sr_historical is None:
-            return None
+        if (sr_historical is None) or (len(sr_historical)==1):
+            return print('ERROR: need more data to plot')
             
         dates_trs = df_rec.index.get_level_values(0).unique()
         sr_cf = self._calc_cashflow(df_rec)
@@ -1008,7 +1013,7 @@ class StaticPortfolio():
         ax1 = sr_historical.plot(figsize=figsize, label='Total Value', title='Portfolio Growth')
         ax1.vlines(dates_trs, 0, 1, transform=ax1.get_xaxis_transform(), lw=0.5, color='grey')
         ax1.tick_params(axis='y', labelcolor=ax1.get_lines()[0].get_color())
-        ax1.autoscale(enable=True, axis='x', tight=True)
+        #ax1.autoscale(enable=True, axis='x', tight=True)
         # plot cash flows
         ax2 = ax1.twinx()
         self._plot_cashflow(ax2, sr_cf, xmax)
@@ -1139,6 +1144,18 @@ class StaticPortfolio():
             return file
         else:
             return files[-1]
+
+
+    def _update_transaction_dates(self, record, df_universe, col_date):
+        """
+        modify transaction dates to be able to compare purchase price 
+         and close price on the transaction date 
+        """
+        dts_trs = record.index.get_level_values(0).unique()
+        dts_dict = {x: df_universe.loc[:x - timedelta(days=1)].index.max() for x in dts_trs}
+        return (record.reset_index(level=0)
+                      .assign(**{col_date: lambda x: x[col_date].apply(lambda x: dts_dict[x])})
+                      .set_index(col_date, append=True).swaplevel())
 
 
 
