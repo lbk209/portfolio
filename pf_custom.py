@@ -3,8 +3,26 @@ from bt.algos import SelectN
 
 import pandas as pd
 import numpy as np
+import statsmodels.api as sm
 
-from pf_utils import calc_kratio
+
+def calc_kratio(ret):
+    """
+    ret: pandas series
+    """
+    ret_cs = np.log(1 + ret).cumsum() 
+    X = list(range(len(ret)))
+    Y = ret_cs
+    try:
+        reg = sm.OLS(Y, X).fit()
+        coef = reg.params.values[0]
+        std_err = reg.bse.values[0]
+        if std_err == 0:
+            return None
+        else:
+            return coef / std_err
+    except ValueError as e:
+        return print(f'ERROR: {e}')
 
 
 class AlgoSelectKRatio(AlgoStack):
