@@ -10,13 +10,12 @@ import xml.etree.ElementTree as ET
 import os, time, re, sys
 import bt
 import warnings
-import statsmodels.api as sm
 
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 from os import listdir
 from os.path import isfile, join, splitext
-from pf_custom import AlgoSelectKRatio, AlgoRunAfter
+from pf_custom import AlgoSelectKRatio, AlgoRunAfter, calc_kratio
 from ffn import calc_stats, calc_perf_stats
 
 warnings.filterwarnings(action='ignore', category=FutureWarning)
@@ -34,25 +33,6 @@ metrics = [
 ]
 
 WEEKS_IN_YEAR = 51
-
-
-def calc_kratio(ret):
-    """
-    ret: pandas series
-    """
-    ret_cs = np.log(1 + ret).cumsum() 
-    X = list(range(len(ret)))
-    Y = ret_cs
-    try:
-        reg = sm.OLS(Y, X).fit()
-        coef = reg.params.values[0]
-        std_err = reg.bse.values[0]
-        if std_err == 0:
-            return None
-        else:
-            return coef / std_err
-    except ValueError as e:
-        return print(f'ERROR: {e}')
 
 
 def valuate_bond(face, rate, year, ytm, n_pay=1):
