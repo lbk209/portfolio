@@ -4,6 +4,8 @@ from bt.algos import SelectN
 import pandas as pd
 import numpy as np
 
+from pf_utils import calc_kratio
+
 
 class AlgoSelectKRatio(AlgoStack):
     """
