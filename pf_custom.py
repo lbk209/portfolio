@@ -86,7 +86,7 @@ class AlgoStatKRatio(Algo):
 
 class AlgoSelectIDiscrete(AlgoStack):
     """
-    Sets temp['selected'] based on a k-ratio momentum filter.
+    Sets temp['selected'] based on information discreteness
     """
     def __init__(
         self,
@@ -104,7 +104,7 @@ class AlgoSelectIDiscrete(AlgoStack):
 
 class AlgoStatIDiscrete(Algo):
     """
-    Sets temp['stat'] with k-ratio over a given period.
+    Sets temp['stat'] with id over a given period.
     """
     def __init__(self, lookback=pd.DateOffset(months=3), lag=pd.DateOffset(days=0)):
         super(AlgoStatIDiscrete, self).__init__()
@@ -119,11 +119,62 @@ class AlgoStatIDiscrete(Algo):
         prc = target.universe.loc[t0 - self.lookback : t0, selected]
         
         if prc.iloc[0].notna().sum() > 0:
-            id = prc.pct_change(1).apply(lambda x: calc_information_discreteness(x.dropna()))
+            idsc = prc.pct_change(1).apply(lambda x: calc_information_discreteness(x.dropna()))
+            idsc = idsc.loc[idsc < 0]
         else:
-            id = prc.iloc[0]
+            idsc = prc.iloc[0]
         
-        target.temp["stat"] = id
+        target.temp["stat"] = idsc
+        
+        return True
+
+
+class AlgoSelectIDRank(AlgoStack):
+    """
+    Sets temp['selected'] based on rank with a momentum & information discreteness.
+    """
+    def __init__(
+        self,
+        n,
+        lookback=pd.DateOffset(months=3),
+        lag=pd.DateOffset(days=0),
+        sort_descending=False,
+        all_or_none=False,
+        scale = 1
+    ):
+        super(AlgoSelectIDRank, self).__init__(
+            AlgoStatIDRank(lookback=lookback, lag=lag, scale=scale),
+            SelectN(n=n, sort_descending=sort_descending, all_or_none=all_or_none),
+        )
+
+
+class AlgoStatIDRank(Algo):
+    def __init__(self, lookback=pd.DateOffset(months=3), lag=pd.DateOffset(days=0), scale=1):
+        super(AlgoStatIDRank, self).__init__()
+        self.lookback = lookback
+        self.lag = lag
+        self.scale = scale
+
+    def __call__(self, target):
+        selected = target.temp["selected"]
+        t0 = target.now - self.lag
+        if target.universe[selected].index[0] > t0:
+            return False
+        prc = target.universe.loc[t0 - self.lookback : t0, selected]
+        
+        if prc.iloc[0].notna().sum() > 0:
+            rank_mt = prc.apply(lambda x: x.dropna().iloc[-1]/x.dropna().iloc[0]-1)
+            rank_mt = rank_mt.loc[rank_mt > 0].rank(ascending=False)
+            rank_id = prc.pct_change(1).apply(lambda x: calc_information_discreteness(x.dropna()))
+            rank_id = rank_id.loc[rank_id < 0].rank(ascending=True)
+            rank = rank_mt + self.scale * rank_id
+            rank = rank.dropna()
+            if len(rank) == 0:
+                rank = prc.iloc[0]
+        else:
+            rank = prc.iloc[0]
+        
+        target.temp["stat"] = rank
         
         return True
         
