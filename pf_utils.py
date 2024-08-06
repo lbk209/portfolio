@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from contextlib import contextmanager
 from os import listdir
 from os.path import isfile, join, splitext
-from pf_custom import AlgoSelectKRatio, AlgoRunAfter, calc_kratio, AlgoSelectIDiscrete, AlgoSelectIDRank
+from pf_custom import AlgoSelectKRatio, AlgoRunAfter, calc_kratio, AlgoSelectIDiscrete, AlgoSelectIDRank, SelectMomentum
 from ffn import calc_stats, calc_perf_stats
 
 warnings.filterwarnings(action='ignore', category=FutureWarning)
@@ -1338,15 +1338,16 @@ class BacktestManager():
         return bt.Backtest(strategy, dfs, commissions=c, **kwargs)
 
 
-    def _get_algo_select(self, select='all', n_assets=0, lookback=0, lag=0, scale=1):
+    def _get_algo_select(self, select='all', n_assets=0, lookback=0, lag=0, 
+                         scale=1, threshold=None):
         """
         select: all, momentum, kratio, randomly
         """
         cond = lambda x,y: False if x is None else x.lower() == y.lower()
         
         if cond(select, 'Momentum'):
-            algo_select = bt.algos.SelectMomentum(n=n_assets, lookback=pd.DateOffset(months=lookback),
-                                                  lag=pd.DateOffset(days=lag))
+            algo_select = SelectMomentum(n=n_assets, lookback=pd.DateOffset(months=lookback),
+                                         lag=pd.DateOffset(days=lag), threshold=threshold)
             # SelectAll() or similar should be called before SelectMomentum(), 
             # as StatTotalReturn uses values of temp[‘selected’]
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
@@ -1451,7 +1452,7 @@ class BacktestManager():
 
     def build(self, name=None, 
               freq='M', offset=0,
-              select='all', n_assets=0, lookback=0, lag=0, id_scale=1,
+              select='all', n_assets=0, lookback=0, lag=0, id_scale=1, threshold=None,
               weigh='equally', weights=None, rf=0, bounds=(0.0, 1.0),
               initial_capital=None, commissions=None, algos=None, run_cv=False):
         """
@@ -1469,7 +1470,8 @@ class BacktestManager():
         commissions = self._check_var(commissions, self.commissions)
 
         # build args for self._get_algo_* from build args
-        select = {'select':select, 'n_assets':n_assets, 'lookback':lookback, 'lag':lag, 'scale':id_scale}
+        select = {'select':select, 'n_assets':n_assets, 'lookback':lookback, 'lag':lag, 
+                  'scale':id_scale, 'threshold':threshold}
         freq = {'freq':freq} # offset being saved when running backtest
         weigh = {'weigh':weigh, 'weights':weights, 'rf':rf, 'bounds':bounds,
                  'lookback':lookback, 'lag':lag}
