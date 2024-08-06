@@ -1,5 +1,5 @@
 from bt.core import Algo, AlgoStack
-from bt.algos import SelectN
+from bt.algos import StatTotalReturn
 
 import pandas as pd
 import numpy as np
@@ -196,4 +196,61 @@ class AlgoRunAfter(Algo):
             return False
 
 
+class SelectN(Algo):
+    """
+    Custom SelectN with an additional arg threshold
+    """
+
+    def __init__(self, n, sort_descending=True, all_or_none=False, filter_selected=False, 
+                 threshold=None):
+        super(SelectN, self).__init__()
+        if n < 0:
+            raise ValueError("n cannot be negative")
+        self.n = n
+        self.ascending = not sort_descending
+        self.all_or_none = all_or_none
+        self.filter_selected = filter_selected
+        self.threshold = threshold
+
+    def __call__(self, target):
+        stat = target.temp["stat"].dropna()
+        if self.filter_selected and "selected" in target.temp:
+            stat = stat.loc[stat.index.intersection(target.temp["selected"])]
+        if self.threshold is not None:
+            stat = stat.loc[stat > self.threshold]
+        stat.sort_values(ascending=self.ascending, inplace=True)
+
+        # handle percent n
+        keep_n = self.n
+        if self.n < 1:
+            keep_n = int(self.n * len(stat))
+
+        sel = list(stat[:keep_n].index)
+
+        if self.all_or_none and len(sel) < keep_n:
+            sel = []
+
+        target.temp["selected"] = sel
+
+        return True
+
+
+class SelectMomentum(AlgoStack):
+    """
+    Custom SelectMomentum with an additional arg threshold
+    """
+
+    def __init__(
+        self,
+        n,
+        lookback=pd.DateOffset(months=3),
+        lag=pd.DateOffset(days=0),
+        sort_descending=True,
+        all_or_none=False,
+        threshold=None
+    ):
+        super(SelectMomentum, self).__init__(
+            StatTotalReturn(lookback=lookback, lag=lag),
+            SelectN(n=n, sort_descending=sort_descending, all_or_none=all_or_none, threshold=threshold),
+        )
 
