@@ -569,9 +569,10 @@ class DataManager():
         """
         file: master file of assets with ticker, file, adjusting data, etc
         """
-        df_info = pd.read_csv(f'{path}/{file}')
+        pfile = f'{path}/{file}'
+        df_info = pd.read_csv(pfile)
         df_prices = None
-        print('Estimating price from rate ...')
+        print(f'Estimating price from "{pfile}" ...')
         for _, data in df_info.iterrows():
             # Using the combined class with the context manager
             with IndentOutput(indent=2).indented_output():
@@ -844,6 +845,8 @@ class StaticPortfolio():
             midx = pd.MultiIndex.from_product(lidx).difference(df_rec.index)
             df_m = (df_prc[lidx[1]].stack().loc[midx]
                      .rename_axis([col_date, col_ast]).to_frame(col_prc))
+            if self.asset_names is not None: # add asset names
+                df_m = df_m.join(pd.Series(self.asset_names, name=col_name), on=col_ast)
             df_rec = pd.concat([df_rec, df_m])
             
             # the net amount of the assets not in hold on the date is 0
