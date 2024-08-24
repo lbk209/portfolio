@@ -80,7 +80,7 @@ def import_rate2(file, path='.', cols=['date', None], n_headers=1):
     data_check: [(기준일1, 기준가1), (기준일2, 기준가2)]
     """
     df_rate = pd.read_csv(f'{path}/{file}')
-    df_rate = df_rate.T.iloc[n_headers:, 0]
+    df_rate = df_rate.T.iloc[n_headers:, 0].astype(float)
 
     df_rate.index = pd.to_datetime(df_rate.index)
     df_rate = df_rate.rename_axis(cols[0])
@@ -117,7 +117,7 @@ def import_xml_rate(file, path='.', cols=['date', None],
     return df_val
     
 
-def get_price(df_rate, data_check, rate_is_percent=True):
+def get_price(df_rate, data_check, rate_is_percent=True, print_msg=True):
     """
     calc price from rate of return
     """
@@ -142,13 +142,14 @@ def get_price(df_rate, data_check, rate_is_percent=True):
     # check price
     dt, price = data_check[1]
     e = df_price.loc[dt]/price - 1
-    print(f'error: {e*100:.2f} %')
-    
-    return df_price
+    if print_msg:
+        print(f'error: {e*100:.2f} %')
+    return (df_price, e)
 
 
 def convert_rate_to_price(data, n_headers=1, path=None, 
-                          rate_is_percent=True, df_rate=None, rate_only=False):
+                          rate_is_percent=True, df_rate=None, rate_only=False,
+                          print_msg=False):
     """
     data: series or dict
     df_rate: historical given as dataframe
@@ -178,11 +179,11 @@ def convert_rate_to_price(data, n_headers=1, path=None,
     if rate_only:
        return df
         
-    df = get_price(df, data_check, rate_is_percent=rate_is_percent)
-    if df is None:
+    df_n_err = get_price(df, data_check, rate_is_percent=rate_is_percent, print_msg=print_msg)
+    if df_n_err is None:
         return print(f'ERROR: check {ticker}')
     else:
-        return df
+        return df_n_err
 
 
 def get_date_range(dfs, symbol_name=None, return_intersection=False):
@@ -565,22 +566,33 @@ class DataManager():
             return print(f'ERROR: uploading failed as {e}')
 
 
-    def _upload_from_rate(self, file, path):
+    def _upload_from_rate(self, file, path, print_msg_threshold=5):
         """
         file: master file of assets with ticker, file, adjusting data, etc
         """
         pfile = f'{path}/{file}'
         df_info = pd.read_csv(pfile)
+
+        if len(df_info) > print_msg_threshold:
+            print_ind = False
+        else:
+            print_ind = True
         df_prices = None
+        errors = list()
+        
         print(f'Estimating price from "{pfile}" ...')
         for _, data in df_info.iterrows():
             # Using the combined class with the context manager
             with IndentOutput(indent=2).indented_output():
-                df = convert_rate_to_price(data, path=path)
+                df, err = convert_rate_to_price(data, path=path, print_msg=print_ind)
             if df_prices is None:
                 df_prices = df.to_frame()
             else:
                 df_prices = df_prices.join(df, how='outer')
+            errors.append(err)
+
+        if not print_ind:
+            print(f'Max conversion error: {max(errors)*100:.2f} %')
         #print('Done.')
         return df_prices
 
@@ -621,13 +633,15 @@ class DataManager():
             return check_days_in_year(df_prices, days_in_year=days_in_year, freq=freq, n_thr=n_thr)
 
 
-    def convert_to_daily(self, confirm=False):
+    def convert_to_daily(self, confirm=False, assets=None):
         df_prices = self.df_prices
         if df_prices is None:
             return print('ERROR')
             
         if confirm:
-            self.df_prices = convert_to_daily(df_prices)
+            if assets is None:
+                assets = df_prices.columns
+            self.df_prices[assets] = df_prices[assets].apply(lambda x: convert_to_daily(x.dropna()))
             days_in_year = 365
             print(f'REMINDER: data converted to daily (days in year: {days_in_year})')
             print('Daily metrics in Performance statistics must be meaningless')
@@ -875,7 +889,7 @@ class StaticPortfolio():
         return df_rec
 
 
-    def calc_value(self, date=None, plot=True, figsize=(10,4)):
+    def calc_value(self, date=None, plot=True, figsize=(10,4), date_format='%Y-%m-%d'):
         sr_historical = self.get_historical()
         if sr_historical is None:
             return None
@@ -890,7 +904,8 @@ class StaticPortfolio():
 
         v1 = sr_historical.iloc[0]
         v2 = sr_historical.loc[date]
-        print(f'Value {round(v2):,}, Profit {v2/v1 - 1:.1%}')
+        d = date.strftime(date_format)
+        print(f'Value {round(v2):,}, Profit {v2/v1 - 1:.1%} on {d}')
 
         if plot:
             self.plot(figsize=figsize)
