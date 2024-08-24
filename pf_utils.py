@@ -573,7 +573,8 @@ class DataManager():
         pfile = f'{path}/{file}'
         df_info = pd.read_csv(pfile)
 
-        if len(df_info) > print_msg_threshold:
+        n_df_info = len(df_info)
+        if n_df_info > print_msg_threshold:
             print_ind = False
         else:
             print_ind = True
@@ -592,7 +593,7 @@ class DataManager():
             errors.append(err)
 
         if not print_ind:
-            print(f'Max conversion error: {max(errors)*100:.2f} %')
+            print(f'Max error of {n_df_info} conversions: {max(errors)*100:.2f} %')
         #print('Done.')
         return df_prices
 
@@ -633,7 +634,7 @@ class DataManager():
             return check_days_in_year(df_prices, days_in_year=days_in_year, freq=freq, n_thr=n_thr)
 
 
-    def convert_to_daily(self, confirm=False, assets=None):
+    def _convert_assets_to_daily(self, confirm=False, assets=None):
         df_prices = self.df_prices
         if df_prices is None:
             return print('ERROR')
@@ -649,6 +650,37 @@ class DataManager():
         else:
             return print('WARNING: set confirm to True to convert df_assets to daily')
 
+
+    def convert_to_daily(self, confirm=False, days_in_year=12):
+        df = self.check_days_in_year(252)
+        if df is None:
+            return None
+        else:
+            cols = df.loc[df==days_in_year].index
+        return self._convert_assets_to_daily(confirm, cols)
+
+
+    def performance(self, metrics=None, sort_by=None):
+        df_prices = self.df_prices
+        if df_prices is None:
+            return print('ERROR')
+        
+        df_stat = performance_stats(df_prices, metrics=None)
+        df_stat = df_stat.T
+        if metrics is None:
+            metrics = df_stat.columns
+        else:
+            if isinstance(metrics, str):
+                metrics = [metrics]
+            metrics = [y for x in metrics for y in df_stat.columns if x in y]
+            df_stat = df_stat[metrics]
+        
+        if sort_by is not None:
+            sort_by = [x for x in metrics if sort_by in x]
+            if len(sort_by) > 0:
+                df_stat = df_stat.sort_values(sort_by[0], ascending=False)
+        return df_stat
+        
 
 
 class StaticPortfolio():
