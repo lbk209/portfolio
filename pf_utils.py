@@ -1339,6 +1339,7 @@ class BacktestManager():
 
     def _check_weights(self, weights, dfs):
         """
+        return equal weights if weights is str or list
         weights: str, list of str, dict, or None
         """
         if isinstance(weights, str):
