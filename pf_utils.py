@@ -778,8 +778,7 @@ class StaticPortfolio():
             weights = {x:1/len(assets) for x in assets}
             weights = pd.Series(weights)
             method = 'Equal weights'
-        weigths = AssetDict(weights, names=self.asset_names)
-
+        
         self.selected['weights'] = weights # weights is series
         print(f'Weights of assets determined by {method}.')
         return weights
@@ -908,6 +907,10 @@ class StaticPortfolio():
                       .set_index(col_date, append=True).swaplevel())
             df_rec.update(df_trs)
             df_rec = df_rec.dropna(subset=cols_short) # drop new assets before the date
+
+            # drop rows with neither transaction nor net 
+            cond = (df_rec.transaction == 0) & (df_rec.net == 0)
+            df_rec = df_rec.loc[~cond]
 
         df_rec = df_rec[cols_all]
         df_rec[cols_int] = df_rec[cols_int].astype(int).sort_index(level=[0,1])
@@ -1170,7 +1173,7 @@ class StaticPortfolio():
         else:
             name, ext = splitext(file)
             file = f'{name}{dt}{ext}'
-        # save after duplicate chekc
+        # save after duplicate check
         f = os.path.join(path, file)
         if os.path.exists(f):
             return print(f'ERROR: failed to save as {file} exists')
