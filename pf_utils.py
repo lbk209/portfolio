@@ -717,19 +717,22 @@ class StaticPortfolio():
 
         self.selected = None # data for select, weigh and allocate
         self.df_rec = None # record updated with new transaction
+        self.date_latest_transaction = None
         # different from the record file if profit_on_transaction_date is True
-        self.record = self.import_record()
+        self.record = self.import_record(print_msg=True)
         
 
-    def import_record(self, profit_on_transaction_date=None):
+    def import_record(self, profit_on_transaction_date=None, print_msg=True):
         """
         read record from file and update transaction dates
         """
         profit_on_transaction_date = self._check_var(profit_on_transaction_date, self.profit_on_transaction_date)
-        record = self._load_transaction(self.file, self.path)
+        record = self._load_transaction(self.file, self.path, print_msg=print_msg)
         if record is None:
             print('REMINDER: make sure this is 1st transaction as no records provided')
         else:
+            # save final transaction date of record before running _update_transaction_dates
+            self.date_latest_transaction = record.index.get_level_values(0).max()
             if profit_on_transaction_date:
                 record = self._update_transaction_dates(record, self.df_universe, self.cols_record['date'])
                 print('Transaction dates updated for profit/loss on the dates')
@@ -828,7 +831,7 @@ class StaticPortfolio():
                 return print('ERROR: Neither capital nor assets to rebalance exists')
         else:
             msg = 'WARNING: No rebalance as no new transaction'
-            if self._check_new_transaction(date, record, col_date, msg):
+            if self._check_new_transaction(date, self.date_latest_transaction, msg):
                 # the arg capital is now cash flows
                 capital += self._calc_record_value(record, False)
 
@@ -887,7 +890,7 @@ class StaticPortfolio():
             # allocation is same as transaction for the 1st time
             df_rec = df_net.assign(**{col_trs: df_net[col_net]})
         else:
-            if self._check_new_transaction(date, record, col_date):
+            if self._check_new_transaction(date, self.date_latest_transaction):
                 # add new to record after removing additional info except for cols_all in record
                 df_rec = pd.concat([record[cols_all], df_net])
                 df_prc = self.df_universe
@@ -1121,12 +1124,10 @@ class StaticPortfolio():
     
 
     def check_new_transaction(self):
-        record = self.record
-        if record is None:
+        date_latest = self.date_latest_transaction
+        if date_latest is None:
             print('WARNING: no record loaded')
             return True
-        else:
-            col_date = record.index.names[0]
         
         selected = self.selected
         if selected is None:
@@ -1135,23 +1136,22 @@ class StaticPortfolio():
         else:
             date = selected['date']
         
-        return self._check_new_transaction(date, record, col_date)
+        return self._check_new_transaction(date, date_latest)
     
     
-    def _check_new_transaction(self, date, record, col_date, 
+    def _check_new_transaction(self, date, date_latest_transaction,
                                msg='ERROR: check the date as no new transaction'):
-        dt = record.index.get_level_values(col_date).max()
-        if dt >= date:
+        if date_latest_transaction >= date:
             print(msg) if msg is not None else None
             return False
         else:
             return True
 
 
-    def save_transaction(self, df_rec, file=None, path=None):
-        file = self._check_var(file, self.file)
-        path = self._check_var(path, self.path)
-        return self._save_transaction(df_rec, file, path)
+    def save_transaction(self, df_rec):
+        file, path = self.file, self.path
+        self.file = self._save_transaction(df_rec, file, path)
+        return None
         
 
     def _load_transaction(self, file, path, print_msg=True, date_format='%Y-%m-%d'):
@@ -1168,12 +1168,15 @@ class StaticPortfolio():
         
         if print_msg:
             dt = df_rec.index.get_level_values(0).max().strftime(date_format)
-            print(f'Transaction record to {dt} loaded.')
+            print(f'Transaction record to {dt} loaded')
         return df_rec
         
 
     def _save_transaction(self, df_rec, file, path, 
                           pattern=r"_\d+(?=\.\w+$)", date_format='%Y-%m-%d'):
+        """
+        save df_rec and return file name
+        """
         # add date to file name
         dt = df_rec.index.get_level_values(0).max()
         dt = f"_{dt.strftime('%y%m%d')}"
@@ -1186,10 +1189,11 @@ class StaticPortfolio():
         # save after duplicate check
         f = os.path.join(path, file)
         if os.path.exists(f):
-            return print(f'ERROR: failed to save as {file} exists')
+            print(f'ERROR: failed to save as {file} exists')
         else:    
             df_rec.to_csv(f)
             print(f'All transactions saved to {file}')
+        return file
         
     
     def _check_var(self, arg, arg_self):
@@ -1203,7 +1207,7 @@ class StaticPortfolio():
         files = get_file_list(file, path)
         if len(files) == 0:
             name, ext = splitext(file)
-            print(f'WARNING: no {name}* exists')
+            print(f'WARNING: no record {name}* exists')
             return file
         else:
             return files[-1]
@@ -1229,15 +1233,19 @@ class StaticPortfolio():
         # check if ticker name provided
         asset_names = self._check_var(asset_names, self.asset_names)
         if asset_names is None:
-            return print('ERROR')
+            return print('ERROR: set asset_names first')
 
         # load record and check if any ticker name is None
         # reload record as self.record could have modified transaction dates
-        record = self.import_record(False)
-        cond = record.name.isna()
-        if cond.sum() == 0:
-            return print('ERROR: No empty name')
-        
+        record = self.import_record(False, print_msg=True)
+        if record is None:
+            return None
+        else:
+            cond = record.name.isna()
+            if cond.sum() == 0:
+                print('WARNING: No update as no empty name')
+                return record
+                
         try:
             col_name = self.cols_record['name']
             record.loc[cond, col_name] = record.loc[cond].apply(lambda x: asset_names[x.name[1]], axis=1)
@@ -1246,7 +1254,7 @@ class StaticPortfolio():
                 record.to_csv(f'{path}/{file}')
                 print(f'Transaction file {file} updated')
                 if update_var:
-                    self.record=self.import_record()
+                    self.record=self.import_record(print_msg=False)
                     print(f'self.record updated')
             return record
         except KeyError as e:
