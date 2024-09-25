@@ -718,7 +718,7 @@ class StaticPortfolio():
         self.selected = None # data for select, weigh and allocate
         self.df_rec = None # record updated with new transaction
         self.date_latest_transaction = None
-        self.liquidating = None # tickers to liquidate to sell price
+        self.liquidation = Liquidation() # for instance of Liquidation
         # different from the record file if profit_on_transaction_date is True
         self.record = self.import_record(print_msg=True)
         
@@ -748,7 +748,7 @@ class StaticPortfolio():
         if date is not None:
             df_data = df_data.loc[:date]
         # setting liquidation
-        df_data = self.set_price_for_liquidation(df_data, select=True)
+        df_data = self.liquidation.set_price(df_data, select=True)
 
         # prepare data for weigh procedure
         date = df_data.index.max()
@@ -787,7 +787,7 @@ class StaticPortfolio():
         elif method.lower() == 'specified':
             w = self._check_weights(weights, df_data, none_weight_is_error=True)
             if w is None:
-                return self.check_weights_for_liquidation(weights)
+                return self.liquidation.check_weights(weights)
             weights = {x:0 for x in assets}
             weights.update(w)
             weights = pd.Series(weights)
@@ -899,7 +899,7 @@ class StaticPortfolio():
             if self._check_new_transaction(date, self.date_latest_transaction):
                 # add new to record after removing additional info except for cols_all in record
                 df_rec = pd.concat([record[cols_all], df_net])
-                df_prc = self.set_price_for_liquidation(self.df_universe)
+                df_prc = self.liquidation.set_price(self.df_universe)
             else:
                 return None
             
@@ -1002,9 +1002,12 @@ class StaticPortfolio():
 
     def transaction_pipeline(self, date=None, method_weigh=None, weights=None,
                              capital=10000000, commissions=0, 
-                             record=None, liquidating=None, save=False):
+                             record=None, save=False, **kw_liq):
+        """
+        kw_liq: kwargs for Liquidation.prepare
+        """
         method_weigh = self._check_var(method_weigh, self.method_weigh)
-        self.set_liquidation(liquidating)
+        self.liquidation.prepare(self.record, **kw_liq)
         self.select(date=date)
         if not self.check_new_transaction():
             # calc profit at the last transaction
@@ -1160,6 +1163,7 @@ class StaticPortfolio():
 
     def save_transaction(self, df_rec):
         file, path = self.file, self.path
+        df_rec = self.liquidation.recover_record(df_rec, self.cols_record)
         self.file = self._save_transaction(df_rec, file, path)
         return None
         
@@ -1271,30 +1275,37 @@ class StaticPortfolio():
             return print(f'ERROR: KeyError {e}')
 
 
-    def set_liquidation(self, liquidating=None):
-        """
-        convert liquidating to dict of tickers to sell price
-        liquidating: str of a ticker; list of tickers; dict of the tickers to its sell price
-        Set the sell price to zero for assets that will be held, 
-         regardless of their weight in the calculation
-        """
+
+class Liquidation():
+    def __init__(self):
+        self.assets_to_sell = None
         
-        if liquidating is None:
-            self.liquidating = None
+    def prepare(self, record, assets_to_sell=None, hold=False):
+        """
+        convert assets_to_sell to dict of tickers to sell price
+        record: StaticPortfolio.record
+        assets_to_sell: str of a ticker; list of tickers; dict of the tickers to its sell price
+        hold:     
+        - If set to True, all assets in `assets_to_sell` will be held and not liquidated.    
+        - If set to False, you can selectively hold certain assets by setting their sell price to zero. 
+          In this case, only the specified assets in `assets_to_sell` will be held, while others may still be liquidated.
+        """
+        # set self.assets_to_sell first to data check
+        self.assets_to_sell = assets_to_sell
+        if assets_to_sell is None:
             return print('Liquidation set to None')
-        else:
-            record = self.record
-            if record is None:
-                return print('ERROR: no record to liquidate')
+        
+        if record is None:
+            return print('ERROR: no record to liquidate')
     
-        if isinstance(liquidating, str):
-            liq = [liquidating]
-        elif isinstance(liquidating, dict):
-            liq = [x for x, _ in liquidating.items()]
-        elif isinstance(liquidating, list):
-            liq = liquidating
+        if isinstance(assets_to_sell, str):
+            liq = [assets_to_sell]
+        elif isinstance(assets_to_sell, dict):
+            liq = [x for x, _ in assets_to_sell.items()]
+        elif isinstance(assets_to_sell, list):
+            liq = assets_to_sell
         else:
-            return print('ERROR: check arg of set_liquidation')
+            return print('ERROR: check arg assets_to_sell')
             
         # check if tickers to sell exist in record
         date_lt = record.index.get_level_values(0).max()
@@ -1302,20 +1313,22 @@ class StaticPortfolio():
         if pd.Index(liq).difference(record_lt.index).size > 0:
             return print('ERROR: some tickers not in record')
     
-        if not isinstance(liquidating, dict):
-            liquidating = {x:None for x in liq}
+        if not isinstance(assets_to_sell, dict):
+            price = 0 if hold else None
+            # liq is list regardless of type of assets_to_sell
+            assets_to_sell = {x:price for x in liq}
     
-        self.liquidating = liquidating
+        self.assets_to_sell = assets_to_sell
         return print('Liquidation prepared')
+
     
-    
-    def set_price_for_liquidation(self, df_prices, select=False):
+    def set_price(self, df_prices, select=False):
         """
         update df_prices for liquidation
         df_prices: df_universe for select or transaction
         select: set to True for self.select
         """
-        liq_dict = self.liquidating
+        liq_dict = self.assets_to_sell
         if liq_dict is None:
             return df_prices
         else:
@@ -1336,11 +1349,11 @@ class StaticPortfolio():
         return df_data
 
 
-    def check_weights_for_liquidation(self, weights):
+    def check_weights(self, weights):
         """
         check if weights has tickers to liquidate
         """
-        liq_dict = self.liquidating
+        liq_dict = self.assets_to_sell
         if liq_dict is None:
             return None
 
@@ -1358,8 +1371,38 @@ class StaticPortfolio():
             return print('ERROR: assets to liquidate in weights')
         else:
             return None
+
+    
+    def recover_record(self, df_rec, cols_rec):
+        """
+        reset net and transaction of assets in hold
+        """
+        liq_dict = self.assets_to_sell
+        if liq_dict is None:
+            return df_rec
+        else:
+            liq = list(liq_dict.keys())
+
+        if df_rec is None:
+            return print('ERROR')
+
+        date_lt = df_rec.index.get_level_values(0).max()
+        df = df_rec.loc[date_lt]
+        if pd.Index(liq).difference(df.index).size > 0:
+            print('ERROR: some tickers not in record')
+            return df_rec
             
-            
+        col_prc = cols_rec['prc']
+        col_net = cols_rec['net']
+        col_trs = cols_rec['trs']
+        cond = (df_rec[col_prc] == 0) & (df_rec.net == 0)
+        if cond.sum() > 0:
+            df_rec.loc[cond, col_net] = -df_rec.loc[cond, col_trs]
+            df_rec.loc[cond, col_trs] = 0
+            print('Holdings recovered')
+        return df_rec
+
+
 
 class MomentumPortfolio(StaticPortfolio):
     def __init__(self, *args, align_axis=1, method_select='simple', **kwargs):
@@ -1377,7 +1420,7 @@ class MomentumPortfolio(StaticPortfolio):
         if date is not None:
             df_data = df_data.loc[:date]
         # setting liquidation
-        df_data = self.set_price_for_liquidation(df_data, select=True)
+        df_data = self.liquidation.set_price(df_data, select=True)
 
         # prepare data for weigh procedure
         date = df_data.index.max()
@@ -1407,11 +1450,11 @@ class MomentumPortfolio(StaticPortfolio):
     def transaction_pipeline(self, date=None, n_assets=5, 
                              method_select=None, method_weigh=None, weights=None,
                              capital=10000000, commissions=0, 
-                             record=None, liquidating=None, save=False):
+                             record=None, save=False, **kw_liq):
         method_select = self._check_var(method_select, self.method_select)
         method_weigh = self._check_var(method_weigh, self.method_weigh)
         
-        self.set_liquidation(liquidating)
+        self.liquidation.prepare(self.record, **kw_liq)
         self.select(date=date, n_assets=n_assets, method=method_select)
         if not self.check_new_transaction():
             # calc profit at the last transaction
