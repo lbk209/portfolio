@@ -718,6 +718,7 @@ class StaticPortfolio():
         self.selected = None # data for select, weigh and allocate
         self.df_rec = None # record updated with new transaction
         self.date_latest_transaction = None
+        self.liquidating = None # tickers to liquidate to sell price
         # different from the record file if profit_on_transaction_date is True
         self.record = self.import_record(print_msg=True)
         
@@ -743,9 +744,11 @@ class StaticPortfolio():
         """
         date: transaction date
         """
-        df_data = self.df_universe 
+        df_data = self.df_universe
         if date is not None:
             df_data = df_data.loc[:date]
+        # setting liquidation
+        df_data = self.set_price_for_liquidation(df_data, select=True)
 
         # prepare data for weigh procedure
         date = df_data.index.max()
@@ -765,7 +768,7 @@ class StaticPortfolio():
     def weigh(self, method=None, weights=None):
         """
         method: ERC, InvVol, Equally, Specified
-        weights: str, list of str, dict, or None
+        weights: str, list of str, dict, or None. Used only for 'Specified' method
         """
         selected = self.selected
         method = self._check_var(method, self.method_weigh)
@@ -774,7 +777,7 @@ class StaticPortfolio():
         else:
             df_data = selected['data']
             assets = df_data.columns
-            
+
         if method.lower() == 'erc':
             weights = bt.ffn.calc_erc_weights(df_data.pct_change(1).dropna())
             method = 'ERC'
@@ -782,7 +785,9 @@ class StaticPortfolio():
             weights = bt.ffn.calc_inv_vol_weights(df_data.pct_change(1).dropna())
             method = 'Inv.Vol'
         elif method.lower() == 'specified':
-            w = self._check_weights(weights, df_data)
+            w = self._check_weights(weights, df_data, none_weight_is_error=True)
+            if w is None:
+                return self.check_weights_for_liquidation(weights)
             weights = {x:0 for x in assets}
             weights.update(w)
             weights = pd.Series(weights)
@@ -791,7 +796,7 @@ class StaticPortfolio():
             weights = {x:1/len(assets) for x in assets}
             weights = pd.Series(weights)
             method = 'Equal weights'
-        
+
         self.selected['weights'] = weights # weights is series
         print(f'Weights of assets determined by {method}.')
         return weights
@@ -848,7 +853,8 @@ class StaticPortfolio():
 
         # calc error between ideal and actual weights of assets 
         wva = df_net[col_prc].mul(df_net[col_net]).rename(col_wgta) # actual value of each asset
-        mae = (wva.to_frame().join(wvi)
+        mae = (wva.loc[wva != 0] # drop assets of zero weight for mae
+                  .to_frame().join(wvi)
                   .apply(lambda x: x[col_wgta]/x[col_wgt] - 1, axis=1).abs().mean() * 100)
         print(f'Mean absolute error of weights: {mae:.0f} %')
         
@@ -893,7 +899,7 @@ class StaticPortfolio():
             if self._check_new_transaction(date, self.date_latest_transaction):
                 # add new to record after removing additional info except for cols_all in record
                 df_rec = pd.concat([record[cols_all], df_net])
-                df_prc = self.df_universe
+                df_prc = self.set_price_for_liquidation(self.df_universe)
             else:
                 return None
             
@@ -996,8 +1002,9 @@ class StaticPortfolio():
 
     def transaction_pipeline(self, date=None, method_weigh=None, weights=None,
                              capital=10000000, commissions=0, 
-                             record=None, save=False):
+                             record=None, liquidating=None, save=False):
         method_weigh = self._check_var(method_weigh, self.method_weigh)
+        self.set_liquidation(liquidating)
         self.select(date=date)
         if not self.check_new_transaction():
             # calc profit at the last transaction
@@ -1005,7 +1012,10 @@ class StaticPortfolio():
             print(f'The profit from the most recent transaction: {p:,}')
             return self.record
 
-        _ = self.weigh(method_weigh, weights)
+        weights = self.weigh(method_weigh, weights)
+        if weights is None:
+            return None
+            
         df_net = self.allocate(capital=capital, commissions=commissions)
         if df_net is None:
             return None
@@ -1261,6 +1271,95 @@ class StaticPortfolio():
             return print(f'ERROR: KeyError {e}')
 
 
+    def set_liquidation(self, liquidating=None):
+        """
+        convert liquidating to dict of tickers to sell price
+        liquidating: str of a ticker; list of tickers; dict of the tickers to its sell price
+        Set the sell price to zero for assets that will be held, 
+         regardless of their weight in the calculation
+        """
+        
+        if liquidating is None:
+            self.liquidating = None
+            return print('Liquidation set to None')
+        else:
+            record = self.record
+            if record is None:
+                return print('ERROR: no record to liquidate')
+    
+        if isinstance(liquidating, str):
+            liq = [liquidating]
+        elif isinstance(liquidating, dict):
+            liq = [x for x, _ in liquidating.items()]
+        elif isinstance(liquidating, list):
+            liq = liquidating
+        else:
+            return print('ERROR: check arg of set_liquidation')
+            
+        # check if tickers to sell exist in record
+        date_lt = record.index.get_level_values(0).max()
+        record_lt = record.loc[date_lt]
+        if pd.Index(liq).difference(record_lt.index).size > 0:
+            return print('ERROR: some tickers not in record')
+    
+        if not isinstance(liquidating, dict):
+            liquidating = {x:None for x in liq}
+    
+        self.liquidating = liquidating
+        return print('Liquidation prepared')
+    
+    
+    def set_price_for_liquidation(self, df_prices, select=False):
+        """
+        update df_prices for liquidation
+        df_prices: df_universe for select or transaction
+        select: set to True for self.select
+        """
+        liq_dict = self.liquidating
+        if liq_dict is None:
+            return df_prices
+        else:
+            df_data = df_prices.copy()
+
+        if select: # exclude tickers to liquidate in record from uiniverse
+            df_data = df_data.drop(list(liq_dict.keys()), axis=1)
+        else: # reset price of liquidating
+            tickers_all = df_data.columns
+            for ticker, prc in liq_dict.items():
+                if prc is None:
+                    if ticker not in tickers_all:
+                        print(f'ERROR: {ticker} has no sell price')
+                        return df_prices
+                else: # set sell price
+                    df_data[ticker] = prc
+       
+        return df_data
+
+
+    def check_weights_for_liquidation(self, weights):
+        """
+        check if weights has tickers to liquidate
+        """
+        liq_dict = self.liquidating
+        if liq_dict is None:
+            return None
+
+        if isinstance(weights, str):
+            w_list = [weights]
+        elif isinstance(weights, dict):
+            w_list = weights.keys()
+        elif isinstance(weights, list):
+            w_list = weights
+        else:
+            return print('ERROR: check type of weights')
+            
+        w = [x for x in liq_dict.keys() if x in w_list]
+        if len(w) > 0:
+            return print('ERROR: assets to liquidate in weights')
+        else:
+            return None
+            
+            
 
 class MomentumPortfolio(StaticPortfolio):
     def __init__(self, *args, align_axis=1, method_select='simple', **kwargs):
@@ -1277,6 +1376,8 @@ class MomentumPortfolio(StaticPortfolio):
         method = self._check_var(method, self.method_select)
         if date is not None:
             df_data = df_data.loc[:date]
+        # setting liquidation
+        df_data = self.set_price_for_liquidation(df_data, select=True)
 
         # prepare data for weigh procedure
         date = df_data.index.max()
@@ -1306,10 +1407,11 @@ class MomentumPortfolio(StaticPortfolio):
     def transaction_pipeline(self, date=None, n_assets=5, 
                              method_select=None, method_weigh=None, weights=None,
                              capital=10000000, commissions=0, 
-                             record=None, save=False):
+                             record=None, liquidating=None, save=False):
         method_select = self._check_var(method_select, self.method_select)
         method_weigh = self._check_var(method_weigh, self.method_weigh)
         
+        self.set_liquidation(liquidating)
         self.select(date=date, n_assets=n_assets, method=method_select)
         if not self.check_new_transaction():
             # calc profit at the last transaction
@@ -1390,7 +1492,7 @@ class BacktestManager():
         return var_arg
 
 
-    def _check_weights(self, weights, dfs):
+    def _check_weights(self, weights, dfs, none_weight_is_error=False):
         """
         return equal weights if weights is str or list
         weights: str, list of str, dict, or None
@@ -1407,9 +1509,23 @@ class BacktestManager():
             else:
                 cols = ', '.join(cols)
                 return print(f'ERROR: No {cols} in the dfs')
-        else: # assuming dict
+        elif isinstance(weights, dict):
+            c = list(weights.keys())
+            cols = pd.Index(c).difference(dfs.columns)
+            if len(cols) == 0:
+                w = list(weights.values())
+                if round(sum(w),2) == 1:
+                    return weights
+                else:
+                    return print('ERROR: sum of weights is not 1')
+            else:
+                cols = ', '.join(cols)
+                return print(f'ERROR: No {cols} in the dfs')
+        else:
+            if none_weight_is_error:
+                print('ERROR: weights is None')
             return weights
-
+        
 
     def _check_algos(self, select, freq, weigh):
         cond = lambda x,y: False if x is None else x.lower() == y.lower()
