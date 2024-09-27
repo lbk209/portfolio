@@ -1335,7 +1335,9 @@ class Liquidation():
             df_data = df_prices.copy()
 
         if select: # exclude tickers to liquidate in record from uiniverse
-            df_data = df_data.drop(list(liq_dict.keys()), axis=1)
+            df_data = df_data.drop(list(liq_dict.keys()), axis=1, 
+                                   errors='ignore' # tickers might be delisted from kospi200
+                                  )
         else: # reset price of liquidating
             tickers_all = df_data.columns
             for ticker, prc in liq_dict.items():
