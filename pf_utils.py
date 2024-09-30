@@ -856,9 +856,8 @@ class StaticPortfolio():
         print(f'Mean absolute error of weights: {mae:.0f} %')
         
         # add weights as new cols
-        func = lambda x: f'{x:.03f}'
-        wa = wva / wva.groupby(col_date).sum()
-        df_net = df_net.join(wi.apply(func)).join(wa.apply(func))
+        wa = self.calc_weight_actual(df_net)
+        df_net = df_net.join(wi.apply(lambda x: f'{x:.03f}')).join(wa)
 
         # add asset names
         if asset_names is None:
@@ -867,7 +866,18 @@ class StaticPortfolio():
             df_net = df_net.join(pd.Series(asset_names, name=col_name), on=col_ast)
             
         return df_net[cols_all]
-    
+
+
+    def calc_weight_actual(self, df_rec):
+        cols_record = self.cols_record
+        col_date = cols_record['date']
+        col_prc = cols_record['prc']
+        col_net = cols_record['net']
+        col_wgta = cols_record['wgta']
+        wva = df_rec[col_prc].mul(df_rec[col_net]).rename(col_wgta) # actual value of each asset
+        wa = wva / wva.groupby(col_date).sum()
+        return wa.apply(lambda x: f'{x:.04f}')
+
 
     def transaction(self, df_net, record=None):
         """
@@ -1155,7 +1165,7 @@ class StaticPortfolio():
             df_res = self.df_rec
 
         # check if assets in portfolio delisted from universe
-        df_res = self._check_asset(df_res, self.df_universe.columns)
+        df_res = self._check_asset(df_res, self.df_universe.columns, msg=msg)
         return df_res
     
 
@@ -1265,38 +1275,43 @@ class StaticPortfolio():
     
     def update_record(self, asset_names=None, save=True, update_var=True):
         """
-        update ticker names of None in record
+        update and save record: ticker names of None and actual weight
         save: overwrite record file if True
         """
-        # check if ticker name provided
-        asset_names = self._check_var(asset_names, self.asset_names)
-        if asset_names is None:
-            return print('ERROR: set asset_names first')
-
         # load record and check if any ticker name is None
         # reload record as self.record could been modified for liquidation
         record = self.import_record()
         if record is None:
             return None
-        else:
-            cond = record.name.isna()
-            if cond.sum() == 0:
-                print('WARNING: No update as no empty name')
-                return record
-                
-        try:
-            col_name = self.cols_record['name']
-            record.loc[cond, col_name] = record.loc[cond].apply(lambda x: asset_names[x.name[1]], axis=1)
-            if save:
-                file, path = self.file, self.path
-                record.to_csv(f'{path}/{file}')
-                print(f'Transaction file {file} updated')
-                if update_var:
-                    self.record = self.import_record(print_msg=False)
-                    print(f'self.record updated')
-            return record
-        except KeyError as e:
-            return print(f'ERROR: KeyError {e}')
+        
+        # update ticker name
+        cond = record.name.isna()
+        if cond.sum() > 0:
+            # check if ticker name provided
+            asset_names = self._check_var(asset_names, self.asset_names)
+            if asset_names is None:
+                print('WARNING: Set asset_names to update names of None')
+            else:
+                try:
+                    col_name = self.cols_record['name']
+                    record.loc[cond, col_name] = record.loc[cond].apply(lambda x: asset_names[x.name[1]], axis=1)
+                    print('Ticker names of None updated')
+                except KeyError as e:
+                    print(f'ERROR: KeyError {e} to update names')
+
+        # update actual weights
+        wa = self.calc_weight_actual(record)
+        record.update(wa)
+        print('Actual weights updated')
+
+        if save:
+            file, path = self.file, self.path
+            record.to_csv(f'{path}/{file}')
+            print(f'Transaction file {file} updated')
+            if update_var:
+                self.record = self.import_record(print_msg=False)
+                print(f'self.record updated')
+        return record
 
 
     def copy_record(self, date=None, save=True):
@@ -1340,8 +1355,7 @@ class StaticPortfolio():
         df_net = df_net.set_index(col_date, append=True).swaplevel()
     
         # calc actual weight
-        wva = df_net[col_prc].mul(df_net[col_net]).rename(col_wgta)
-        wa = wva / wva.groupby(col_date).sum()
+        wa = self.calc_weight_actual(df_net)
         df_net = df_net.join(wa)
     
         # append copied as new transaction
