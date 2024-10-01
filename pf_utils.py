@@ -812,6 +812,7 @@ class StaticPortfolio():
         col_wgt = cols_record['wgt']
         col_wgta = cols_record['wgta']
         col_name = cols_record['name']
+        # transaction being included in transaction step
         cols_all = [col_name, col_prc, col_net, col_wgt, col_wgta]
         
         asset_names = self.asset_names
@@ -894,8 +895,9 @@ class StaticPortfolio():
         col_net = cols_record['net']
         col_wgt = cols_record['wgt']
         col_wgta = cols_record['wgta']
-        cols_short = [col_net, col_wgt, col_wgta]
-        cols_all = [col_name, col_prc, col_trs, *cols_short]
+        cols_val = [col_trs, col_net] # valid record only if not None nor zero
+        cols_idx = [col_date, col_ast]
+        cols_all = [x for x in cols_record.values() if x not in cols_idx]
         cols_int = [col_prc, col_trs, col_net]
                 
         date = df_net.index.get_level_values(0).max()
@@ -924,7 +926,7 @@ class StaticPortfolio():
             # the net amount of the assets not in hold on the date is 0
             cond = df_rec[col_net].isna()
             cond = cond & (df_rec.index.get_level_values(0) == date)
-            df_rec.loc[cond, cols_short] = 0  
+            df_rec.loc[cond, [col_net, col_wgta]] = 0  
             
             # update transaction on the date by using the assets on the date 
             # and all the transaction before the date
@@ -933,8 +935,8 @@ class StaticPortfolio():
                       .to_frame(col_trs).assign(**{col_date:date})
                       .set_index(col_date, append=True).swaplevel())
             df_rec.update(df_trs)
-            df_rec = df_rec.dropna(subset=cols_short) # drop new assets before the date
-
+            # drop new assets before the date
+            df_rec = df_rec.dropna(subset=cols_val) 
             # drop rows with neither transaction nor net 
             cond = (df_rec.transaction == 0) & (df_rec.net == 0)
             df_rec = df_rec.loc[~cond]
