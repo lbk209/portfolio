@@ -17,6 +17,8 @@ from os import listdir
 from os.path import isfile, join, splitext
 from pf_custom import AlgoSelectKRatio, AlgoRunAfter, calc_kratio, AlgoSelectIDiscrete, AlgoSelectIDRank, SelectMomentum
 from ffn import calc_stats, calc_perf_stats
+from pykrx import stock as pyk
+from tqdm import tqdm
 
 warnings.filterwarnings(action='ignore', category=FutureWarning)
 warnings.filterwarnings(action='ignore', category=pd.errors.PerformanceWarning)
@@ -316,10 +318,33 @@ def get_file_list(file, path='.'):
 def get_file_latest(file, path='.'):
     files = get_file_list(file, path)
     if len(files) == 0:
-        return None
+        return file
     else:
         return files[-1] # latest file
 
+
+def get_filename(file, repl, pattern=r"_\d+(?=\.\w+$)"):
+    match = re.search(pattern, file)
+    if bool(match):
+        file = re.sub(match[0], repl, file)
+    else:
+        name, ext = splitext(file)
+        file = f'{name}{repl}{ext}'
+    return file
+
+
+def save_dataframe(df, file, path='.', 
+                   msg_succ='file saved.',
+                   msg_fail='ERROR: failed to save as file exists'):
+    f = os.path.join(path, file)
+    if os.path.exists(f):
+        print(msg_fail)
+        return False
+    else:
+        df.to_csv(f)    
+        print(msg_succ)
+        return True
+        
 
 def performance_stats(df_prices, metrics=None, sort_by=None, align_period=True, idx_dt=['start', 'end']):
     if isinstance(df_prices, pd.Series):
@@ -420,7 +445,7 @@ class DataManager():
     def __init__(self, file=None, path='.', 
                  universe='kospi200', upload_type='price'):
         """
-        universe: kospi200, etf, fund. used only for ticker name
+        universe: kospi200, etf, krx, fund. used only for ticker name
         """
         self.file_historical = get_file_latest(file, path) # latest file
         self.path = path
@@ -439,7 +464,8 @@ class DataManager():
         if file is None:
             return print('ERROR: no file to load.')
         else:
-            df_prices = self._upload(file, path, upload_type=self.upload_type)
+            df_prices = self._upload(file, path, upload_type=self.upload_type,
+                                    msg_exception='WARNING: uploading failed as ')
 
         if df_prices is None:
             return None # error msg printed out by self._upload
@@ -450,9 +476,12 @@ class DataManager():
 
     @print_runtime
     def download(self, start_date=None, n_years=3, tickers=None,
-                 save=True, date_format='%Y-%m-%d', close_today=False):
+                 save=True, date_format='%Y-%m-%d', close_today=False,
+                 **kwargs_download):
         """
         download df_prices by using FinanceDataReader
+        n_years: int
+        kwargs_download: args for krx. ex) interval=5, pause_duration=1, msg=False
         """
         if start_date is None:
             today = datetime.today()
@@ -469,7 +498,7 @@ class DataManager():
                 self.asset_names = asset_names
             
         try:
-            df_prices = fdr.DataReader(tickers, start_date)
+            df_prices = self._download(self.universe, tickers, start_date, **kwargs_download)
             if not close_today: # market today not closed yet
                 df_prices = df_prices.loc[:datetime.today() - timedelta(days=1)]
             print('done.')
@@ -494,14 +523,11 @@ class DataManager():
             date = datetime.now()
         if not isinstance(date, str):
             date = date.strftime(date_format)
-        
-        file = re.sub(r"_\d+(?=\.\w+$)", f'_{date}', file)
-        f = os.path.join(path, file)
-        if os.path.exists(f):
-            return print(f'ERROR: failed to save as {file} exists')
-        else:
-            df_prices.to_csv(f)    
-            return print(f'{f} saved.')
+
+        file = get_filename(file, f'_{date}', r"_\d+(?=\.\w+$)")
+        _ = save_dataframe(df_prices, file, path, msg_succ=f'{file} saved',
+                           msg_fail=f'ERROR: failed to save as {file} exists')
+        return None
 
     
     def _check_var(self, var_arg, var_self):
@@ -517,18 +543,20 @@ class DataManager():
         return print(f'{s1}{n} assets from {dt0} to {dt1}{s2}')
 
 
-    def _get_tickers(self, universe='kospi200'):
+    def _get_tickers(self, universe='kospi200', **kwargs):
         if universe.lower() == 'kospi200':
             func = self._get_tickers_kospi200
         elif universe.lower() == 'etf':
             func = self._get_tickers_etf
         elif universe.lower() == 'fund':
             func = self._get_tickers_fund
+        elif universe.lower() == 'krx':
+            func = self._get_tickers_krx
         else:
-            func = lambda: None
+            func = lambda **x: None
 
         try:
-            return func()
+            return func(**kwargs)
         except Exception as e:
             return print(f'ERROR: failed to download tickers as {e}')
             
@@ -545,14 +573,46 @@ class DataManager():
         return tickers.set_index(col_asset)[col_name].to_dict()
 
 
+    def _get_tickers_krx(self, ticker=['KOSPI', 'KOSDAQ'], 
+                         col_asset='Code', col_name='Name'):
+        tickers = dict()
+        for x in ticker:
+            df = fdr.StockListing(x)
+            tickers.update(df.set_index(col_asset)[col_name].to_dict())
+        return tickers
+
+
     def _get_tickers_fund(self, col_asset='ticker', col_name='name'):
         file = self.file_historical
         path = self.path
         tickers = pd.read_csv(f'{path}/{file}')
         return tickers.set_index(col_asset)[col_name].to_dict()
+
+
+    def _download(self, universe, *args, **kwargs):
+        if universe.lower() == 'krx':
+            # use pykrx as fdr seems ineffective to download all tickers in krx
+            func = self._download_krx
+        else:
+            func = fdr.DataReader
+            
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            return print(f'ERROR: failed to download prices as {e}')
+
+
+    def _download_krx(self, tickers, start_date, interval=5, pause_duration=1, msg=False):
+        """
+        tickers: list of tickers
+        """
+        krx = KRXDownloader(start_date)
+        krx.tickers = tickers
+        krx.download(interval=interval, pause_duration=pause_duration, msg=msg)
+        return krx.df_data
         
 
-    def _upload(self, file, path, upload_type='price'):
+    def _upload(self, file, path, upload_type='price', msg_exception=''):
         if upload_type.lower() == 'rate':
             func = self._upload_from_rate
         else: # default price
@@ -563,7 +623,7 @@ class DataManager():
             self._print_info(df_prices, str_sfx='uploaded.')
             return df_prices
         except Exception as e:
-            return print(f'ERROR: uploading failed as {e}')
+            return print(f'{msg_exception}{e}')
 
 
     def _upload_from_rate(self, file, path, print_msg_threshold=5):
@@ -680,7 +740,165 @@ class DataManager():
             if len(sort_by) > 0:
                 df_stat = df_stat.sort_values(sort_by[0], ascending=False)
         return df_stat
+
+
+
+class TimeTracker:
+    def __init__(self, auto_start=False):
+        """
+        Initialize the TimeTracker instance.
+        If auto_start is True, the timer will start automatically upon initialization.
+        """
+        self.reset()
+        if auto_start:
+            self.start()
+
+    def start(self):
+        """Start the timer if it's not started or resume it if it was stopped."""
+        if self.start_time is None:
+            # Start the timer for the first time
+            self.start_time = time.time()
+            self.last_pause_time = self.start_time
+            self.is_stopped = False
+            self.total_paused_time = 0
+        elif self.is_stopped:
+            # Resume the timer if it's stopped
+            current_time = time.time()
+            # Update the total paused time by subtracting the time since last pause
+            self.total_paused_time += current_time - self.last_pause_time
+            self.is_stopped = False
+        else:
+            print("Timer is already running.")
+
+    def elapsed(self):
+        """
+        Return the time elapsed since the timer was started, excluding any paused time.
+        Raises an error if the timer has not been started.
+        """
+        if self.start_time is None:
+            s = "Timer has not been started. Use the 'start()' method."
+            #raise ValueError(s)
+            return print(f'ERROR: {s}')
         
+        current_time = self.last_pause_time if self.is_stopped else time.time()
+        return current_time - self.start_time - self.total_paused_time
+
+    def pause(self, interval=5, pause_duration=1, msg=True):
+        """
+        Pauses execution for 'pause_duration' seconds if 'interval' seconds have passed
+        since the last pause or start. Tracks total pause duration and increments pause count.
+        """
+        if interval < 0 or pause_duration < 0:
+            s = "Interval and pause duration must be non-negative."
+            #raise ValueError(s)
+            return print(f'ERROR: {s}')
+
+        current_time = time.time()
+        time_since_last_pause = current_time - self.last_pause_time
+        
+        if time_since_last_pause >= interval:
+            if msg:
+                print(f"Pausing for {pause_duration} second(s) after {interval} seconds elapsed...")
+            time.sleep(pause_duration)
+            self.last_pause_time = current_time  # Update the last pause time
+            self.total_paused_time += pause_duration  # Add to total paused time
+            self.pause_count += 1  # Increment the pause counter
+
+    def stop(self, msg=True):
+        """
+        Stops the timer by marking it as stopped.
+        Further calls to 'elapsed' will reflect the time until this point.
+        """
+        if not self.is_stopped:
+            self.is_stopped = True
+            self.last_pause_time = time.time()
+        if msg:
+            print(f'{self.pause_count} times paused for {self.total_paused_time:.2f} secs')
+        
+    def reset(self):
+        """Reset the timer, clearing all tracked time and resetting the pause counter."""
+        self.start_time = None
+        self.last_pause_time = None
+        self.total_paused_time = 0
+        self.is_stopped = False
+        self.pause_count = 0  # Reset the pause counter
+        
+
+class KRXDownloader():
+    def __init__(self, start, end=None, 
+                 cols_pykrx={'ticker':'Symbol', 'price':'종가', 'vol':'거래량', 'date':'date'}):
+        if end is None:
+            end = datetime.today().strftime('%Y%m%d')
+        self.start = start
+        self.end = end
+        self.cols_pykrx = cols_pykrx
+        self.market = None
+        self.tickers = None
+        self.df_data = None
+    
+    def get_tickers(self, market=['KOSPI', 'KOSDAQ']):
+        """
+        market: KOSPI, KOSDAQ
+        """
+        if isinstance(market, str):
+            market = [market]
+        if not isinstance(market, list):
+            return print('ERROR')
+
+        date = self.end
+        col_symbol = self.cols_pykrx['ticker']
+        
+        tickers = list()
+        for x in market:
+            tickers += pyk.get_market_ticker_list(date, market=x)
+    
+        #excluded = fdr.StockListing('KRX-DELISTING') # error
+        excluded = fdr.StockListing('KRX-ADMIN')[col_symbol]
+        tickers = list(set(tickers) - set(excluded))
+        
+        self.market = market
+        self.tickers = tickers
+        return None
+            
+    def download(self, interval=5, pause_duration=1, msg=False):
+        cols = self.cols_pykrx
+        col_price = cols['price']
+        col_vol = cols['vol']
+        col_date = cols['date']
+        tickers = self.tickers
+        
+        get_price = lambda x: pyk.get_market_ohlcv(self.start, self.end, x)[col_price].rename(x)
+        
+        tracker = TimeTracker(auto_start=True)
+        df_data = get_price(tickers[0])
+        for x in tqdm(tickers[1:]):
+            df = get_price(x)
+            df_data = pd.concat([df_data, df], axis=1)
+            tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
+        tracker.stop()
+        
+        self.df_data = df_data.rename_axis(col_date)
+        return None
+
+    def save(self, file='krx_prices.csv', path='.'):
+        if self.df_data is None:
+            print('ERROR')
+        name, ext = splitext(file)
+        if ext == '':
+            ext = '.csv'
+        start = self.convert_date_format(self.start)
+        end = self.convert_date_format(self.end)
+        file = f'{name}_{start}_{end}{ext}'
+        f = f'{path}/{file}'
+        self.df_data.to_csv(f)
+        print(f'{file} saved')
+
+    def convert_date_format(self, date, format_from='%Y-%m-%d', format_to='%Y%m%d'):
+        if isinstance(date, str):
+            return datetime.strptime(date, format_from).strftime(format_to)
+        else:
+            return date.strftime(date, format_to)
+            
 
 
 class StaticPortfolio():
@@ -1230,19 +1448,11 @@ class StaticPortfolio():
         # add date to file name
         dt = df_rec.index.get_level_values(0).max()
         dt = f"_{dt.strftime('%y%m%d')}"
-        match = re.search(pattern, file)
-        if bool(match):
-            file = re.sub(match[0], dt, file)
-        else:
-            name, ext = splitext(file)
-            file = f'{name}{dt}{ext}'
-        # save after duplicate check
-        f = os.path.join(path, file)
-        if os.path.exists(f):
-            print(f'ERROR: failed to save as {file} exists')
-        else:    
-            df_rec.to_csv(f)
-            print(f'All transactions saved to {file}')
+
+        file = get_filename(file, dt, r"_\d+(?=\.\w+$)")
+        _ = save_dataframe(df_rec, file, path, 
+                           msg_succ=f'All transactions saved to {file}',
+                           msg_fail=f'ERROR: failed to save as {file} exists')
         return file
         
     
