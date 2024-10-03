@@ -1824,8 +1824,11 @@ class BacktestManager():
 
     def align_period(self, df_assets, axis=0, date_format='%Y-%m-%d',
                      fill_na=True, print_msg1=True, print_msg2=True, n_indent=2):
-        return align_period(df_assets, axis=axis, date_format=date_format,
-                     fill_na=fill_na, print_msg1=print_msg1, print_msg2=print_msg2, n_indent=n_indent)
+        if axis is None:
+            return df_assets
+        else:
+            return align_period(df_assets, axis=axis, date_format=date_format, fill_na=fill_na, 
+                                print_msg1=print_msg1, print_msg2=print_msg2, n_indent=n_indent)
 
 
     def _check_name(self, name=None):
@@ -1908,7 +1911,7 @@ class BacktestManager():
 
 
     def _get_algo_select(self, select='all', n_assets=0, lookback=0, lag=0, 
-                         scale=1, threshold=None):
+                         id_scale=1, threshold=None):
         """
         select: all, momentum, kratio, randomly
         """
@@ -1925,8 +1928,8 @@ class BacktestManager():
                                        lag=pd.DateOffset(days=lag))
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'ID'):
-            scale = scale if scale > 1 else 2
-            n_pool = round(n_assets * scale)
+            id_scale = id_scale if id_scale > 1 else 2
+            n_pool = round(n_assets * id_scale)
             algo_select1 = bt.algos.SelectMomentum(n=n_pool, lookback=pd.DateOffset(months=lookback),
                                                   lag=pd.DateOffset(days=lag))
             algo_select2 = AlgoSelectIDiscrete(n=n_assets, lookback=pd.DateOffset(months=lookback),
@@ -1934,7 +1937,7 @@ class BacktestManager():
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select1, algo_select2)
         elif cond(select, 'IDRank'):
             algo_select = AlgoSelectIDRank(n=n_assets, lookback=pd.DateOffset(months=lookback),
-                                       lag=pd.DateOffset(days=lag), scale=scale)
+                                       lag=pd.DateOffset(days=lag), scale=id_scale)
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'randomly'):
             algo_after = AlgoRunAfter(lookback=pd.DateOffset(months=lookback), 
@@ -2040,7 +2043,7 @@ class BacktestManager():
 
         # build args for self._get_algo_* from build args
         select = {'select':select, 'n_assets':n_assets, 'lookback':lookback, 'lag':lag, 
-                  'scale':id_scale, 'threshold':threshold}
+                  'id_scale':id_scale, 'threshold':threshold}
         freq = {'freq':freq} # offset being saved when running backtest
         weigh = {'weigh':weigh, 'weights':weights, 'rf':rf, 'bounds':bounds,
                  'lookback':lookback, 'lag':lag}
