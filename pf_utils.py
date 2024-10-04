@@ -1809,7 +1809,7 @@ class BacktestManager():
         self.initial_capital = initial_capital
         # commissions of all assets across portfolios
         self.commissions = commissions  # unit %
-        self.run_results = None
+        self.run_results = None # output of bt.run
         self.days_in_year = days_in_year # only for self._get_algo_freq
         # saving to apply the same rule in benchmark data
         self.align_axis = align_axis
