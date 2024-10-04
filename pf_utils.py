@@ -19,6 +19,8 @@ from pf_custom import AlgoSelectKRatio, AlgoRunAfter, calc_kratio, AlgoSelectIDi
 from ffn import calc_stats, calc_perf_stats
 from pykrx import stock as pyk
 from tqdm import tqdm
+from matplotlib.dates import num2date, date2num
+from numbers import Number
 
 warnings.filterwarnings(action='ignore', category=FutureWarning)
 warnings.filterwarnings(action='ignore', category=pd.errors.PerformanceWarning)
@@ -384,6 +386,22 @@ def convert_to_daily(df):
     end = df.index.max()
     index = pd.date_range(start, end)
     return df.reindex(index, method='ffill')
+
+
+def mldate(date, date_format='%Y-%m-%d'):
+    """
+    convert date of str or datetime to Matplotlib date format 
+     or date of Matplotlib date format to str
+    """
+    if isinstance(date, Number):
+        return num2date(date).strftime(date_format)
+    elif isinstance(date, str):
+        date = datetime.strptime(date, date_format)
+        return date2num(date)
+    elif isinstance(date, datetime):
+        return date2num(date)
+    else:
+        pass
 
 
 class AssetDict(dict):
@@ -1809,7 +1827,7 @@ class BacktestManager():
         self.initial_capital = initial_capital
         # commissions of all assets across portfolios
         self.commissions = commissions  # unit %
-        self.run_results = None
+        self.run_results = None # output of bt.run
         self.days_in_year = days_in_year # only for self._get_algo_freq
         # saving to apply the same rule in benchmark data
         self.align_axis = align_axis
@@ -2148,7 +2166,7 @@ class BacktestManager():
 
     
     def run(self, pf_list=None, metrics=None, stats=True, stats_sort_by=None,
-            plot=True, freq='D', figsize=None):
+            plot=True, start=None, end=None, freq='D', figsize=None):
         """
         pf_list: List of backtests or list of index of backtest
         """
@@ -2163,7 +2181,7 @@ class BacktestManager():
             self.run_results = run_results
         
         if plot:
-            run_results.plot(freq=freq, figsize=figsize)
+            _ = self.plot(start=start, end=end, freq=freq, figsize=figsize)
 
         if stats:
             print('Returning stats')
@@ -2432,11 +2450,31 @@ class BacktestManager():
         return self._retrieve_results(pf_list, func_result)
 
 
-    def plot(self, freq='D', figsize=None):
-        if self.run_results is None:
+    def plot(self, start=None, end=None, freq='D', figsize=None):
+        run_results = self.run_results
+        if run_results is None:
             return print('ERROR: run backtest first')
         else:
-            return self.run_results.plot(freq=freq, figsize=figsize)
+            dates = self._get_xlim(run_results.prices, start=start, end=end)
+            ax = run_results.plot(freq=freq, figsize=figsize)
+            ax.set_xlim(*dates)
+            return ax
+
+
+    def _get_xlim(self, df_prices, start=None, end=None):
+        """
+        start, end: str or None
+        """
+        if start is None:
+            df = df_prices.diff(-1).abs().cumsum()
+            start = df.loc[df.iloc[:,0]>0].index.min()
+        start = mldate(start)
+        
+        if end is None:
+            end = df_prices.index.max()
+        end = mldate(end)
+        
+        return (start, end)
 
 
     def get_turnover(self, pf_list=None, drop_zero=True):
