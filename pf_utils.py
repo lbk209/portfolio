@@ -1072,6 +1072,7 @@ class StaticPortfolio():
             msg = 'WARNING: No rebalance as no new transaction'
             if self.check_new_transaction(date, msg):
                 # the arg capital is now cash flows
+                print(f'New cash inflows of {capital:,}' ) if capital>0 else None
                 capital += self._calc_record_value(record, False)
 
         # calc quantity of each asset by weights and capital
