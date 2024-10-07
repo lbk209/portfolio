@@ -1060,6 +1060,8 @@ class StaticPortfolio():
             date = selected['date']
             weights = selected['weights']
             assets = weights.index
+            # what's difference if using self.df_universe instead?
+            df_prc = selected['data']
         except KeyError as e:
             return print('ERROR')
 
@@ -1073,10 +1075,10 @@ class StaticPortfolio():
             if self.check_new_transaction(date, msg):
                 # the arg capital is now cash flows
                 print(f'New cash inflows of {capital:,}' ) if capital>0 else None
-                capital += self._calc_record_value(record, False)
+                val, _ = self.valuate(date, df_prc)
+                capital += val # add porfolio value to capital
 
         # calc quantity of each asset by weights and capital
-        df_prc = self.df_universe
         wi = pd.Series(weights, name=col_wgt).rename_axis(col_ast) # ideal weights
         wvi = wi * capital / (1+commissions/100) # weighted asset value
         df_net = wvi / df_prc.loc[date, assets] # stock quantity float
@@ -1180,13 +1182,13 @@ class StaticPortfolio():
 
         df_rec = df_rec[cols_all]
         df_rec[cols_int] = df_rec[cols_int].astype(int).sort_index(level=[0,1])
-
-        # calc value and profit
-        v, p = [self._calc_record_value(df_rec, x) for x in [False, True]]
-        #print(f'Value {v:,}, Profit {p:,}')
-        print(f'Value {round(v):,}, Profit {p/(v-p):.1%}')
-        
         self.df_rec = df_rec
+
+        # portfolio value and profit/loss
+        val, pl = self.valuate(df_prices=df_prc)
+        #print(f'Portfolio value {round(val):,}, Profit {pl/(val-pl):.1%}')
+        print(f'Portfolio value {val:,}, Profit {pl/(val-pl):.1%}')
+
         return df_rec
 
 
@@ -1214,30 +1216,44 @@ class StaticPortfolio():
         return None
 
 
-    def _calc_record_value(self, record, profit=False):
+    def valuate(self, date=None, df_prices=None, print_msg=False, date_format='%Y-%m-%d'):
         """
-        calc asset value and profit based on record
+        calc cashflow of self.record or self.df_rec. 
+         retrun portfolio value and profit/loss if df_prices is given.
         """
         cols_record = self.cols_record
         col_prc = cols_record['prc']
         col_trs = cols_record['trs']
         col_net = cols_record['net']
 
-        # update price on latest transaction
-        record = self.import_record(record, profit_on_transaction_date=True)
-        
-        # cost to lead to the portfolio value on dt2
-        cost = record[col_prc].mul(record[col_trs]).sum()
-        # the 1st and last transaction dates
-        dt1 = record.index.get_level_values(0).min()
-        dt2 = record.index.get_level_values(0).max()
-        # portfolio value on dt1 & dt2
-        bal1 = record.loc[dt1].apply(lambda x: x[col_prc] * x[col_net], axis=1).sum()
-        bal2 = record.loc[dt2].apply(lambda x: x[col_prc] * x[col_net], axis=1).sum()
-        if profit: # profit = current pf value - cost to make current portfolio
-            return bal2 - cost
-        else: # total value (pf value + cash)
-            return bal2 + (bal1 - cost)
+        df_rec = self._check_result()
+        if df_rec is None:
+            return None
+            
+        if date is not None:
+            df_rec = df_rec.loc[:date]
+            
+        # cashflow (cost if positive)
+        cflow = df_rec[col_prc].mul(df_rec[col_trs]).sum()
+        # return cashflow if df_prices not provided
+        if df_prices is None: 
+            print(f'Total cash-flow: {cflow:,}') if print_msg else None
+            return cflow
+
+        # check assets price data
+        date_lt = df_rec.index.get_level_values(0).max()
+        date_lp = df_prices.loc[:date_lt].index.max()
+        if date_lt > date_lp:
+            dt = date_lt.strftime(date_format)
+            return print(f'ERROR: Cannot calc profit/loss as price data is before {dt}')
+
+        n_assets = df_rec.loc[date_lt, col_net]
+        # assets not in universe delisted by self._check_result before
+        val = n_assets.mul(df_prices.loc[date_lp, n_assets.index]).sum()
+        pl = val - cflow
+        s = 'Profit' if pl > 0 else 'Loss'
+        print(f'{s}: {pl:,}') if print_msg else None
+        return (val, pl)
 
 
     def _calc_cashflow(self, record):
@@ -1260,12 +1276,16 @@ class StaticPortfolio():
         kw_liq: kwargs for Liquidation.prepare
         """
         method_weigh = self._check_var(method_weigh, self.method_weigh)
+        
         self.liquidation.prepare(self.record, **kw_liq)
         self.select(date=date)
+        
         if not self.check_new_transaction():
             # calc profit at the last transaction
-            p = self._calc_record_value(self.record, True)
-            print(f'The profit from the most recent transaction: {p:,}')
+            dt = self.selected['date'] # selected defined by self.select
+            df_prices = self.selected['data'] 
+            _, pl = self.valuate(dt, df_prices)
+            print(f'The profit from the most recent transaction: {pl:,}')
             return self.record
 
         weights = self.weigh(method_weigh, weights)
@@ -1305,7 +1325,7 @@ class StaticPortfolio():
             # calc combined asset value history from prv transaction (start) to current (end) 
             sr_i = df_i.apply(lambda x: x*n_assets.loc[x.name]).sum(axis=1) # x.name: index name
             # add to history the profit by substracting initial value of the history from total value (to start)
-            sr_i += self._calc_record_value(df_rec.loc[:start], profit=False) - sr_i[0] 
+            sr_i += self.valuate(df_rec.loc[:start], profit=False) - sr_i[0] 
             # concat histories        
             sr_tot = pd.concat([sr_tot, sr_i])
             end = start - pd.DateOffset(days=1)
@@ -1649,7 +1669,8 @@ class Liquidation():
         """
         update df_prices for liquidation
         df_prices: df_universe for select or transaction
-        select: set to True for self.select
+        select: exclude tickers to liquidate in record from uiniverse.
+                set to True for self.select
         """
         liq_dict = self.assets_to_sell
         if liq_dict is None:
@@ -1781,13 +1802,17 @@ class MomentumPortfolio(StaticPortfolio):
         
         self.liquidation.prepare(self.record, **kw_liq)
         self.select(date=date, n_assets=n_assets, method=method_select)
+        
         if not self.check_new_transaction():
             # calc profit at the last transaction
-            p = self._calc_record_value(self.record, True)
-            print(f'The profit from the most recent transaction: {p:,}')
+            dt = self.selected['date'] # selected defined by self.select
+            df_prices = self.selected['data'] 
+            _, pl = self.valuate(dt, df_prices)
+            print(f'The profit from the most recent transaction: {pl:,}')
             return self.record
 
         _ = self.weigh(method_weigh, weights)
+        
         df_net = self.allocate(capital=capital, commissions=commissions)
         if df_net is None:
             return None
