@@ -1060,8 +1060,8 @@ class StaticPortfolio():
             date = selected['date']
             weights = selected['weights']
             assets = weights.index
-            # what's difference if using self.df_universe instead?
-            df_prc = selected['data']
+            # selected['data'] is not for price but for weigh
+            #df_prc = selected['data'] 
         except KeyError as e:
             return print('ERROR')
 
@@ -1075,10 +1075,11 @@ class StaticPortfolio():
             if self.check_new_transaction(date, msg):
                 # the arg capital is now cash flows
                 print(f'New cash inflows of {capital:,}' ) if capital>0 else None
-                val, _ = self.valuate(date, df_prc)
+                val, _ = self.valuate(date)
                 capital += val # add porfolio value to capital
 
         # calc quantity of each asset by weights and capital
+        df_prc = self.df_universe
         wi = pd.Series(weights, name=col_wgt).rename_axis(col_ast) # ideal weights
         wvi = wi * capital / (1+commissions/100) # weighted asset value
         df_net = wvi / df_prc.loc[date, assets] # stock quantity float
@@ -1183,12 +1184,8 @@ class StaticPortfolio():
         df_rec = df_rec[cols_all]
         df_rec[cols_int] = df_rec[cols_int].astype(int).sort_index(level=[0,1])
         self.df_rec = df_rec
-
-        # portfolio value and profit/loss
-        val, pl = self.valuate(df_prices=df_prc)
-        #print(f'Portfolio value {round(val):,}, Profit {pl/(val-pl):.1%}')
-        print(f'Portfolio value {val:,}, Profit {pl/(val-pl):.1%}')
-
+        # print portfolio value and profit/loss after self.df_rec updated
+        _ = self.valuate(print_msg=True)
         return df_rec
 
 
@@ -1205,10 +1202,8 @@ class StaticPortfolio():
         if date < sr_historical.index.min():
             return None
 
-        v1 = sr_historical.iloc[0]
-        v2 = sr_historical.loc[date]
-        d = date.strftime(date_format)
-        print(f'Value {round(v2):,}, Profit {v2/v1 - 1:.1%} on {d}')
+        dt = date.strftime(date_format)
+        _ = self.valuate(dt, print_msg=True)
 
         if plot:
             self.plot(figsize=figsize, msg_cr=False)
@@ -1216,58 +1211,57 @@ class StaticPortfolio():
         return None
 
 
-    def valuate(self, date=None, df_prices=None, print_msg=False, date_format='%Y-%m-%d'):
+    def valuate(self, date=None, date_format='%Y-%m-%d', print_msg=False, 
+                plot=True, figsize=(10,4)):
         """
-        calc cashflow of self.record or self.df_rec. 
-         retrun portfolio value and profit/loss if df_prices is given.
+        calc cashflow, portfolio value and profit/loss of self.record or self.df_rec
         """
         cols_record = self.cols_record
         col_prc = cols_record['prc']
         col_trs = cols_record['trs']
         col_net = cols_record['net']
 
+        # get latest record
         df_rec = self._check_result()
         if df_rec is None:
             return None
-            
-        if date is not None:
-            df_rec = df_rec.loc[:date]
-            
-        # cashflow (cost if positive)
-        cflow = df_rec[col_prc].mul(df_rec[col_trs]).sum()
-        # return cashflow if df_prices not provided
-        if df_prices is None: 
-            print(f'Total cash-flow: {cflow:,}') if print_msg else None
-            return cflow
-
-        # check assets price data
-        date_lt = df_rec.index.get_level_values(0).max()
-        date_lp = df_prices.loc[:date_lt].index.max()
-        if date_lt > date_lp:
-            dt = date_lt.strftime(date_format)
-            return print(f'ERROR: Cannot calc profit/loss as price data is before {dt}')
-
-        n_assets = df_rec.loc[date_lt, col_net]
-        # assets not in universe delisted by self._check_result before
-        val = n_assets.mul(df_prices.loc[date_lp, n_assets.index]).sum()
-        pl = val - cflow
-        s = 'Profit' if pl > 0 else 'Loss'
-        print(f'{s}: {pl:,}') if print_msg else None
-        return (val, pl)
-
-
-    def _calc_cashflow(self, record):
-        """
-        Returns a series of resultant cash flows at each transaction.
-         negative for outflows, positive for inflows.
-        """
-        cols_record = self.cols_record
-        col_prc = cols_record['prc']
-        col_trs = cols_record['trs']
-        col_date = cols_record['date']
-        return (record[col_prc].mul(record[col_trs])
-                 .groupby(col_date).sum().cumsum().mul(-1))
         
+        # update price data by adding assets not in the universe if existing
+        df_prices = self._update_universe(df_rec, msg=print_msg)
+
+        # check date by price data
+        if date is None:
+            date = df_prices.index.max()
+            date_lt = df_rec.index.get_level_values(0).max()
+            if date_lt > date:
+                dt = date_lt.strftime(date_format)
+                print(f"WARNING: Portfolio value is outdated; price data predates the last transaction on {dt}")
+        else:
+            if isinstance(date, str):
+                date = datetime.strptime(date, date_format)
+            df_prices = df_prices.loc[:date]
+            date_lp = df_prices.index.max()
+            if date_lp < date:
+                dt = date.strftime(date_format)
+                return print(f'ERROR: Cannot valuate portfolio as price data is before {dt}')
+
+        # get record to date
+        df_rec = df_rec.loc[:date]
+        date_lt = df_rec.index.get_level_values(0).max()
+        # cashflow (cost if positive) on date. see _calc_cashflow_history for cf history
+        cflow = df_rec[col_prc].mul(df_rec[col_trs]).sum()
+        # calc value
+        n_assets = df_rec.loc[date_lt, col_net]
+        val = n_assets.mul(df_prices.loc[date, n_assets.index]).sum()
+        
+        if print_msg:
+            print(f'Portfolio value {val:,}, Profit {val/cflow-1:.1%}')
+
+        if plot:
+            self.plot(figsize=figsize, msg_cr=False)
+        
+        return (val, cflow)
+    
 
     def transaction_pipeline(self, date=None, method_weigh=None, weights=None,
                              capital=10000000, commissions=0, 
@@ -1283,9 +1277,7 @@ class StaticPortfolio():
         if not self.check_new_transaction():
             # calc profit at the last transaction
             dt = self.selected['date'] # selected defined by self.select
-            df_prices = self.selected['data'] 
-            _, pl = self.valuate(dt, df_prices)
-            print(f'The profit from the most recent transaction: {pl:,}')
+            _ = self.valuate(dt, print_msg=True)
             return self.record
 
         weights = self.weigh(method_weigh, weights)
@@ -1307,42 +1299,12 @@ class StaticPortfolio():
         return df_rec
 
 
-    def _calc_historical(self, df_rec, name):
-        """
-        calc historical of portfolio value from transaction
-        """
-        col_net = self.cols_record['net']
-        end = datetime.today()
-        sr_tot = pd.Series()
-        dates_trs = df_rec.index.get_level_values(0).unique()
-        
-        # loop for transaction dates in descending order
-        for start in dates_trs.sort_values(ascending=False):
-            n_assets = df_rec.loc[start, col_net]
-            df_i = self.df_universe.loc[start:end, n_assets.index]
-            if len(df_i) == 0: # no price data from transaction date start
-                continue
-            # calc combined asset value history from prv transaction (start) to current (end) 
-            sr_i = df_i.apply(lambda x: x*n_assets.loc[x.name]).sum(axis=1) # x.name: index name
-            # add to history the profit by substracting initial value of the history from total value (to start)
-            sr_i += self.valuate(df_rec.loc[:start], profit=False) - sr_i[0] 
-            # concat histories        
-            sr_tot = pd.concat([sr_tot, sr_i])
-            end = start - pd.DateOffset(days=1)
-
-        if len(sr_tot) > 0:
-            # sort by date
-            return sr_tot.rename(name).sort_index()
-        else:
-            return print('ERROR: no historical')
-
-
     def get_historical(self):
         df_rec = self._check_result()
         if df_rec is None:
             return None
         else:
-            return self._calc_historical(df_rec, self.name)
+            return self._calc_historical(df_rec, self.name, msg=True)
 
     
     def plot(self, figsize=(10,4), msg_cr=True):
@@ -1353,39 +1315,31 @@ class StaticPortfolio():
         if df_rec is None:
             return None
         
-        sr_historical = self._calc_historical(df_rec, self.name)
+        sr_historical = self._calc_historical(df_rec, self.name, msg=msg_cr)
         if (sr_historical is None) or (len(sr_historical)==1):
             return print('ERROR: need more data to plot')
             
         dates_trs = df_rec.index.get_level_values(0).unique()
-        sr_cf = self._calc_cashflow(df_rec)
+        sr_cf = self._calc_cashflow_history(df_rec)
         xmax = sr_historical.index.max()
             
         # plot historical of portfolio value
-        ax1 = sr_historical.plot(figsize=figsize, label='Total Value', title='Portfolio Growth')
+        ax1 = sr_historical.plot(figsize=figsize, label='Value', title='Portfolio Growth')
         ax1.vlines(dates_trs, 0, 1, transform=ax1.get_xaxis_transform(), lw=0.5, color='grey')
         ax1.tick_params(axis='y', labelcolor=ax1.get_lines()[0].get_color())
         #ax1.autoscale(enable=True, axis='x', tight=True)
+        
         # plot cash flows
         ax2 = ax1.twinx()
-        self._plot_cashflow(ax2, sr_cf, xmax)
+        #self._plot_cashflow(ax2, sr_cf, xmax)
+        ax2 = self._plot_profit(ax2, sr_historical, sr_cf)
+        
         # set legend
         h1, _ = ax1.get_legend_handles_labels()
         h2, _ = ax2.get_legend_handles_labels()
         ax1.legend(handles=[h1[0], h2[0]])
         return None
-
-
-    def _plot_cashflow(self, ax, sr_cashflow, xmax, 
-                       label='Cash Flows', alpha=0.4, colors=('r','g')):
-        df_cf = sr_cashflow.rename('y').rename_axis('x1').reset_index()
-        df_cf = df_cf.join(df_cf.x1.shift(-1).rename('x2')).fillna(xmax)
-        df_cf = df_cf[['y', 'x1', 'x2']]
-        args_vline = [x.to_list() for _, x in df_cf.iterrows()]
-        kwargs = dict(label=label, alpha=alpha)
-        return [ax.hlines(*args, color= colors[0] if args[0] < 0 else colors[1], **kwargs)
-                for args in args_vline]
-    
+        
 
     def performance(self, metrics=None, sort_by=None):
         df_rec = self._check_result()
@@ -1398,36 +1352,7 @@ class StaticPortfolio():
         else:
             return performance_stats(sr_historical, metrics=metrics, sort_by=sort_by)
 
-
-    def _check_asset(self, df_rec, universe, msg=True):
-        """
-        check if assets in portfolio delisted from universe
-        df_rec: self.df_rec, self.record or df_net(output of self.allocate)
-        universe: all tickers of universe
-        """
-        out = df_rec.index.get_level_values(1).unique().difference(universe)
-        if out.size > 0:
-            cond = ~df_rec.index.get_level_values(1).isin(out)
-            df_rec = df_rec.loc[cond]
-            s = ', '.join(out.to_list())
-            print(f'REMINDER: {s} excluded from portfolio for value calc') if msg else None
-        return df_rec
-
-
-    def _check_result(self, msg=True):
-        if self.df_rec is None:
-            if self.record is None:
-                return print('ERROR: No transaction record')
-            else:
-                df_res = self.record
-        else:
-            df_res = self.df_rec
-
-        # check if assets in portfolio delisted from universe
-        df_res = self._check_asset(df_res, self.df_universe.columns, msg=msg)
-        return df_res
     
-
     def check_new_transaction(self, date=None,
                               msg='ERROR: check the date as no new transaction'):
         record = self.record
@@ -1461,69 +1386,6 @@ class StaticPortfolio():
         return None
         
 
-    def _load_transaction(self, file, path, print_msg=True, date_format='%Y-%m-%d'):
-        col_ast = self.cols_record['ast']
-        f = os.path.join(path, file)
-        if os.path.exists(f):
-            df_rec = pd.read_csv(f, parse_dates=[0], index_col=[0,1], dtype={col_ast:str})
-        else:
-            return None
-        # check if ticker of asset is 6 digits
-        df_rec = (df_rec.reset_index(level=1)
-                        .assign(asset=lambda x: x.asset.str.zfill(6))
-                        .set_index(col_ast, append=True))
-        
-        if print_msg:
-            dt = df_rec.index.get_level_values(0).max().strftime(date_format)
-            print(f'Transaction record to {dt} loaded')
-        return df_rec
-        
-
-    def _save_transaction(self, df_rec, file, path, 
-                          pattern=r"_\d+(?=\.\w+$)", date_format='%Y-%m-%d'):
-        """
-        save df_rec and return file name
-        """
-        # add date to file name
-        dt = df_rec.index.get_level_values(0).max()
-        dt = f"_{dt.strftime('%y%m%d')}"
-
-        file = get_filename(file, dt, r"_\d+(?=\.\w+$)")
-        _ = save_dataframe(df_rec, file, path, 
-                           msg_succ=f'All transactions saved to {file}',
-                           msg_fail=f'ERROR: failed to save as {file} exists')
-        return file
-        
-    
-    def _check_var(self, arg, arg_self):
-        return arg_self if arg is None else arg
-
-
-    def _retrieve_transaction_file(self, file, path):
-        """
-        get the latest transaction file
-        """
-        files = get_file_list(file, path)
-        if len(files) == 0:
-            name, ext = splitext(file)
-            print(f'WARNING: no record {name}* exists')
-            return file
-        else:
-            return files[-1]
-
-
-    def _update_transaction_dates(self, record, df_universe, col_date):
-        """
-        modify transaction dates to be able to compare purchase price 
-         and close price on the transaction date 
-        """
-        dts_trs = record.index.get_level_values(0).unique()
-        dts_dict = {x: df_universe.loc[:x - timedelta(days=1)].index.max() for x in dts_trs}
-        return (record.reset_index(level=0)
-                      .assign(**{col_date: lambda x: x[col_date].apply(lambda x: dts_dict[x])})
-                      .set_index(col_date, append=True).swaplevel())
-
-    
     def update_record(self, asset_names=None, save=True, update_var=True):
         """
         update and save record: ticker names of None and actual weight
@@ -1616,8 +1478,178 @@ class StaticPortfolio():
             self.save_transaction(df_rec)
     
         return df_rec
+        
+        
+    def _calc_cashflow_history(self, record):
+        """
+        Returns a series of resultant cash flows at each transaction.
+         negative for outflows, positive for inflows.
+        """
+        cols_record = self.cols_record
+        col_prc = cols_record['prc']
+        col_trs = cols_record['trs']
+        col_date = cols_record['date']
+        return (record[col_prc].mul(record[col_trs])
+                 .groupby(col_date).sum().cumsum().mul(-1))
+        
+
+    def _update_universe(self, df_rec, msg=False):
+        """
+        create price histories from record to update universe
+        """
+        df_prices = self.df_universe
+        cols_record = self.cols_record
+        col_prc = cols_record['prc']
+        col_ast = cols_record['ast']
+        # assets not in the universe
+        out = df_rec.index.get_level_values(1).unique().difference(df_prices.columns)
+        if out.size > 0:
+            idx = pd.IndexSlice
+            df_out = df_rec.loc[idx[:, out], col_prc].unstack(col_ast)
+            df_new = pd.concat([df_prices, df_out], axis=1)
+            df_new[out] = df_new[out].ffill().bfill()
+            if msg:
+                s = ', '.join(out.to_list())
+                print(f'Assets {s} added to universe')
+            return df_new
+        else:
+            return df_prices
 
 
+    def _calc_historical(self, df_rec, name, msg=False):
+        """
+        calc historical of portfolio value from transaction
+        """
+        col_net = self.cols_record['net']
+        end = datetime.today()
+        sr_tot = pd.Series()
+        dates_trs = df_rec.index.get_level_values(0).unique()
+        # update price data with df_rec
+        df_universe = self._update_universe(df_rec, msg=msg)
+        
+        # loop for transaction dates in descending order
+        for start in dates_trs.sort_values(ascending=False):
+            n_assets = df_rec.loc[start, col_net]
+            df_i = df_universe.loc[start:end, n_assets.index]
+            if len(df_i) == 0: # no price data from transaction date start
+                continue
+            # calc combined asset value history from prv transaction (start) to current (end) 
+            sr_i = df_i.apply(lambda x: x*n_assets.loc[x.name]).sum(axis=1) # x.name: index name
+            
+            # add to history the profit by substracting initial value of the history from total value (to start)
+            #sr_i += self.valuate(df_rec.loc[:start], profit=False) - sr_i[0] 
+            
+            # concat histories        
+            sr_tot = pd.concat([sr_tot, sr_i])
+            end = start - pd.DateOffset(days=1)
+
+        if len(sr_tot) > 0:
+            # sort by date
+            return sr_tot.astype(int).rename(name).sort_index()
+        else:
+            return print('ERROR: no historical')
+            
+            
+    def _plot_cashflow(self, ax, sr_cashflow_history, xmax, 
+                       label='Cash Flows', alpha=0.4, colors=('r','g')):
+        df_cf = sr_cashflow_history.rename('y').rename_axis('x1').reset_index()
+        df_cf = df_cf.join(df_cf.x1.shift(-1).rename('x2')).fillna(xmax)
+        df_cf = df_cf[['y', 'x1', 'x2']]
+        args_vline = [x.to_list() for _, x in df_cf.iterrows()]
+        kwargs = dict(label=label, alpha=alpha)
+        return [ax.hlines(*args, color= colors[0] if args[0] < 0 else colors[1], **kwargs)
+                for args in args_vline]
+
+
+    def _plot_profit(self, ax, sr_historical, sr_cashflow_history, 
+                     label='Profit', alpha=0.4, color='r', percent=True):
+        df = (sr_historical.to_frame('value')
+                           .join(sr_cashflow_history.abs().rename('cflow'), how='outer')
+                           .ffill().fillna(0))
+        if percent:
+            df = df.apply(lambda x: x.value / x.cflow - 1, axis=1).mul(100)
+            label = f'{label} (%)'
+        else:
+            df = df.apply(lambda x: x.value - x.cflow, axis=1)
+
+        ax = df.plot(ax=ax, label=label, alpha=alpha, color=color)
+        return ax
+        
+
+    def _check_result(self, msg=True):
+        if self.df_rec is None:
+            if self.record is None:
+                return print('ERROR: No transaction record')
+            else:
+                df_res = self.record
+        else:
+            df_res = self.df_rec
+        return df_res
+    
+
+    def _load_transaction(self, file, path, print_msg=True, date_format='%Y-%m-%d'):
+        col_ast = self.cols_record['ast']
+        f = os.path.join(path, file)
+        if os.path.exists(f):
+            df_rec = pd.read_csv(f, parse_dates=[0], index_col=[0,1], dtype={col_ast:str})
+        else:
+            return None
+        # check if ticker of asset is 6 digits
+        df_rec = (df_rec.reset_index(level=1)
+                        .assign(asset=lambda x: x.asset.str.zfill(6))
+                        .set_index(col_ast, append=True))
+        
+        if print_msg:
+            dt = df_rec.index.get_level_values(0).max().strftime(date_format)
+            print(f'Transaction record to {dt} loaded')
+        return df_rec
+        
+
+    def _save_transaction(self, df_rec, file, path, 
+                          pattern=r"_\d+(?=\.\w+$)", date_format='%Y-%m-%d'):
+        """
+        save df_rec and return file name
+        """
+        # add date to file name
+        dt = df_rec.index.get_level_values(0).max()
+        dt = f"_{dt.strftime('%y%m%d')}"
+
+        file = get_filename(file, dt, r"_\d+(?=\.\w+$)")
+        _ = save_dataframe(df_rec, file, path, 
+                           msg_succ=f'All transactions saved to {file}',
+                           msg_fail=f'ERROR: failed to save as {file} exists')
+        return file
+        
+    
+    def _check_var(self, arg, arg_self):
+        return arg_self if arg is None else arg
+
+
+    def _retrieve_transaction_file(self, file, path):
+        """
+        get the latest transaction file
+        """
+        files = get_file_list(file, path)
+        if len(files) == 0:
+            name, ext = splitext(file)
+            print(f'WARNING: no record {name}* exists')
+            return file
+        else:
+            return files[-1]
+
+
+    def _update_transaction_dates(self, record, df_universe, col_date):
+        """
+        modify transaction dates to be able to compare purchase price 
+         and close price on the transaction date 
+        """
+        dts_trs = record.index.get_level_values(0).unique()
+        dts_dict = {x: df_universe.loc[:x - timedelta(days=1)].index.max() for x in dts_trs}
+        return (record.reset_index(level=0)
+                      .assign(**{col_date: lambda x: x[col_date].apply(lambda x: dts_dict[x])})
+                      .set_index(col_date, append=True).swaplevel())
+
+    
 
 class Liquidation():
     def __init__(self):
@@ -1669,7 +1701,7 @@ class Liquidation():
         """
         update df_prices for liquidation
         df_prices: df_universe for select or transaction
-        select: exclude tickers to liquidate in record from uiniverse.
+        select: exclude tickers to liquidate in record from universe.
                 set to True for self.select
         """
         liq_dict = self.assets_to_sell
@@ -1678,7 +1710,7 @@ class Liquidation():
         else:
             df_data = df_prices.copy()
 
-        if select: # exclude tickers to liquidate in record from uiniverse
+        if select: # exclude tickers to liquidate in record from universe
             df_data = df_data.drop(list(liq_dict.keys()), axis=1, 
                                    errors='ignore' # tickers might be delisted from kospi200
                                   )
@@ -1806,9 +1838,7 @@ class MomentumPortfolio(StaticPortfolio):
         if not self.check_new_transaction():
             # calc profit at the last transaction
             dt = self.selected['date'] # selected defined by self.select
-            df_prices = self.selected['data'] 
-            _, pl = self.valuate(dt, df_prices)
-            print(f'The profit from the most recent transaction: {pl:,}')
+            _ = self.valuate(dt, print_msg=True)
             return self.record
 
         _ = self.weigh(method_weigh, weights)
