@@ -924,7 +924,8 @@ class StaticPortfolio():
                  method_weigh='ERC', lookback=12, lag=0,
                  days_in_year=246, align_axis=0, asset_names=None, name='portfolio',
                  cols_record = {'date':'date', 'ast':'asset', 'name':'name', 'prc':'price', 
-                                'trs':'transaction', 'net':'net', 'wgt':'weight', 'wgta':'weight*'}
+                                'trs':'transaction', 'net':'net', 'wgt':'weight', 'wgta':'weight*'},
+                 date_format='%Y-%m-%d'
                 ):
         """
         file: file of transaction history. 
@@ -948,6 +949,7 @@ class StaticPortfolio():
         self.method_weigh = method_weigh
         self.asset_names = asset_names
         self.name = name # portfolio name
+        self.date_format = date_format # date str format for record & printing
         
         self.selected = None # data for select, weigh and allocate
         self.df_rec = None # record updated with new transaction
@@ -989,7 +991,7 @@ class StaticPortfolio():
         df_data = df_data.loc[dt0:dt1] 
 
         dts = df_data.index
-        dts = [x.strftime('%Y-%m-%d') for x in (dts.min(), dts.max())]
+        dts = [x.strftime(self.date_format) for x in (dts.min(), dts.max())]
         n_assets = df_data.columns.size # all assets in the universe selected
         print(f'{n_assets} assets from {dts[0]} to {dts[1]} prepared for weight analysis')
         
@@ -1075,7 +1077,7 @@ class StaticPortfolio():
             if self.check_new_transaction(date, msg):
                 # the arg capital is now cash flows
                 print(f'New cash inflows of {capital:,}' ) if capital>0 else None
-                val, _ = self.valuate(date)
+                val, _ = self.valuate(date, print_msg=False, plot=False)
                 capital += val # add porfolio value to capital
 
         # calc quantity of each asset by weights and capital
@@ -1185,42 +1187,21 @@ class StaticPortfolio():
         df_rec[cols_int] = df_rec[cols_int].astype(int).sort_index(level=[0,1])
         self.df_rec = df_rec
         # print portfolio value and profit/loss after self.df_rec updated
-        _ = self.valuate(print_msg=True)
+        _ = self.valuate(plot=False)
         return df_rec
 
 
-    def calc_value(self, date=None, plot=True, figsize=(10,4), date_format='%Y-%m-%d'):
-        sr_historical = self.get_historical()
-        if sr_historical is None:
-            return None
-            
-        if date is None:
-            date = sr_historical.index.max()
-        else:
-            date = datetime.strptime(date)
-
-        if date < sr_historical.index.min():
-            return None
-
-        dt = date.strftime(date_format)
-        _ = self.valuate(dt, print_msg=True)
-
-        if plot:
-            self.plot(figsize=figsize, msg_cr=False)
-
-        return None
-
-
-    def valuate(self, date=None, date_format='%Y-%m-%d', print_msg=False, 
-                plot=True, figsize=(10,4)):
+    def valuate(self, date=None, print_msg=True, plot=True, figsize=(10,4)):
         """
         calc cashflow, portfolio value and profit/loss of self.record or self.df_rec
+        date_format: self.date_format
         """
         cols_record = self.cols_record
         col_prc = cols_record['prc']
         col_trs = cols_record['trs']
         col_net = cols_record['net']
-
+        date_format = self.date_format
+        
         # get latest record
         df_rec = self._check_result()
         if df_rec is None:
@@ -1255,12 +1236,13 @@ class StaticPortfolio():
         val = n_assets.mul(df_prices.loc[date, n_assets.index]).sum()
         
         if print_msg:
-            print(f'Portfolio value {val:,}, Profit {val/cflow-1:.1%}')
+            dt = date.strftime(date_format)
+            print(f'Portfolio value {val:,}, Profit {val/cflow-1:.1%} on {dt}')
 
         if plot:
             self.plot(figsize=figsize, msg_cr=False)
-        
-        return (val, cflow)
+        else:
+            return (val, cflow)
     
 
     def transaction_pipeline(self, date=None, method_weigh=None, weights=None,
@@ -1277,7 +1259,7 @@ class StaticPortfolio():
         if not self.check_new_transaction():
             # calc profit at the last transaction
             dt = self.selected['date'] # selected defined by self.select
-            _ = self.valuate(dt, print_msg=True)
+            _ = self.valuate(dt, plot=False)
             return self.record
 
         weights = self.weigh(method_weigh, weights)
@@ -1329,10 +1311,10 @@ class StaticPortfolio():
         ax1.tick_params(axis='y', labelcolor=ax1.get_lines()[0].get_color())
         #ax1.autoscale(enable=True, axis='x', tight=True)
         
-        # plot cash flows
+        # plot twin
         ax2 = ax1.twinx()
-        #self._plot_cashflow(ax2, sr_cf, xmax)
-        ax2 = self._plot_profit(ax2, sr_historical, sr_cf)
+        #self._plot_cashflow(ax2, sr_cf, xmax) # cashflow
+        ax2 = self._plot_profit(ax2, sr_historical, sr_cf) # profit
         
         # set legend
         h1, _ = ax1.get_legend_handles_labels()
@@ -1342,6 +1324,9 @@ class StaticPortfolio():
         
 
     def performance(self, metrics=None, sort_by=None):
+        """
+        calc performance of ideal portfolio excluding slippage
+        """
         df_rec = self._check_result()
         if df_rec is None:
             return None
@@ -1535,10 +1520,6 @@ class StaticPortfolio():
                 continue
             # calc combined asset value history from prv transaction (start) to current (end) 
             sr_i = df_i.apply(lambda x: x*n_assets.loc[x.name]).sum(axis=1) # x.name: index name
-            
-            # add to history the profit by substracting initial value of the history from total value (to start)
-            #sr_i += self.valuate(df_rec.loc[:start], profit=False) - sr_i[0] 
-            
             # concat histories        
             sr_tot = pd.concat([sr_tot, sr_i])
             end = start - pd.DateOffset(days=1)
@@ -1562,7 +1543,7 @@ class StaticPortfolio():
 
 
     def _plot_profit(self, ax, sr_historical, sr_cashflow_history, 
-                     label='Profit', alpha=0.4, color='r', percent=True):
+                     label='Profit', alpha=0.4, color='orange', percent=True):
         df = (sr_historical.to_frame('value')
                            .join(sr_cashflow_history.abs().rename('cflow'), how='outer')
                            .ffill().fillna(0))
@@ -1573,6 +1554,7 @@ class StaticPortfolio():
             df = df.apply(lambda x: x.value - x.cflow, axis=1)
 
         ax = df.plot(ax=ax, label=label, alpha=alpha, color=color)
+        ax.tick_params(axis='y', labelcolor=ax.get_lines()[0].get_color())
         return ax
         
 
@@ -1587,7 +1569,7 @@ class StaticPortfolio():
         return df_res
     
 
-    def _load_transaction(self, file, path, print_msg=True, date_format='%Y-%m-%d'):
+    def _load_transaction(self, file, path, print_msg=True):
         col_ast = self.cols_record['ast']
         f = os.path.join(path, file)
         if os.path.exists(f):
@@ -1600,13 +1582,12 @@ class StaticPortfolio():
                         .set_index(col_ast, append=True))
         
         if print_msg:
-            dt = df_rec.index.get_level_values(0).max().strftime(date_format)
+            dt = df_rec.index.get_level_values(0).max().strftime(self.date_format)
             print(f'Transaction record to {dt} loaded')
         return df_rec
         
 
-    def _save_transaction(self, df_rec, file, path, 
-                          pattern=r"_\d+(?=\.\w+$)", date_format='%Y-%m-%d'):
+    def _save_transaction(self, df_rec, file, path, pattern=r"_\d+(?=\.\w+$)"):
         """
         save df_rec and return file name
         """
@@ -1807,7 +1788,7 @@ class MomentumPortfolio(StaticPortfolio):
         df_data = df_data.loc[dt0:dt1]
 
         dts = df_data.index
-        dts = [x.strftime('%Y-%m-%d') for x in (dts.min(), dts.max())]
+        dts = [x.strftime(self.date_format) for x in (dts.min(), dts.max())]
         info_date = f'from {dts[0]} to {dts[1]}'
         
         if method.lower() == 'k-ratio':
@@ -1838,7 +1819,7 @@ class MomentumPortfolio(StaticPortfolio):
         if not self.check_new_transaction():
             # calc profit at the last transaction
             dt = self.selected['date'] # selected defined by self.select
-            _ = self.valuate(dt, print_msg=True)
+            _ = self.valuate(dt, plot=False)
             return self.record
 
         _ = self.weigh(method_weigh, weights)
