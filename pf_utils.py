@@ -994,8 +994,8 @@ class StaticPortfolio():
         dts = [x.strftime(self.date_format) for x in (dts.min(), dts.max())]
         n_assets = df_data.columns.size # all assets in the universe selected
         print(f'{n_assets} assets from {dts[0]} to {dts[1]} prepared for weight analysis')
-        
-        self.selected = {'date': date, 'data': df_data}
+        # date is datetime, data is dataframe
+        self.selected = {'date': date, 'data': df_data} 
         return None
 
     
