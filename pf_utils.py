@@ -457,7 +457,95 @@ class IndentOutput:
             yield
         finally:
             sys.stdout = old_stdout
-            
+
+
+
+class TimeTracker:
+    def __init__(self, auto_start=False):
+        """
+        Initialize the TimeTracker instance.
+        If auto_start is True, the timer will start automatically upon initialization.
+        """
+        self.reset()
+        if auto_start:
+            self.start()
+
+    def start(self):
+        """Start the timer if it's not started or resume it if it was stopped."""
+        if self.start_time is None:
+            # Start the timer for the first time
+            self.start_time = time.time()
+            self.last_pause_time = self.start_time
+            self.is_stopped = False
+            self.total_paused_time = 0
+        elif self.is_stopped:
+            # Resume the timer if it's stopped
+            current_time = time.time()
+            # Update the total paused time by subtracting the time since last pause
+            self.total_paused_time += current_time - self.last_pause_time
+            self.is_stopped = False
+        else:
+            print("Timer is already running.")
+
+    def elapsed(self):
+        """
+        Return the time elapsed since the timer was started, excluding any paused time.
+        Raises an error if the timer has not been started.
+        """
+        if self.start_time is None:
+            s = "Timer has not been started. Use the 'start()' method."
+            #raise ValueError(s)
+            return print(f'ERROR: {s}')
+        
+        current_time = self.last_pause_time if self.is_stopped else time.time()
+        te = current_time - self.start_time
+        tp = self.total_paused_time
+        
+        gets = lambda x: f'{x:.1f} secs' if x//60 < 1 else f'{x/60:.1f} mins'
+        return print(f'{gets(te)} elapsed, {gets(tp)} paused ({tp/te:.1%})')
+
+
+    def pause(self, interval=5, pause_duration=1, msg=True):
+        """
+        Pauses execution for 'pause_duration' seconds if 'interval' seconds have passed
+        since the last pause or start. Tracks total pause duration and increments pause count.
+        """
+        if interval < 0 or pause_duration < 0:
+            s = "Interval and pause duration must be non-negative."
+            #raise ValueError(s)
+            return print(f'ERROR: {s}')
+
+        current_time = time.time()
+        time_since_last_pause = current_time - self.last_pause_time
+        
+        if time_since_last_pause >= interval:
+            if msg:
+                print(f"Pausing for {pause_duration} second(s) after {interval} seconds elapsed...")
+            time.sleep(pause_duration)
+            self.last_pause_time = current_time  # Update the last pause time
+            self.total_paused_time += pause_duration  # Add to total paused time
+            self.pause_count += 1  # Increment the pause counter
+
+    def stop(self, msg=True):
+        """
+        Stops the timer by marking it as stopped.
+        Further calls to 'elapsed' will reflect the time until this point.
+        """
+        if not self.is_stopped:
+            self.is_stopped = True
+            self.last_pause_time = time.time()
+            if msg:
+                self.elapsed()
+        
+    def reset(self):
+        """Reset the timer, clearing all tracked time and resetting the pause counter."""
+        self.start_time = None
+        self.last_pause_time = None
+        self.total_paused_time = 0
+        self.is_stopped = False
+        self.pause_count = 0  # Reset the pause counter
+
+
 
 class DataManager():
     def __init__(self, file=None, path='.', 
@@ -759,87 +847,6 @@ class DataManager():
                 df_stat = df_stat.sort_values(sort_by[0], ascending=False)
         return df_stat
 
-
-
-class TimeTracker:
-    def __init__(self, auto_start=False):
-        """
-        Initialize the TimeTracker instance.
-        If auto_start is True, the timer will start automatically upon initialization.
-        """
-        self.reset()
-        if auto_start:
-            self.start()
-
-    def start(self):
-        """Start the timer if it's not started or resume it if it was stopped."""
-        if self.start_time is None:
-            # Start the timer for the first time
-            self.start_time = time.time()
-            self.last_pause_time = self.start_time
-            self.is_stopped = False
-            self.total_paused_time = 0
-        elif self.is_stopped:
-            # Resume the timer if it's stopped
-            current_time = time.time()
-            # Update the total paused time by subtracting the time since last pause
-            self.total_paused_time += current_time - self.last_pause_time
-            self.is_stopped = False
-        else:
-            print("Timer is already running.")
-
-    def elapsed(self):
-        """
-        Return the time elapsed since the timer was started, excluding any paused time.
-        Raises an error if the timer has not been started.
-        """
-        if self.start_time is None:
-            s = "Timer has not been started. Use the 'start()' method."
-            #raise ValueError(s)
-            return print(f'ERROR: {s}')
-        
-        current_time = self.last_pause_time if self.is_stopped else time.time()
-        return current_time - self.start_time - self.total_paused_time
-
-    def pause(self, interval=5, pause_duration=1, msg=True):
-        """
-        Pauses execution for 'pause_duration' seconds if 'interval' seconds have passed
-        since the last pause or start. Tracks total pause duration and increments pause count.
-        """
-        if interval < 0 or pause_duration < 0:
-            s = "Interval and pause duration must be non-negative."
-            #raise ValueError(s)
-            return print(f'ERROR: {s}')
-
-        current_time = time.time()
-        time_since_last_pause = current_time - self.last_pause_time
-        
-        if time_since_last_pause >= interval:
-            if msg:
-                print(f"Pausing for {pause_duration} second(s) after {interval} seconds elapsed...")
-            time.sleep(pause_duration)
-            self.last_pause_time = current_time  # Update the last pause time
-            self.total_paused_time += pause_duration  # Add to total paused time
-            self.pause_count += 1  # Increment the pause counter
-
-    def stop(self, msg=True):
-        """
-        Stops the timer by marking it as stopped.
-        Further calls to 'elapsed' will reflect the time until this point.
-        """
-        if not self.is_stopped:
-            self.is_stopped = True
-            self.last_pause_time = time.time()
-        if msg:
-            print(f'{self.pause_count} times paused for {self.total_paused_time:.2f} secs')
-        
-    def reset(self):
-        """Reset the timer, clearing all tracked time and resetting the pause counter."""
-        self.start_time = None
-        self.last_pause_time = None
-        self.total_paused_time = 0
-        self.is_stopped = False
-        self.pause_count = 0  # Reset the pause counter
         
 
 class KRXDownloader():
@@ -1233,7 +1240,7 @@ class StaticPortfolio():
         cflow = df_rec[col_prc].mul(df_rec[col_trs]).sum()
         # calc value
         n_assets = df_rec.loc[date_lt, col_net]
-        val = n_assets.mul(df_prices.loc[date, n_assets.index]).sum()
+        val = n_assets.mul(df_prices.loc[date, n_assets.index]).sum().astype(int)
         
         if print_msg:
             dt = date.strftime(date_format)
@@ -2817,3 +2824,129 @@ class AssetEvaluator():
 
     def align_period(self, df, axis=0, fill_na=True, **kwargs):
         return align_period(df, axis=axis, fill_na=fill_na, **kwargs)
+
+
+
+class FinancialRatios():
+    def __init__(self, file, path='.', date_format='%Y-%m-%d',
+                 cols_index={'date':'date', 'ticker':'ticker'},
+                 ratios={'BPS':False, 'PER':True, 'PBR':True, 
+                         'EPS':False, 'DIV':False, 'DPS':False}):
+        self.file = get_file_latest(file, path) # latest file
+        self.path = path
+        self.date_format = date_format
+        self.ratios = ratios # ratios and its ascending order
+        self.cols_index = cols_index
+        self.df_ratios = None
+
+
+    def upload(self):
+        """
+        load financial ratios from a file
+        """
+        if self.file is None:
+            return print('ERROR: Download first')
+        else:
+            col_ticker = self.cols_index['ticker']
+            f = f'{self.path}/{self.file}'
+            df_ratios = pd.read_csv(f, index_col=[0,1], parse_dates=[1], dtype={col_ticker:str})
+            self.df_ratios = df_ratios
+            return self._print_info(df_ratios, str_sfx='loaded')
+        
+
+    def download(self, tickers, start, end=None, fre='m', save=True,
+                 # args for TimeTracker.pause
+                 interval=50, pause_duration=2, msg=False):
+        col_date = self.cols_index['date']
+        col_ticker = self.cols_index['ticker']
+        if end is None:
+            end = datetime.today().strftime(self.date_format)
+        
+        tracker = TimeTracker(auto_start=True)
+        df_ratios = pd.DataFrame()
+        
+        for ticker in tqdm(tickers):
+            df = pyk.get_market_fundamental(start, end, ticker, freq=freq)
+            df = df.assign(**{col_ticker:ticker})
+            df_ratios = pd.concat([df_ratios, df])
+            tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
+        tracker.stop()
+        
+        df_ratios = (df_ratios.rename_axis(col_date)
+                     .loc[df_ratios.index <= end] # remove fictitious end date of month
+                     .set_index(col_ticker, append=True)
+                     .swaplevel())
+        self._print_info(df_ratios, str_sfx='downloaded')
+        self.df_ratios = df_ratios
+        if save:
+            self.save(self.file, self.path)
+
+    
+    def save(self, file=None, path=None, date_format='%y%m%d'):
+        file = self._check_var(file, self.file)
+        path = self._check_var(path, self.path)
+        df_ratios = self.df_ratios
+        if (file is None) or (df_ratios is None):
+            return print('ERROR: check file or df_ratios')
+
+        date = df_ratios.index.get_level_values(1).max().strftime(date_format)
+        file = get_filename(file, f'_{date}', r"_\d+(?=\.\w+$)")
+        _ = save_dataframe(df_ratios, file, path, msg_succ=f'{file} saved',
+                           msg_fail=f'ERROR: failed to save as {file} exists')
+        return None
+
+
+    def analysis(self, date=None, metric='PER', topn=10):
+        df_ratios = self.df_ratios
+        if df_ratios is None:
+            return print('ERROR: load ratios first')
+
+
+    def _print_info(self, df, str_pfx='Financial ratios of', str_sfx=''):
+        date_format = self.date_format
+        dts = df.index.get_level_values(1)
+        dt0 = dts.min().strftime(date_format)
+        dt1 = dts.max().strftime(date_format)
+        n = df.index.get_level_values(0).nunique()
+        s1  = str_pfx + " " if str_pfx else ""
+        s2  = " " + str_sfx if str_sfx else ""
+        return print(f'{s1}{n} stocks from {dt0} to {dt1}{s2}')
+        
+
+    def _check_var(self, var_arg, var_self):
+        return var_self if var_arg is None else var_arg
+
+    
+    def calc_rank(self, date=None, metric='PER', topn=10, scale=None):
+        """
+        normalize rank of financial ratio
+        """
+        df_ratios = self.df_ratios
+        if df_ratios is None:
+            return print('ERROR: load ratios first')
+        
+        # check metric
+        try:
+            sr_ratio = df_ratios[metric]
+            ascending = self.ratios[metric]
+        except KeyError as e:
+            return print(f'ERROR: KeyError {e}')
+        
+        # get rank on the date
+        dates = sr_ratio.index.get_level_values(1).unique()
+        if date is None:
+            dt = dates.max()
+        else:
+            dt = dates[dates < date].max()
+        print(f'{metric} rank on {dt.strftime(self.date_format)}')
+        idx = pd.IndexSlice
+        sr_rank = sr_ratio.loc[idx[:,dt]].rank(ascending=ascending)
+
+        # scale rank
+        if scale == 'minmax':
+            sr_rank = (sr_rank-sr_rank.min()) / (sr_rank.max()-sr_rank.min())
+        elif scale == 'zscore':
+            sr_rank  = (sr_rank-sr_rank.mean()) / sr_rank.std()
+        else:
+            pass
+        return sr_rank.sort_values(ascending=ascending).iloc[:topn]
