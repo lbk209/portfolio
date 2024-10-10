@@ -2896,12 +2896,97 @@ class FinancialRatios():
         return None
 
 
-    def analysis(self, date=None, metric='PER', topn=10):
+    def get_ratios(self, date=None, metrics='PER'):
+        """
+        metrics: list or str
+        """
         df_ratios = self.df_ratios
         if df_ratios is None:
             return print('ERROR: load ratios first')
+        else:
+            date = self._check_date(df_ratios, date)
+
+        col_date = self.cols_index['date']
+        df_res = self._get_ratio(df_ratios, date, metrics).droplevel(col_date)
+
+        metrics = '/'.join(metrics) if isinstance(metrics, list) else metrics
+        print(f'{metrics} on {date.strftime(self.date_format)}')
+        return df_res
+    
+
+    def calc_rank(self, date=None, metrics='PER', topn=10, scale='minmax'):
+        """
+        calc the rank of financial ratios
+        metrics: list or str
+        """
+        df_ratios = self.df_ratios
+        if df_ratios is None:
+            return print('ERROR: load ratios first')
+        else:
+            date = self._check_date(df_ratios, date)
+
+        if isinstance(metrics, str):
+            metrics = [metrics]
+        
+        res_rank = None
+        for m in metrics:
+            sr_rank = self._calc_rank(df_ratios, date, m, scale)
+            if res_rank is None:
+                res_rank = sr_rank
+            else:
+                res_rank += sr_rank 
+                
+        metrics = '+'.join(metrics)
+        print(f'{metrics} rank on {date.strftime(self.date_format)}')
+        return res_rank.sort_values(ascending=True).iloc[:topn]
 
 
+    def _get_ratio(self, df_ratios, date, metrics):
+        """
+        get a financial ratio on date
+        metrics: list or str
+        """
+        try:
+            idx = pd.IndexSlice
+            #return df_ratios[metrics].loc[idx[:,date]]
+            return df_ratios.loc[idx[:,date], metrics]
+        except KeyError as e:
+            return print(f'ERROR: KeyError {e}')
+        
+
+    def _calc_rank(self, df_ratios, date, metric, scale):
+        """
+        calc the rank of a financial ratio
+        metric: str
+        """
+        sr_ratio = self._get_ratio(df_ratios, date, metric)
+        if sr_ratio is None:
+            return # see _get_ratio for error msg
+        else:
+            ascending = self.ratios[metric]
+            sr_rank = sr_ratio.rank(ascending=ascending)
+
+        # scale rank
+        if scale == 'minmax':
+            sr_rank = (sr_rank-sr_rank.min()) / (sr_rank.max()-sr_rank.min())
+        elif scale == 'zscore':
+            sr_rank  = (sr_rank-sr_rank.mean()) / sr_rank.std()
+        else:
+            pass
+        return sr_rank
+
+
+    def _check_date(self, df_ratios, date):
+        """
+        check date in df_ratios
+        """
+        dates = df_ratios.index.get_level_values(1).unique()
+        if date is None:
+            return dates.max()
+        else:
+            return dates[dates < date].max()
+
+    
     def _print_info(self, df, str_pfx='Financial ratios of', str_sfx=''):
         date_format = self.date_format
         dts = df.index.get_level_values(1)
@@ -2915,38 +3000,3 @@ class FinancialRatios():
 
     def _check_var(self, var_arg, var_self):
         return var_self if var_arg is None else var_arg
-
-    
-    def calc_rank(self, date=None, metric='PER', topn=10, scale=None):
-        """
-        normalize rank of financial ratio
-        """
-        df_ratios = self.df_ratios
-        if df_ratios is None:
-            return print('ERROR: load ratios first')
-        
-        # check metric
-        try:
-            sr_ratio = df_ratios[metric]
-            ascending = self.ratios[metric]
-        except KeyError as e:
-            return print(f'ERROR: KeyError {e}')
-        
-        # get rank on the date
-        dates = sr_ratio.index.get_level_values(1).unique()
-        if date is None:
-            dt = dates.max()
-        else:
-            dt = dates[dates < date].max()
-        print(f'{metric} rank on {dt.strftime(self.date_format)}')
-        idx = pd.IndexSlice
-        sr_rank = sr_ratio.loc[idx[:,dt]].rank(ascending=ascending)
-
-        # scale rank
-        if scale == 'minmax':
-            sr_rank = (sr_rank-sr_rank.min()) / (sr_rank.max()-sr_rank.min())
-        elif scale == 'zscore':
-            sr_rank  = (sr_rank-sr_rank.mean()) / sr_rank.std()
-        else:
-            pass
-        return sr_rank.sort_values(ascending=ascending).iloc[:topn]
