@@ -378,14 +378,14 @@ def performance_stats(df_prices, metrics=None, sort_by=None, align_period=True, 
     return df_stats
 
 
-def convert_to_daily(df):
+def convert_to_daily(df, method='ffill'):
     """
     convert df to daily time series
     """
     start = df.index.min()
     end = df.index.max()
     index = pd.date_range(start, end)
-    return df.reindex(index, method='ffill')
+    return df.reindex(index, method=method)
 
 
 def mldate(date, date_format='%Y-%m-%d'):
@@ -2128,12 +2128,12 @@ class BacktestManager():
         return None
         
 
-    def buy_n_hold(self, name=None, weights=None, **kwargs):
+    def buy_n_hold(self, name=None, weigh='specified', weights=None, **kwargs):
         """
         weights: dict of ticker to weight. str if one asset portfolio
         kwargs: set initial_capital or commissions
         """
-        return self.build(name=name, freq='once', select='all', weigh='specified',
+        return self.build(name=name, freq='once', select='all', weigh=weigh,
                           weights=weights, **kwargs)
 
 
@@ -2854,7 +2854,7 @@ class FinancialRatios():
             return self._print_info(df_ratios, str_sfx='loaded')
         
 
-    def download(self, tickers, start, end=None, fre='m', save=True,
+    def download(self, tickers, start, end=None, freq='m', save=True,
                  # args for TimeTracker.pause
                  interval=50, pause_duration=2, msg=False):
         col_date = self.cols_index['date']
@@ -2883,6 +2883,9 @@ class FinancialRatios():
 
     
     def save(self, file=None, path=None, date_format='%y%m%d'):
+        """
+        date_format: date format for file name
+        """
         file = self._check_var(file, self.file)
         path = self._check_var(path, self.path)
         df_ratios = self.df_ratios
@@ -2896,7 +2899,7 @@ class FinancialRatios():
         return None
 
 
-    def get_ratios(self, date=None, metrics='PER'):
+    def get_ratios(self, date=None, metrics=None):
         """
         metrics: list or str
         """
@@ -2905,12 +2908,17 @@ class FinancialRatios():
             return print('ERROR: load ratios first')
         else:
             date = self._check_date(df_ratios, date)
+            if date is None:
+                return None
+
+        if metrics is None:
+            metrics = df_ratios.columns.to_list()
 
         col_date = self.cols_index['date']
         df_res = self._get_ratio(df_ratios, date, metrics).droplevel(col_date)
 
         metrics = '/'.join(metrics) if isinstance(metrics, list) else metrics
-        print(f'{metrics} on {date.strftime(self.date_format)}')
+        print(f'{metrics} on {date}')
         return df_res
     
 
@@ -2924,9 +2932,15 @@ class FinancialRatios():
             return print('ERROR: load ratios first')
         else:
             date = self._check_date(df_ratios, date)
+            if date is None:
+                return None
 
         if isinstance(metrics, str):
             metrics = [metrics]
+
+        if len(metrics) > 1:
+            if scale not in ['minmax', 'zscore']:
+                return print('ERROR: Set scale to sum up multiple ranks')
         
         res_rank = None
         for m in metrics:
@@ -2937,24 +2951,62 @@ class FinancialRatios():
                 res_rank += sr_rank 
                 
         metrics = '+'.join(metrics)
-        print(f'{metrics} rank on {date.strftime(self.date_format)}')
-        return res_rank.sort_values(ascending=True).iloc[:topn]
+        print(f'{metrics} rank on {date}')
+        col_date = self.cols_index['date']
+        return res_rank.droplevel(col_date).sort_values(ascending=True).iloc[:topn]
 
+
+    def calc_historical(self, metrics='PER', scale='minmax'):
+        df_ratios = self.df_ratios
+        if df_ratios is None:
+            return print('ERROR: load ratios first')
+        
+        if isinstance(metrics, str):
+            metrics = [metrics]
+    
+        try:
+            df_r = df_ratios[metrics]
+        except KeyError as e:
+            return print(f'ERROR: KeyError {e}')
+        
+        if len(metrics) > 1:
+            if scale not in ['minmax', 'zscore']:
+                return print('ERROR: Set scale to sum up multiple ranks')    
+    
+        col_date = self.cols_index['date']
+        sr_historical = None
+        for m in metrics:
+            ascending = self.ratios[m]
+            sr_h = self._calc_historical(df_r[m], ascending, scale, col_date)
+            if sr_historical is None:
+                sr_historical = sr_h
+            else:
+                sr_historical += sr_h
+
+        metrics = '+'.join(metrics)
+        print(f'{metrics} historical created')
+        return sr_historical
+    
+
+    def _calc_historical(self, sr_ratio, ascending, scale, col_date):
+        return (sr_ratio.groupby(level=col_date).rank(ascending=ascending)
+                .groupby(level=col_date, group_keys=False).apply(lambda x: self._scale(x, scale))
+               )
+    
 
     def _get_ratio(self, df_ratios, date, metrics):
         """
-        get a financial ratio on date
+        get financial ratios on date
         metrics: list or str
         """
         try:
             idx = pd.IndexSlice
-            #return df_ratios[metrics].loc[idx[:,date]]
             return df_ratios.loc[idx[:,date], metrics]
         except KeyError as e:
             return print(f'ERROR: KeyError {e}')
         
 
-    def _calc_rank(self, df_ratios, date, metric, scale):
+    def _calc_rank(self, df_ratios, date, metric, scale, drop_zero=True):
         """
         calc the rank of a financial ratio
         metric: str
@@ -2962,11 +3014,19 @@ class FinancialRatios():
         sr_ratio = self._get_ratio(df_ratios, date, metric)
         if sr_ratio is None:
             return # see _get_ratio for error msg
-        else:
-            ascending = self.ratios[metric]
-            sr_rank = sr_ratio.rank(ascending=ascending)
+        
+        if drop_zero:
+           sr_ratio = sr_ratio.loc[sr_ratio>0]
+            
+        ascending = self.ratios[metric]
+        sr_rank = sr_ratio.rank(ascending=ascending)
+        return self._scale(sr_rank, scale)
 
-        # scale rank
+
+    def _scale(self, sr_rank, scale):
+        """
+        scale rank
+        """
         if scale == 'minmax':
             sr_rank = (sr_rank-sr_rank.min()) / (sr_rank.max()-sr_rank.min())
         elif scale == 'zscore':
@@ -2976,15 +3036,28 @@ class FinancialRatios():
         return sr_rank
 
 
-    def _check_date(self, df_ratios, date):
+    def _check_date(self, df_ratios, date, return_str=True):
         """
-        check date in df_ratios
+        date: set date for ratios in df_ratios.
+              'start' for the earlist date in df_ratios, 
+              'end' or None for the latest date,
         """
         dates = df_ratios.index.get_level_values(1).unique()
-        if date is None:
-            return dates.max()
+        if date == 'start':
+            date = dates.min()
+        elif date in [None, 'end']:
+            date = dates.max()
         else:
-            return dates[dates < date].max()
+            cond = dates <= date
+            if cond.any():
+                date = dates[cond].max()
+            else:
+                date = dates.min()
+                print(f'WARNING: date set to {date.strftime(self.date_format)}')
+        
+        if return_str:
+            date = date.strftime(self.date_format)
+        return date
 
     
     def _print_info(self, df, str_pfx='Financial ratios of', str_sfx=''):
@@ -3000,3 +3073,4 @@ class FinancialRatios():
 
     def _check_var(self, var_arg, var_self):
         return var_self if var_arg is None else var_arg
+
