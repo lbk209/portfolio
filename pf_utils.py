@@ -2986,6 +2986,46 @@ class FinancialRatios():
         metrics = '+'.join(metrics)
         print(f'{metrics} historical created')
         return sr_historical
+
+
+    def interpolate(self, df_prices, metric='PER', freq='M'):
+        """
+        calculates an interpolated ratio for df_prices
+        """
+        df_ratios = self.df_ratios
+        if df_ratios is None:
+            return print('ERROR: load ratios first')
+    
+        col_ticker = self.cols_index['ticker']
+        col_date = self.cols_index['date']
+        col_price='price'
+        col_mpl = 'multiplier'
+        col_ym = 'year_month'
+        
+        # Copy metric column to avoid modifying original
+        df_m = df_ratios[metric].copy() 
+        
+        # Get price at the end date of every month
+        by = [pd.Grouper(level=0), pd.Grouper(level=1, freq=freq)]
+        df_p = df_prices.groupby(by).last().rename(col_price)
+        
+        # Update date index to year and month
+        reset_index = lambda x: x.index.set_levels(x.index.levels[1].to_period(freq), level=1)
+        df_m.index = reset_index(df_m)
+        df_p.index = reset_index(df_p)
+    
+        # Calculate multiplier from price and metric
+        df_m = (df_m.to_frame().join(df_p).dropna()
+                .apply(lambda x: x[metric] / x[col_price], axis=1).rename(col_mpl))
+    
+        # Return interpolated ratios
+        return (df_prices.rename(col_price).reset_index(level=1)
+                .assign(**{col_ym: lambda x: x[col_date].dt.to_period(freq)})
+                .join(df_m, on=[col_ticker, col_ym])
+                .set_index(col_date, append=True)
+                .apply(lambda x: x[col_price] * x[col_mpl], axis=1)
+                #.unstack(0)
+               )
     
 
     def _calc_historical(self, sr_ratio, ascending, scale, col_date):
