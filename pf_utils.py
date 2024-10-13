@@ -3138,3 +3138,23 @@ class FinancialRatios():
 
     def _check_var(self, var_arg, var_self):
         return var_self if var_arg is None else var_arg
+
+
+    def util_reshape(self, df, stack=True, swaplevel=True):
+        """
+        Converts price data from **DataManager** 
+         to f-ratios in **FinancialRatios** format, or vice versa 
+        """
+        cols_index = self.cols_index
+        col_ticker = cols_index['ticker']
+        col_date = cols_index['date']
+        try:
+            if stack:
+                df = df.stack()
+                if swaplevel:
+                    df = df.swaplevel()
+                return df.rename_axis([col_ticker,col_date]).sort_index()
+            else:
+                return df.unstack(0)
+        except Exception as e:
+            return print(f'ERROR: {e}')
