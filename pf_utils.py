@@ -2511,23 +2511,11 @@ class BacktestManager():
         return self._retrieve_results(pf_list, func_result)
 
 
-    def plot(self, start=None, end=None, freq='D', figsize=None):
-        run_results = self.run_results
-        if run_results is None:
-            return print('ERROR: run backtest first')
-        else:
-            dates = self._get_xlim(run_results.prices, start=start, end=end)
-            ax = run_results.plot(freq=freq, figsize=figsize)
-            ax.set_xlim(*dates)
-            return ax
-
-
     def plot(self, pf_list=None, start=None, end=None, freq='D', 
              figsize=None, legend=True):
         run_results = self.run_results
         if run_results is None:
             return print('ERROR: run backtest first')
-    
         
         if pf_list is None:
             ax = run_results.plot(freq=freq, figsize=figsize, legend=legend)
