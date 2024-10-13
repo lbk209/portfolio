@@ -2522,6 +2522,28 @@ class BacktestManager():
             return ax
 
 
+    def plot(self, pf_list=None, start=None, end=None, freq='D', 
+             figsize=None, legend=True):
+        run_results = self.run_results
+        if run_results is None:
+            return print('ERROR: run backtest first')
+    
+        
+        if pf_list is None:
+            ax = run_results.plot(freq=freq, figsize=figsize, legend=legend)
+        else:
+            pf_list  = self.check_portfolios(pf_list, run_results=run_results, convert_index=True)
+            if pf_list is None:
+                return None
+            fig, ax = plt.subplots()
+            _ = [run_results[x].plot(ax=ax, freq=freq, figsize=figsize) for x in pf_list]
+            ax.legend() if legend else None
+            ax.set_title('daily Price Series')
+        dates = self._get_xlim(run_results.prices, start=start, end=end)
+        ax.set_xlim(*dates)
+        return ax
+
+
     def _get_xlim(self, df_prices, start=None, end=None):
         """
         start, end: str or None
