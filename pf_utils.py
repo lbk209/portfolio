@@ -15,7 +15,8 @@ from datetime import datetime, timedelta
 from contextlib import contextmanager
 from os import listdir
 from os.path import isfile, join, splitext
-from pf_custom import AlgoSelectKRatio, AlgoRunAfter, calc_kratio, AlgoSelectIDiscrete, AlgoSelectIDRank, SelectMomentum
+from pf_custom import (AlgoSelectKRatio, AlgoRunAfter, calc_kratio, AlgoSelectIDiscrete, 
+                       AlgoSelectIDRank, SelectMomentum, AlgoSelectFinRatio)
 from ffn import calc_stats, calc_perf_stats
 from pykrx import stock as pyk
 from tqdm import tqdm
@@ -207,6 +208,16 @@ def get_date_range(dfs, symbol_name=None, return_intersection=False):
         return dfs.loc[start_date:end_date]
     else:
         return df.sort_values('start date')
+
+
+def get_date_minmax(df, date_format, level=0):
+    """
+    get min & max from the datetime index of df
+    """
+    dts = df.index.get_level_values(level)
+    dt0 = dts.min().strftime(date_format)
+    dt1 = dts.max().strftime(date_format)
+    return (dt0, dt1)
 
 
 def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10):
@@ -641,8 +652,7 @@ class DataManager():
 
 
     def _print_info(self, df_prices, str_pfx='', str_sfx='', date_format='%Y-%m-%d'):
-        dt0 = df_prices.index.min().strftime(date_format)
-        dt1 = df_prices.index.max().strftime(date_format)
+        dt0, dt1 = get_date_minmax(df_prices, date_format)
         n = df_prices.columns.size
         s1  = str_pfx + " " if str_pfx else ""
         s2  = " " + str_sfx if str_sfx else ""
@@ -1973,9 +1983,10 @@ class BacktestManager():
 
 
     def _get_algo_select(self, select='all', n_assets=0, lookback=0, lag=0, 
-                         id_scale=1, threshold=None):
+                         id_scale=1, threshold=None, df_ratio=None, ratio_ascending=None):
         """
         select: all, momentum, kratio, randomly
+        ratio_ascending, df_ratio: args for AlgoSelectFinRatio 
         """
         cond = lambda x,y: False if x is None else x.lower() == y.lower()
         
@@ -1984,6 +1995,9 @@ class BacktestManager():
                                          lag=pd.DateOffset(days=lag), threshold=threshold)
             # SelectAll() or similar should be called before SelectMomentum(), 
             # as StatTotalReturn uses values of temp[‘selected’]
+            algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
+        elif cond(select, 'f-ratio'):
+            algo_select = AlgoSelectFinRatio(df_ratio, n_assets, sort_descending=ratio_ascending)
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'k-ratio'):
             algo_select = AlgoSelectKRatio(n=n_assets, lookback=pd.DateOffset(months=lookback),
@@ -2086,7 +2100,9 @@ class BacktestManager():
 
     def build(self, name=None, 
               freq='M', offset=0,
-              select='all', n_assets=0, lookback=0, lag=0, id_scale=1, threshold=None,
+              select='all', n_assets=0, lookback=0, lag=0, 
+              id_scale=1, threshold=None,
+              df_ratio=None, ratio_ascending=None, # args for select 'f-ratio'
               weigh='equally', weights=None, rf=0, bounds=(0.0, 1.0),
               initial_capital=None, commissions=None, algos=None, run_cv=False):
         """
@@ -2105,7 +2121,8 @@ class BacktestManager():
 
         # build args for self._get_algo_* from build args
         select = {'select':select, 'n_assets':n_assets, 'lookback':lookback, 'lag':lag, 
-                  'id_scale':id_scale, 'threshold':threshold}
+                  'id_scale':id_scale, 'threshold':threshold,
+                  'df_ratio':df_ratio, 'ratio_ascending':ratio_ascending}
         freq = {'freq':freq} # offset being saved when running backtest
         weigh = {'weigh':weigh, 'weights':weights, 'rf':rf, 'bounds':bounds,
                  'lookback':lookback, 'lag':lag}
@@ -2838,20 +2855,26 @@ class FinancialRatios():
         self.ratios = ratios # ratios and its ascending order
         self.cols_index = cols_index
         self.df_ratios = None
+        return self.upload()
 
 
     def upload(self):
         """
         load financial ratios from a file
         """
-        if self.file is None:
+        file = self.file
+        path = self.path
+        if file is None:
             return print('ERROR: Download first')
-        else:
+
+        f = os.path.join(path, file)
+        if os.path.exists(f):
             col_ticker = self.cols_index['ticker']
-            f = f'{self.path}/{self.file}'
             df_ratios = pd.read_csv(f, index_col=[0,1], parse_dates=[1], dtype={col_ticker:str})
             self.df_ratios = df_ratios
             return self._print_info(df_ratios, str_sfx='loaded')
+        else:
+            return print(f'WARNING: No \'{file}\' exists')
         
 
     def download(self, tickers, start, end=None, freq='m', save=True,
@@ -2951,7 +2974,8 @@ class FinancialRatios():
                 res_rank += sr_rank 
                 
         metrics = '+'.join(metrics)
-        print(f'{metrics} rank on {date}')
+        s = metrics if topn is None else f'top {topn} stocks of low {metrics}'
+        print(f'Ranking score of {s} on {date}')
         col_date = self.cols_index['date']
         return res_rank.droplevel(col_date).sort_values(ascending=True).iloc[:topn]
 
@@ -2984,7 +3008,7 @@ class FinancialRatios():
                 sr_historical += sr_h
 
         metrics = '+'.join(metrics)
-        print(f'{metrics} historical created')
+        print(f'Historical of {metrics} ranking score created')
         return sr_historical
 
 
@@ -3017,15 +3041,19 @@ class FinancialRatios():
         # Calculate multiplier from price and metric
         df_m = (df_m.to_frame().join(df_p).dropna()
                 .apply(lambda x: x[metric] / x[col_price], axis=1).rename(col_mpl))
-    
-        # Return interpolated ratios
-        return (df_prices.rename(col_price).reset_index(level=1)
+
+        
+        # interpolated ratio
+        df_res = (df_prices.rename(col_price).reset_index(level=1)
                 .assign(**{col_ym: lambda x: x[col_date].dt.to_period(freq)})
                 .join(df_m, on=[col_ticker, col_ym])
                 .set_index(col_date, append=True)
                 .apply(lambda x: x[col_price] * x[col_mpl], axis=1)
                 #.unstack(0)
                )
+        dt0, dt1 = get_date_minmax(df_res, self.date_format, 1)
+        print(f'{metric} interpolated from {dt0} to {dt1}')
+        return df_res
     
 
     def _calc_historical(self, sr_ratio, ascending, scale, col_date):
@@ -3101,10 +3129,7 @@ class FinancialRatios():
 
     
     def _print_info(self, df, str_pfx='Financial ratios of', str_sfx=''):
-        date_format = self.date_format
-        dts = df.index.get_level_values(1)
-        dt0 = dts.min().strftime(date_format)
-        dt1 = dts.max().strftime(date_format)
+        dt0, dt1 = get_date_minmax(df, self.date_format, 1)
         n = df.index.get_level_values(0).nunique()
         s1  = str_pfx + " " if str_pfx else ""
         s2  = " " + str_sfx if str_sfx else ""
@@ -3113,4 +3138,3 @@ class FinancialRatios():
 
     def _check_var(self, var_arg, var_self):
         return var_self if var_arg is None else var_arg
-
