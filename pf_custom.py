@@ -177,6 +177,40 @@ class AlgoStatIDRank(Algo):
         target.temp["stat"] = rank
         
         return True
+
+
+class AlgoSelectFinRatio(AlgoStack):
+    """
+    Sets temp['selected'] based on a financial ratio filter.
+    """
+    def __init__(
+        self,
+        df_ratio, # df of financial ratio such as PER
+        n, # number of elements to select
+        sort_descending=False,
+        all_or_none=False,
+    ):
+        super(AlgoSelectFinRatio, self).__init__(
+            AlgoStatFinRatio(df_ratio),
+            SelectN(n=n, sort_descending=sort_descending, all_or_none=all_or_none),
+        )
+
+
+class AlgoStatFinRatio(Algo):
+    """
+    Sets temp['stat'] with financial ratio
+    """
+    def __init__(self, df_ratio):
+        super(AlgoStatFinRatio, self).__init__()
+        self.df_ratio = df_ratio
+
+    def __call__(self, target):
+        stat = self.df_ratio.loc[target.now]
+        stat = stat.loc[stat > 0]
+        if len(stat) == 0:
+            return False
+        target.temp["stat"] = stat
+        return True
         
         
 class AlgoRunAfter(Algo):
