@@ -1983,10 +1983,10 @@ class BacktestManager():
 
 
     def _get_algo_select(self, select='all', n_assets=0, lookback=0, lag=0, 
-                         id_scale=1, threshold=None, df_ratio=None, ratio_ascending=None):
+                         id_scale=1, threshold=None, df_ratio=None, ratio_descending=None):
         """
         select: all, momentum, kratio, randomly
-        ratio_ascending, df_ratio: args for AlgoSelectFinRatio 
+        ratio_descending, df_ratio: args for AlgoSelectFinRatio 
         """
         cond = lambda x,y: False if x is None else x.lower() == y.lower()
         
@@ -1997,7 +1997,9 @@ class BacktestManager():
             # as StatTotalReturn uses values of temp[‘selected’]
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'f-ratio'):
-            algo_select = AlgoSelectFinRatio(df_ratio, n_assets, sort_descending=ratio_ascending)
+            algo_select = AlgoSelectFinRatio(df_ratio, n_assets, 
+                                             lookback=pd.DateOffset(days=lookback),
+                                             sort_descending=ratio_descending)
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'k-ratio'):
             algo_select = AlgoSelectKRatio(n=n_assets, lookback=pd.DateOffset(months=lookback),
@@ -2102,7 +2104,7 @@ class BacktestManager():
               freq='M', offset=0,
               select='all', n_assets=0, lookback=0, lag=0, 
               id_scale=1, threshold=None,
-              df_ratio=None, ratio_ascending=None, # args for select 'f-ratio'
+              df_ratio=None, ratio_descending=None, # args for select 'f-ratio'
               weigh='equally', weights=None, rf=0, bounds=(0.0, 1.0),
               initial_capital=None, commissions=None, algos=None, run_cv=False):
         """
@@ -2122,7 +2124,7 @@ class BacktestManager():
         # build args for self._get_algo_* from build args
         select = {'select':select, 'n_assets':n_assets, 'lookback':lookback, 'lag':lag, 
                   'id_scale':id_scale, 'threshold':threshold,
-                  'df_ratio':df_ratio, 'ratio_ascending':ratio_ascending}
+                  'df_ratio':df_ratio, 'ratio_descending':ratio_descending}
         freq = {'freq':freq} # offset being saved when running backtest
         weigh = {'weigh':weigh, 'weights':weights, 'rf':rf, 'bounds':bounds,
                  'lookback':lookback, 'lag':lag}
@@ -3022,9 +3024,10 @@ class FinancialRatios():
         return sr_historical
 
 
-    def interpolate(self, df_prices, metric='PER', freq='M'):
+    def interpolate(self, sr_prices, metric='PER', freq='M'):
         """
-        calculates an interpolated ratio for df_prices
+        calculates an interpolated ratio for sr_prices
+        sr_prices: series of price with index of (ticker, date)
         """
         df_ratios = self.df_ratios
         if df_ratios is None:
@@ -3041,7 +3044,7 @@ class FinancialRatios():
         
         # Get price at the end date of every month
         by = [pd.Grouper(level=0), pd.Grouper(level=1, freq=freq)]
-        df_p = df_prices.groupby(by).last().rename(col_price)
+        df_p = sr_prices.groupby(by).last().rename(col_price)
         
         # Update date index to year and month
         reset_index = lambda x: x.index.set_levels(x.index.levels[1].to_period(freq), level=1)
@@ -3054,12 +3057,13 @@ class FinancialRatios():
 
         
         # interpolated ratio
-        df_res = (df_prices.rename(col_price).reset_index(level=1)
+        df_res = (sr_prices.rename(col_price).reset_index(level=1)
                 .assign(**{col_ym: lambda x: x[col_date].dt.to_period(freq)})
                 .join(df_m, on=[col_ticker, col_ym])
                 .set_index(col_date, append=True)
                 .apply(lambda x: x[col_price] * x[col_mpl], axis=1)
                 #.unstack(0)
+                .rename(metric)
                )
         dt0, dt1 = get_date_minmax(df_res, self.date_format, 1)
         print(f'{metric} interpolated from {dt0} to {dt1}')
