@@ -215,10 +215,8 @@ def get_date_minmax(df, date_format, level=0):
     get min & max from the datetime index of df
     """
     dts = df.index.get_level_values(level)
-    dt0 = dts.min().strftime(date_format)
-    dt1 = dts.max().strftime(date_format)
-    return (dt0, dt1)
-
+    return [x.strftime(date_format) for x in (dts.min(), dts.max())]
+    
 
 def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10):
     """
@@ -273,7 +271,7 @@ def align_period(df_assets, axis=0, date_format='%Y-%m-%d',
     if axis == 0:
         df_aligned = get_date_range(df_assets, return_intersection=True)
         if len(df_aligned) < len(df_assets):
-            dts = [x.strftime(date_format) for x in (df_aligned.index.min(), df_aligned.index.max())]
+            dts = get_date_minmax(df_aligned, date_format)
             msg1 = f"period reset: {' ~ '.join(dts)}"
     elif axis == 1:
         c_all = df_assets.columns
@@ -1007,8 +1005,7 @@ class StaticPortfolio():
         dt0 = dt1 - pd.DateOffset(months=self.lookback)
         df_data = df_data.loc[dt0:dt1] 
 
-        dts = df_data.index
-        dts = [x.strftime(self.date_format) for x in (dts.min(), dts.max())]
+        dts = get_date_minmax(df_data, self.date_format)
         n_assets = df_data.columns.size # all assets in the universe selected
         print(f'{n_assets} assets from {dts[0]} to {dts[1]} prepared for weight analysis')
         # date is datetime, data is dataframe
@@ -1804,8 +1801,7 @@ class MomentumPortfolio(StaticPortfolio):
         dt0 = dt1 - pd.DateOffset(months=self.lookback)
         df_data = df_data.loc[dt0:dt1]
 
-        dts = df_data.index
-        dts = [x.strftime(self.date_format) for x in (dts.min(), dts.max())]
+        dts = get_date_minmax(df_data, self.date_format)
         info_date = f'from {dts[0]} to {dts[1]}'
         
         if method.lower() == 'k-ratio':
