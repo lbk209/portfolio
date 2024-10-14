@@ -959,8 +959,10 @@ class StaticPortfolio():
         self.path = path
         
         self.cols_record = cols_record
+        # period for select & weigh
+        # months for momentum & k-ratio, days for f-ratio. see MomentumPortfolio
         self.lookback = lookback 
-        self.lag = lag 
+        self.lag = lag # days
         self.method_weigh = method_weigh
         self.asset_names = asset_names
         self.name = name # portfolio name
@@ -1165,7 +1167,9 @@ class StaticPortfolio():
             if self.check_new_transaction(date):
                 # add new to record after removing additional info except for cols_all in record
                 df_rec = pd.concat([record[cols_all], df_net])
-                df_prc = self.liquidation.set_price(self.df_universe)
+                # update universe by adding assets not in the universe but in the past transactions
+                df_prc = self._update_universe(df_rec, msg=True)
+                df_prc = self.liquidation.set_price(df_prc)
             else:
                 return None
             
@@ -1265,8 +1269,6 @@ class StaticPortfolio():
         """
         kw_liq: kwargs for Liquidation.prepare
         """
-        method_weigh = self._check_var(method_weigh, self.method_weigh)
-        
         self.liquidation.prepare(self.record, **kw_liq)
         self.select(date=date)
         
@@ -1477,6 +1479,25 @@ class StaticPortfolio():
             self.save_transaction(df_rec)
     
         return df_rec
+
+
+    def view_record(self, n_latest=0, df_rec=None):
+        """
+        get 'n_latest' latest or oldest transaction record 
+        """
+        if df_rec is None:
+            df_rec = self._check_result()
+        if df_rec is None:
+            return None
+
+        idx = df_rec.index.get_level_values(0).unique().sort_values(ascending=True)
+        if n_latest > 0:
+            idx = idx[:n_latest]
+        elif n_latest < 0:
+            idx = idx[n_latest:]
+        else:
+            pass
+        return df_rec.loc[idx]
         
         
     def _calc_cashflow_history(self, record):
@@ -1575,7 +1596,7 @@ class StaticPortfolio():
     def _check_result(self, msg=True):
         if self.df_rec is None:
             if self.record is None:
-                return print('ERROR: No transaction record')
+                return print('ERROR: No transaction record') if msg else None
             else:
                 df_res = self.record
         else:
@@ -1778,39 +1799,76 @@ class Liquidation():
 
 
 class MomentumPortfolio(StaticPortfolio):
-    def __init__(self, *args, align_axis=1, method_select='simple', **kwargs):
+    def __init__(self, *args, align_axis=1, 
+                 method_select='simple', sort_ascending=False, df_additional=None,
+                 **kwargs):
+        """
+        method_select: 'simple momentum', 'k-ratio', 'f-ratio'
+        sort_ascending: set to False for momentum & k-ratio, True for PER of f-ratio
+        """
         super().__init__(*args, align_axis=align_axis, **kwargs)
         self.method_select = method_select
+        self.sort_ascending = sort_ascending
+        self.df_additional = df_additional
         
     
-    def select(self, date=None, n_assets=5, method=None):
+    def select(self, date=None, n_assets=5, method=None, 
+               sort_ascending=None, df_additional=None):
         """
         date: transaction date
-        method: simple, k-ratio
+        method: simple, k-ratio, f-ratio
+        df_additional: ex) df_ratio for f-ratio method
         """
         df_data = self.df_universe
         method = self._check_var(method, self.method_select)
+        sort_ascending = self._check_var(sort_ascending, self.sort_ascending)
+        df_additional = self._check_var(df_additional, self.df_additional)
+        
         if date is not None:
             df_data = df_data.loc[:date]
         # setting liquidation
         df_data = self.liquidation.set_price(df_data, select=True)
 
+        # set unit of lookback depending on method
+        method = method.lower()
+        if method == 'f-ratio':
+            lookback = pd.DateOffset(days=self.lookback)
+            unit = 'days'
+        else:
+            lookback = pd.DateOffset(months=self.lookback) 
+            unit = 'months'
+        if self.lookback > 0:
+            print(f'REMINDER: Make sure lookback {self.lookback} {unit}')        
+
         # prepare data for weigh procedure
         date = df_data.index.max()
         dt1 = date - pd.DateOffset(days=self.lag)
-        dt0 = dt1 - pd.DateOffset(months=self.lookback)
+        dt0 = dt1 - lookback
         df_data = df_data.loc[dt0:dt1]
 
         dts = get_date_minmax(df_data, self.date_format)
         info_date = f'from {dts[0]} to {dts[1]}'
         
-        if method.lower() == 'k-ratio':
-            rank = df_data.pct_change(1).apply(lambda x: calc_kratio(x.dropna())).sort_values(ascending=False)[:n_assets]
+        if method == 'k-ratio':
+            rank = (df_data.pct_change(1).apply(lambda x: calc_kratio(x.dropna()))
+                    .sort_values(ascending=sort_ascending)[:n_assets])
             method = 'K-ratio'
+        elif method == 'f-ratio':
+            if df_additional is None:
+                return print('ERROR: no df_additional available')
+                
+            stat = df_additional.loc[dts[0]:dts[1]].mean()
+            stat = stat.loc[stat > 0]
+            if len(stat) == 0:
+                return print('ERROR: check df_additional')
+            
+            rank = stat.sort_values(ascending=sort_ascending)[:n_assets]
+            method = 'Financial Ratio'
         else: # default simple
             #rank = bt.ffn.calc_total_return(df_data).sort_values(ascending=False)[:n_assets]
             # no difference with calc_total_return as align_axis=1
-            rank = df_data.apply(lambda x: x.dropna().iloc[-1]/x.dropna().iloc[0]-1).sort_values(ascending=False)[:n_assets]
+            rank = (df_data.apply(lambda x: x.dropna().iloc[-1]/x.dropna().iloc[0]-1)
+                    .sort_values(ascending=sort_ascending)[:n_assets])
             method = 'Total return'
 
         assets = rank.index
@@ -1821,13 +1879,14 @@ class MomentumPortfolio(StaticPortfolio):
     
     def transaction_pipeline(self, date=None, n_assets=5, 
                              method_select=None, method_weigh=None, weights=None,
+                             sort_ascending=None, df_additional=None,
                              capital=10000000, commissions=0, 
                              record=None, save=False, **kw_liq):
-        method_select = self._check_var(method_select, self.method_select)
-        method_weigh = self._check_var(method_weigh, self.method_weigh)
-        
         self.liquidation.prepare(self.record, **kw_liq)
-        self.select(date=date, n_assets=n_assets, method=method_select)
+        rank = self.select(date=date, n_assets=n_assets, method=method_select,
+                           sort_ascending=sort_ascending, df_additional=df_additional)
+        if rank is None:
+            return None
         
         if not self.check_new_transaction():
             # calc profit at the last transaction
@@ -1994,7 +2053,7 @@ class BacktestManager():
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'f-ratio'):
             algo_select = AlgoSelectFinRatio(df_ratio, n_assets, 
-                                             lookback=pd.DateOffset(days=lookback),
+                                             lookback_days=pd.DateOffset(days=lookback),
                                              sort_descending=ratio_descending)
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'k-ratio'):
@@ -2895,13 +2954,15 @@ class FinancialRatios():
         
         tracker = TimeTracker(auto_start=True)
         df_ratios = pd.DataFrame()
-        
-        for ticker in tqdm(tickers):
-            df = pyk.get_market_fundamental(start, end, ticker, freq=freq)
-            df = df.assign(**{col_ticker:ticker})
-            df_ratios = pd.concat([df_ratios, df])
-            tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
-        tracker.stop()
+        try:
+            for ticker in tqdm(tickers):
+                df = pyk.get_market_fundamental(start, end, ticker, freq=freq)
+                df = df.assign(**{col_ticker:ticker})
+                df_ratios = pd.concat([df_ratios, df])
+                tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
+            tracker.stop()
+        except Exception as e:
+            return print(f'ERROR: {e}')
         
         df_ratios = (df_ratios.rename_axis(col_date)
                      .loc[df_ratios.index <= end] # remove fictitious end date of month
