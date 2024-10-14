@@ -410,7 +410,7 @@ def mldate(date, date_format='%Y-%m-%d'):
     elif isinstance(date, datetime):
         return date2num(date)
     else:
-        pass
+        return date
 
 
 class AssetDict(dict):
@@ -1209,8 +1209,7 @@ class StaticPortfolio():
         return df_rec
 
 
-    def valuate(self, date=None, print_msg=True, 
-                plot=True, figsize=(10,4), start_date=None, end_date=None):
+    def valuate(self, date=None, print_msg=True, plot=True, **kw_plot):
         """
         calc cashflow, portfolio value and profit/loss of self.record or self.df_rec
         date_format: self.date_format
@@ -1259,7 +1258,7 @@ class StaticPortfolio():
             print(f'Portfolio value {val:,}, Profit {val/cflow-1:.1%} on {dt}')
 
         if plot:
-            self.plot(figsize=figsize, msg_cr=False, start_date=start_date, end_date=end_date)
+            self.plot(msg_cr=False, **kw_plot)
         else:
             return (val, cflow)
     
@@ -1306,7 +1305,7 @@ class StaticPortfolio():
             return self._calc_historical(df_rec, self.name, msg=True)
 
     
-    def plot(self, figsize=(10,4), msg_cr=True, start_date=None, end_date=None):
+    def plot(self, figsize=(10,4), msg_cr=True, start_date=None, end_date=None, margin=0.02):
         """
         plot total value of portfolio
         """
@@ -1315,7 +1314,6 @@ class StaticPortfolio():
             return None
         
         sr_historical = self._calc_historical(df_rec, self.name, msg=msg_cr)
-        sr_historical = sr_historical.loc[start_date:end_date]
         if (sr_historical is None) or (len(sr_historical)==1):
             return print('ERROR: need more data to plot')
             
@@ -1328,6 +1326,11 @@ class StaticPortfolio():
         ax1.vlines(dates_trs, 0, 1, transform=ax1.get_xaxis_transform(), lw=0.5, color='grey')
         ax1.tick_params(axis='y', labelcolor=ax1.get_lines()[0].get_color())
         #ax1.autoscale(enable=True, axis='x', tight=True)
+
+        # set x & y lim
+        ax1.set_xlim(mldate(start_date), mldate(end_date))
+        sr = sr_historical.loc[start_date:end_date]
+        ax1.set_ylim(sr.min()*(1-margin), sr.max()*(1+margin))
         
         # plot twin
         ax2 = ax1.twinx()
