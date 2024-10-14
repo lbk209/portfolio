@@ -187,12 +187,12 @@ class AlgoSelectFinRatio(AlgoStack):
         self,
         df_ratio, # df of financial ratio such as PER
         n, # number of elements to select
-        lookback=pd.DateOffset(days=0),
+        lookback_days=pd.DateOffset(days=0),
         sort_descending=False,
         all_or_none=False,
     ):
         super(AlgoSelectFinRatio, self).__init__(
-            AlgoStatFinRatio(df_ratio, lookback=lookback),
+            AlgoStatFinRatio(df_ratio, lookback_days=lookback_days),
             SelectN(n=n, sort_descending=sort_descending, all_or_none=all_or_none),
         )
 
@@ -201,15 +201,15 @@ class AlgoStatFinRatio(Algo):
     """
     Sets temp['stat'] with financial ratio
     """
-    def __init__(self, df_ratio, lookback=pd.DateOffset(days=0)):
+    def __init__(self, df_ratio, lookback_days=pd.DateOffset(days=0)):
         super(AlgoStatFinRatio, self).__init__()
         self.df_ratio = df_ratio
-        self.lookback = lookback
+        self.lookback_days = lookback_days
 
     def __call__(self, target):
         t0 = target.now
         # f-ratios for a date range
-        stat = self.df_ratio.loc[t0 - self.lookback: t0]
+        stat = self.df_ratio.loc[t0 - self.lookback_days: t0]
         if stat.size == 0:
             return False
             
