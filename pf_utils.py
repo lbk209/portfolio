@@ -1209,7 +1209,8 @@ class StaticPortfolio():
         return df_rec
 
 
-    def valuate(self, date=None, print_msg=True, plot=True, figsize=(10,4)):
+    def valuate(self, date=None, print_msg=True, 
+                plot=True, figsize=(10,4), start_date=None, end_date=None):
         """
         calc cashflow, portfolio value and profit/loss of self.record or self.df_rec
         date_format: self.date_format
@@ -1258,7 +1259,7 @@ class StaticPortfolio():
             print(f'Portfolio value {val:,}, Profit {val/cflow-1:.1%} on {dt}')
 
         if plot:
-            self.plot(figsize=figsize, msg_cr=False)
+            self.plot(figsize=figsize, msg_cr=False, start_date=start_date, end_date=end_date)
         else:
             return (val, cflow)
     
@@ -1305,7 +1306,7 @@ class StaticPortfolio():
             return self._calc_historical(df_rec, self.name, msg=True)
 
     
-    def plot(self, figsize=(10,4), msg_cr=True):
+    def plot(self, figsize=(10,4), msg_cr=True, start_date=None, end_date=None):
         """
         plot total value of portfolio
         """
@@ -1314,12 +1315,13 @@ class StaticPortfolio():
             return None
         
         sr_historical = self._calc_historical(df_rec, self.name, msg=msg_cr)
+        sr_historical = sr_historical.loc[start_date:end_date]
         if (sr_historical is None) or (len(sr_historical)==1):
             return print('ERROR: need more data to plot')
             
         dates_trs = df_rec.index.get_level_values(0).unique()
         sr_cf = self._calc_cashflow_history(df_rec)
-        xmax = sr_historical.index.max()
+        #xmax = sr_historical.index.max()
             
         # plot historical of portfolio value
         ax1 = sr_historical.plot(figsize=figsize, label='Value', title='Portfolio Growth')
