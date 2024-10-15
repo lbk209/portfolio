@@ -616,7 +616,7 @@ class DataManager():
             df_prices = self._download(self.universe, tickers, start_date, **kwargs_download)
             if not close_today: # market today not closed yet
                 df_prices = df_prices.loc[:datetime.today() - timedelta(days=1)]
-            print('done.')
+            print('... done')
             self._print_info(df_prices, str_sfx='downloaded.')
         except Exception as e:
             return print(f'ERROR: {e}')
@@ -2949,19 +2949,20 @@ class FinancialRatios():
             return print(f'WARNING: No \'{file}\' exists')
         
 
-    def download(self, tickers, start, end=None, freq='m', save=True,
+    def download(self, tickers, start_date, end_date=None, freq='m', save=True,
                  # args for TimeTracker.pause
                  interval=50, pause_duration=2, msg=False):
         col_date = self.cols_index['date']
         col_ticker = self.cols_index['ticker']
-        if end is None:
-            end = datetime.today().strftime(self.date_format)
+        
+        if end_date is None:
+            end_date = datetime.today().strftime(self.date_format)
         
         tracker = TimeTracker(auto_start=True)
         df_ratios = pd.DataFrame()
         try:
             for ticker in tqdm(tickers):
-                df = pyk.get_market_fundamental(start, end, ticker, freq=freq)
+                df = pyk.get_market_fundamental(start_date, end_date, ticker, freq=freq)
                 df = df.assign(**{col_ticker:ticker})
                 df_ratios = pd.concat([df_ratios, df])
                 tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
@@ -2970,7 +2971,7 @@ class FinancialRatios():
             return print(f'ERROR: {e}')
         
         df_ratios = (df_ratios.rename_axis(col_date)
-                     .loc[df_ratios.index <= end] # remove fictitious end date of month
+                     .loc[df_ratios.index <= end_date] # remove fictitious end date of month
                      .set_index(col_ticker, append=True)
                      .swaplevel())
         self._print_info(df_ratios, str_sfx='downloaded')
