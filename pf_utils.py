@@ -218,7 +218,7 @@ def get_date_minmax(df, date_format, level=0):
     return [x.strftime(date_format) for x in (dts.min(), dts.max())]
     
 
-def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10):
+def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10, msg=True):
     """
     freq: unit to check days_in_year in df
     """
@@ -244,7 +244,7 @@ def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10):
               )
 
     cond = (df_days != days_in_year)
-    if cond.sum() > 0:
+    if (cond.sum() > 0) and msg:
         df = df_days.loc[cond]
         n = len(df)
         if n < n_thr:
@@ -3230,7 +3230,7 @@ class FinancialRatios():
 
     def _check_freq(self, df, col_date, n_in_year=12):
         df = df.groupby(col_date).last()
-        n = check_days_in_year(df).mean()
+        n = check_days_in_year(df, msg=False).mean()
         if n == n_in_year:
             return True
         else:
