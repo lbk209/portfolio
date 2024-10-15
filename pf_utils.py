@@ -1530,7 +1530,7 @@ class StaticPortfolio():
         out = df_rec.index.get_level_values(1).unique().difference(df_prices.columns)
         if out.size > 0:
             idx = pd.IndexSlice
-            df_out = df_rec.loc[idx[:, out], col_prc].unstack(col_ast)
+            df_out = df_rec.sort_index().loc[idx[:, out], col_prc].unstack(col_ast)
             df_new = pd.concat([df_prices, df_out], axis=1)
             df_new[out] = df_new[out].ffill().bfill()
             if msg:
@@ -2949,14 +2949,21 @@ class FinancialRatios():
             return print(f'WARNING: No \'{file}\' exists')
         
 
-    def download(self, tickers, start_date, end_date=None, freq='m', save=True,
+    def download(self, tickers, start_date, end_date=None, 
+                 freq='m', close_today=False, save=True,
                  # args for TimeTracker.pause
                  interval=50, pause_duration=2, msg=False):
         col_date = self.cols_index['date']
         col_ticker = self.cols_index['ticker']
-        
+        date_format = self.date_format
+
+        # check end date and closing
+        today = datetime.today().strftime(date_format)
         if end_date is None:
-            end_date = datetime.today().strftime(self.date_format)
+            end_date = today
+        if not close_today and (end_date == today):
+            end_date = datetime.strptime(end_date, date_format) - timedelta(days=1)
+            end_date = end_date.strftime(date_format)
         
         tracker = TimeTracker(auto_start=True)
         df_ratios = pd.DataFrame()
@@ -3095,12 +3102,16 @@ class FinancialRatios():
         df_ratios = self.df_ratios
         if df_ratios is None:
             return print('ERROR: load ratios first')
-    
+            
         col_ticker = self.cols_index['ticker']
         col_date = self.cols_index['date']
         col_price='price'
         col_mpl = 'multiplier'
         col_ym = 'year_month'
+
+        if not self._check_freq(df_ratios, col_date, n_in_year=12):
+            print('WARNING: No interpolation as data is not monthly')
+            return sr_prices
         
         # Copy metric column to avoid modifying original
         df_m = df_ratios[metric].copy() 
@@ -3146,7 +3157,7 @@ class FinancialRatios():
         """
         try:
             idx = pd.IndexSlice
-            return df_ratios.loc[idx[:,date], metrics]
+            return df_ratios.sort_index().loc[idx[:,date], metrics]
         except KeyError as e:
             return print(f'ERROR: KeyError {e}')
         
@@ -3215,6 +3226,15 @@ class FinancialRatios():
 
     def _check_var(self, var_arg, var_self):
         return var_self if var_arg is None else var_arg
+
+
+    def _check_freq(self, df, col_date, n_in_year=12):
+        df = df.groupby(col_date).last()
+        n = check_days_in_year(df).mean()
+        if n == n_in_year:
+            return True
+        else:
+            return False
 
 
     def util_reshape(self, df, stack=True, swaplevel=True):
