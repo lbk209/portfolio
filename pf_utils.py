@@ -648,7 +648,7 @@ class DataManager():
     def _check_var(self, var_arg, var_self):
         return var_self if var_arg is None else var_arg
 
-
+    
     def _print_info(self, df_prices, str_pfx='', str_sfx='', date_format='%Y-%m-%d'):
         dt0, dt1 = get_date_minmax(df_prices, date_format)
         n = df_prices.columns.size
@@ -1838,16 +1838,18 @@ class MomentumPortfolio(StaticPortfolio):
         method = method.lower()
         if method == 'f-ratio':
             lookback = pd.DateOffset(days=self.lookback)
+            lag = pd.DateOffset(days=0)
             unit = 'days'
         else:
             lookback = pd.DateOffset(months=self.lookback) 
+            lag = pd.DateOffset(days=self.lag)
             unit = 'months'
         if self.lookback > 0:
             print(f'REMINDER: Make sure lookback {self.lookback} {unit}')        
 
         # prepare data for weigh procedure
         date = df_data.index.max()
-        dt1 = date - pd.DateOffset(days=self.lag)
+        dt1 = date - lag
         dt0 = dt1 - lookback
         df_data = df_data.loc[dt0:dt1]
 
@@ -1862,12 +1864,15 @@ class MomentumPortfolio(StaticPortfolio):
             if df_additional is None:
                 return print('ERROR: no df_additional available')
                 
-            stat = df_additional.loc[dts[0]:dts[1]].mean()
+            stat = df_additional.loc[df_data.index].mean()
             stat = stat.loc[stat > 0]
             if len(stat) == 0:
                 return print('ERROR: check df_additional')
             
             rank = stat.sort_values(ascending=sort_ascending)[:n_assets]
+            if rank.index.difference(df_data.columns).size > 0:
+                print('ERROR: check selected assets if price data given')
+                
             method = 'Financial Ratio'
         else: # default simple
             #rank = bt.ffn.calc_total_return(df_data).sort_values(ascending=False)[:n_assets]
@@ -1951,7 +1956,7 @@ class BacktestManager():
 
         # run after set self.df_assets
         print('running self.util_check_days_in_year to check days in a year')
-        _ = self.util_check_days_in_year(df_assets, days_in_year, freq='M')
+        _ = self.util_check_days_in_year(df_assets, days_in_year, freq='M', n_thr=1)
 
 
     def align_period(self, df_assets, axis=0, date_format='%Y-%m-%d',
@@ -2718,7 +2723,7 @@ class AssetEvaluator():
         df_prices = df_prices.to_frame() if isinstance(df_prices, pd.Series) else df_prices
         if df_prices.index.name is None:
             df_prices.index.name = 'date' # set index name to run check_days_in_year
-        _ = check_days_in_year(df_prices, days_in_year, freq='M')
+        _ = check_days_in_year(df_prices, days_in_year, freq='M', n_thr=1)
         
         self.df_prices = df_prices
         self.days_in_year = days_in_year
@@ -3109,12 +3114,12 @@ class FinancialRatios():
         col_mpl = 'multiplier'
         col_ym = 'year_month'
 
-        if not self._check_freq(df_ratios, col_date, n_in_year=12):
-            print('WARNING: No interpolation as data is not monthly')
-            return sr_prices
-        
         # Copy metric column to avoid modifying original
         df_m = df_ratios[metric].copy() 
+        
+        if not self._check_freq(df_ratios, col_date, n_in_year=12):
+            print('WARNING: No interpolation as data is not monthly')
+            return df_m
         
         # Get price at the end date of every month
         by = [pd.Grouper(level=0), pd.Grouper(level=1, freq=freq)]
