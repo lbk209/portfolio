@@ -617,7 +617,7 @@ class DataManager():
             if not close_today: # market today not closed yet
                 df_prices = df_prices.loc[:datetime.today() - timedelta(days=1)]
             print('... done')
-            self._print_info(df_prices, str_sfx='downloaded.')
+            DataManager.print_info(df_prices, str_sfx='downloaded.')
         except Exception as e:
             return print(f'ERROR: {e}')
             
@@ -648,8 +648,9 @@ class DataManager():
     def _check_var(self, var_arg, var_self):
         return var_self if var_arg is None else var_arg
 
-    
-    def _print_info(self, df_prices, str_pfx='', str_sfx='', date_format='%Y-%m-%d'):
+
+    @staticmethod
+    def print_info(df_prices, str_pfx='', str_sfx='', date_format='%Y-%m-%d'):
         dt0, dt1 = get_date_minmax(df_prices, date_format)
         n = df_prices.columns.size
         s1  = str_pfx + " " if str_pfx else ""
@@ -734,7 +735,7 @@ class DataManager():
         
         try:
             df_prices = func(file, path)
-            self._print_info(df_prices, str_sfx='uploaded.')
+            DataManager.print_info(df_prices, str_sfx='uploaded.')
             return df_prices
         except Exception as e:
             return print(f'{msg_exception}{e}')
@@ -940,7 +941,7 @@ class StaticPortfolio():
                  days_in_year=246, align_axis=0, asset_names=None, name='portfolio',
                  cols_record = {'date':'date', 'ast':'asset', 'name':'name', 'prc':'price', 
                                 'trs':'transaction', 'net':'net', 'wgt':'weight', 'wgta':'weight*'},
-                 date_format='%Y-%m-%d'
+                 date_format='%Y-%m-%d', lb_unit='months'
                 ):
         """
         file: file of transaction history. 
@@ -967,6 +968,7 @@ class StaticPortfolio():
         self.asset_names = asset_names
         self.name = name # portfolio name
         self.date_format = date_format # date str format for record & printing
+        self.lb_unit = lb_unit # months or days
         
         self.selected = None # data for select, weigh and allocate
         self.df_rec = None # record updated with new transaction
@@ -1004,7 +1006,7 @@ class StaticPortfolio():
         # prepare data for weigh procedure
         date = df_data.index.max()
         dt1 = date - pd.DateOffset(days=self.lag)
-        dt0 = dt1 - pd.DateOffset(months=self.lookback)
+        dt0 = dt1 - pd.DateOffset(**{self.lb_unit:self.lookback})
         df_data = df_data.loc[dt0:dt1] 
 
         dts = get_date_minmax(df_data, self.date_format)
@@ -1226,7 +1228,8 @@ class StaticPortfolio():
             return None
         
         # update price data by adding assets not in the universe if existing
-        df_prices = self._update_universe(df_rec, msg=print_msg)
+        #df_prices = self._update_universe(df_rec, msg=print_msg)
+        df_prices = self._update_universe(df_rec, msg=False)
 
         # check date by price data
         if date is None:
@@ -1815,6 +1818,29 @@ class MomentumPortfolio(StaticPortfolio):
         self.method_select = method_select
         self.sort_ascending = sort_ascending
         self.df_additional = df_additional
+
+
+    @staticmethod
+    def check_init_args(strategy):
+        """
+        strategy: per, pbr, momentum(or simple), k-ratio
+        """
+        strategy = strategy.lower()
+        if strategy in ['per', 'pbr']:
+            return dict(
+                method_select='f-ratio',
+                sort_ascending=True,
+                align_axis=None,
+                lb_unit='days'
+            )
+        elif strategy in ['momentum', 'k-ratio', 'simple']:
+            return dict(
+                sort_ascending=False,
+                align_axis=1,
+                lb_unit='months'
+            )
+        else:
+            return dict()
         
     
     def select(self, date=None, n_assets=5, method=None, 
@@ -1834,28 +1860,18 @@ class MomentumPortfolio(StaticPortfolio):
         # setting liquidation
         df_data = self.liquidation.set_price(df_data, select=True)
 
-        # set unit of lookback depending on method
-        method = method.lower()
-        if method == 'f-ratio':
-            lookback = pd.DateOffset(days=self.lookback)
-            lag = pd.DateOffset(days=0)
-            unit = 'days'
-        else:
-            lookback = pd.DateOffset(months=self.lookback) 
-            lag = pd.DateOffset(days=self.lag)
-            unit = 'months'
-        if self.lookback > 0:
-            print(f'REMINDER: Make sure lookback {self.lookback} {unit}')        
-
         # prepare data for weigh procedure
+        if self.lookback > 0:
+            print(f'REMINDER: Make sure lookback {self.lookback} {self.lb_unit.lower()}')        
         date = df_data.index.max()
-        dt1 = date - lag
-        dt0 = dt1 - lookback
-        df_data = df_data.loc[dt0:dt1]
+        dt1 = date - pd.DateOffset(days=self.lag)
+        dt0 = dt1 - pd.DateOffset(**{self.lb_unit:self.lookback})
+        df_data = df_data.loc[dt0:dt1] # always dataframe even if dt0==dt1
 
         dts = get_date_minmax(df_data, self.date_format)
         info_date = f'from {dts[0]} to {dts[1]}'
         
+        method = method.lower()
         if method == 'k-ratio':
             rank = (df_data.pct_change(1).apply(lambda x: calc_kratio(x.dropna()))
                     .sort_values(ascending=sort_ascending)[:n_assets])
@@ -1955,9 +1971,10 @@ class BacktestManager():
         self.print_algos_msg = True # control msg print in self._get_algo_*
 
         # run after set self.df_assets
+        DataManager.print_info(df_assets, str_sfx='uploaded.')
         print('running self.util_check_days_in_year to check days in a year')
         _ = self.util_check_days_in_year(df_assets, days_in_year, freq='M', n_thr=1)
-
+        
 
     def align_period(self, df_assets, axis=0, date_format='%Y-%m-%d',
                      fill_na=True, print_msg1=True, print_msg2=True, n_indent=2):
