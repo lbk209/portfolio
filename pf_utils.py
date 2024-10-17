@@ -1232,21 +1232,22 @@ class StaticPortfolio():
         df_prices = self._update_universe(df_rec, msg=False)
 
         # check date by price data
-        if date is None:
+        if date is None: # to get the value of latest day after last transaction
             date = df_prices.index.max()
             date_lt = df_rec.index.get_level_values(0).max()
             if date_lt > date:
                 dt = date_lt.strftime(date_format)
-                print(f"WARNING: Portfolio value is outdated; price data predates the last transaction on {dt}")
-        else:
+                return print(f"ERROR: Price data predates the last transaction on {dt}")
+        else: # to get the value of the date regardeless of the last transaction
             if isinstance(date, str):
                 date = datetime.strptime(date, date_format)
             df_prices = df_prices.loc[:date]
             date_lp = df_prices.index.max()
-            if date_lp < date:
+            date_ft = df_rec.index.get_level_values(0).min()
+            if not (date_ft <= date <= date_lp):
                 dt = date.strftime(date_format)
-                return print(f'ERROR: Cannot valuate portfolio as price data is before {dt}')
-
+                return print(f'ERROR: No price data on {dt} or no transaction before {dt}')
+        
         # get record to date
         df_rec = df_rec.loc[:date]
         date_lt = df_rec.index.get_level_values(0).max()
@@ -1879,8 +1880,13 @@ class MomentumPortfolio(StaticPortfolio):
         elif method == 'f-ratio':
             if df_additional is None:
                 return print('ERROR: no df_additional available')
+
+            try:
+                dts = df_data.index.strftime(self.date_format) # cast to str for err msg
+                stat = df_additional.loc[dts].mean()
+            except KeyError as e:
+                return print(f'ERROR: no ratio for {e}')
                 
-            stat = df_additional.loc[df_data.index].mean()
             stat = stat.loc[stat > 0]
             if len(stat) == 0:
                 return print('ERROR: check df_additional')
@@ -1888,7 +1894,10 @@ class MomentumPortfolio(StaticPortfolio):
             rank = stat.sort_values(ascending=sort_ascending)[:n_assets]
             if rank.index.difference(df_data.columns).size > 0:
                 print('ERROR: check selected assets if price data given')
-                
+            else:
+                #s = stat.agg(['mean', 'std']).to_list()
+                #print(f'Mean ratio with std: {s[0]:.0f} ± {s[1]:.0f}')
+                pass
             method = 'Financial Ratio'
         else: # default simple
             #rank = bt.ffn.calc_total_return(df_data).sort_values(ascending=False)[:n_assets]
