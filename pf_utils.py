@@ -413,6 +413,19 @@ def mldate(date, date_format='%Y-%m-%d'):
         return date
 
 
+def set_matplotlib_twins(ax1, ax2):
+    axes = [ax1, ax2]
+    # drop individual legends
+    _ = [None if x.get_legend() is None else x.get_legend().remove() for x in axes]
+    # set legend
+    h1, h2 = [x.get_legend_handles_labels()[0] for x in axes]
+    if len(h1)*len(h2) > 0:
+        ax1.legend(handles=h1+h2)
+    # set tick color
+    _ = [x.tick_params(axis='y', labelcolor=x.get_lines()[0].get_color()) for x in axes]
+    return (ax1, ax2)
+
+
 class AssetDict(dict):
     """
     A dictionary subclass that associates keys (ex:asset tickers) with names.
@@ -855,6 +868,33 @@ class DataManager():
             if len(sort_by) > 0:
                 df_stat = df_stat.sort_values(sort_by[0], ascending=False)
         return df_stat
+
+    
+    @staticmethod
+    def get_stats(df, start_date=None, end_date=None, stats=['mean', 'median', 'std'], 
+                  stats_daily=True, date_format='%Y-%m-%d', msg=True,
+                  plot=False, figsize=(7,3)):
+        """
+        df: df of date index and ticker columns. ex) self.df_prices 
+        stats_daily:
+         set to True to calculate statistics of daily averages for all stocks
+         set to False to calculate statistics of stock averages for the period
+        """
+        df = df.loc[start_date:end_date]
+        axis = 1 if stats_daily else 0
+        df_m = df.mean(axis=axis)
+        df_stats = df_m.agg(stats)
+        
+        if msg:
+            dt0, dt1 = get_date_minmax(df, date_format)
+            ps = 'daily' if stats_daily else 'stock'
+            print(f'Stats of {ps} averages from {dt0} to {dt1}:')
+            print(df_stats.map(lambda x: f'{x:.1f}').to_frame(ps).T.to_string())
+    
+        if plot and stats_daily:
+            ax = df_m.plot(figsize=figsize)
+            
+        return df_m
 
         
 
@@ -1340,11 +1380,9 @@ class StaticPortfolio():
         ax2 = ax1.twinx()
         #self._plot_cashflow(ax2, sr_cf, xmax) # cashflow
         ax2 = self._plot_profit(ax2, sr_historical, sr_cf) # profit
-        
-        # set legend
-        h1, _ = ax1.get_legend_handles_labels()
-        h2, _ = ax2.get_legend_handles_labels()
-        ax1.legend(handles=[h1[0], h2[0]])
+        # set env for the twins
+        _ = set_matplotlib_twins(ax1, ax2)
+
         return None
         
 
@@ -1489,13 +1527,13 @@ class StaticPortfolio():
     
         return df_rec
 
-
-    def view_record(self, n_latest=0, df_rec=None):
+    
+    def view_record(self, n_latest=0, df_rec=None, msg=True):
         """
         get 'n_latest' latest or oldest transaction record 
         """
         if df_rec is None:
-            df_rec = self._check_result()
+            df_rec = self._check_result(msg)
         if df_rec is None:
             return None
 
@@ -1598,7 +1636,6 @@ class StaticPortfolio():
             df = df.apply(lambda x: x.value - x.cflow, axis=1)
 
         ax = df.plot(ax=ax, label=label, alpha=alpha, color=color)
-        ax.tick_params(axis='y', labelcolor=ax.get_lines()[0].get_color())
         return ax
         
 
@@ -1894,10 +1931,6 @@ class MomentumPortfolio(StaticPortfolio):
             rank = stat.sort_values(ascending=sort_ascending)[:n_assets]
             if rank.index.difference(df_data.columns).size > 0:
                 print('ERROR: check selected assets if price data given')
-            else:
-                #s = stat.agg(['mean', 'std']).to_list()
-                #print(f'Mean ratio with std: {s[0]:.0f} ± {s[1]:.0f}')
-                pass
             method = 'Financial Ratio'
         else: # default simple
             #rank = bt.ffn.calc_total_return(df_data).sort_values(ascending=False)[:n_assets]
@@ -1944,6 +1977,50 @@ class MomentumPortfolio(StaticPortfolio):
         else:
             print('Nothing to save')
         return df_rec
+
+
+    def check_additional(self, date=None, df_additional=None, 
+                         stats=['mean', 'median', 'std'], 
+                         plot=False, figsize=(8,5), title='History of Additional data',
+                         market_label='Market', market_color='grey', market_alpha=0.5, market_line='--'):
+        """
+        check df_additional
+        date: a transaction date from record
+        """
+        df_additional = self._check_var(df_additional, self.df_additional)
+        if df_additional is None:
+            return print('ERROR: no df_additional available')
+    
+        df_rec = self._check_result(False)
+        if df_rec is None:
+            print('No record')
+            assets = None
+        else:
+            # Retrieve the date and assets for the transaction closest to the arg date
+            df = df_rec.loc[:date]
+            if len(df) > 0:
+                date = df.index.get_level_values(0).max() 
+                assets = df.loc[date].index.to_list()
+            else:
+                # date is not None since df is df_rec then
+                print(f'No record on {date}')
+                assets = None
+        df_all = df_additional.loc[date:]
+    
+        try:
+            df_res = None if assets is None else df_all[assets] 
+        except KeyError as e:
+            return print(f'ERROR: KeyError {e}')
+    
+        if plot:
+            ax1 = (df_all.mean(axis=1)
+                   .plot(figsize=figsize, title=title, label=market_label, 
+                         alpha=market_alpha, c=market_color, linestyle=market_line))
+            if df_res is not None:
+                ax2 = df_res.plot(ax=ax1.twinx())
+                _ = set_matplotlib_twins(ax1, ax2)
+    
+        return df_res
 
 
 
@@ -3092,6 +3169,51 @@ class FinancialRatios():
         col_date = self.cols_index['date']
         return res_rank.droplevel(col_date).sort_values(ascending=True).iloc[:topn]
 
+
+    def get_stats(self, metrics=None, start_date=None, end_date=None, stats=['mean', 'std'],
+                  stats_daily=True):
+        """
+        stats_daily:
+         set to True to calculate statistics of daily averages for all stocks
+         set to False to calculate statistics of stock averages over the given period
+        """
+        df_ratios = self.df_ratios
+        if df_ratios is None:
+            return print('ERROR: load ratios first')
+    
+        if metrics is None:
+            metrics = df_ratios.columns
+        if isinstance(metrics, str):
+            metrics = [metrics]
+    
+        col_date = self.cols_index['date']
+        col_ticker = self.cols_index['ticker']
+        col_metric = 'metric'
+        idx = pd.IndexSlice
+        df_r = (df_ratios.sort_index().loc[idx[:, start_date:end_date], metrics]
+                    .rename_axis(col_metric, axis=1))
+        # get dates
+        cols_fn = ['first', 'last']
+        cols_se = ['start','end']
+        df_d = (df_r.stack().dropna().reset_index(col_date)
+                .groupby(col_metric).date.agg(cols_fn)
+                .apply(lambda x: x.dt.strftime(self.date_format))
+                .rename(columns=dict(zip(cols_fn, cols_se)))
+                .T
+                .loc[:, metrics] # set to original order of metrics
+               )
+        # calc stats
+        by = col_date if stats_daily else col_ticker
+        ps = 'daily' if stats_daily else 'stock'
+        df_s = (df_r.dropna()
+                .groupby(by).mean() # daily mean of each metric
+                .agg(stats) # stats of daily mean of each metric
+                .map(lambda x: f'{x:.1f}'))
+
+        print(f'Returning stats of {ps} averages')
+        # calc stats and append to date
+        return pd.concat([df_d, df_s])
+        
 
     def calc_historical(self, metrics='PER', scale='minmax'):
         df_ratios = self.df_ratios
