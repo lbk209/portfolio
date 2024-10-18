@@ -856,6 +856,23 @@ class DataManager():
                 df_stat = df_stat.sort_values(sort_by[0], ascending=False)
         return df_stat
 
+    
+    @staticmethod
+    def get_stats(df, start_date=None, end_date=None, stats=['mean', 'std'], 
+                  stats_daily=True, date_format='%Y-%m-%d', msg=True):
+        """
+        df: df of date index and ticker columns. ex) self.df_prices 
+        stats_daily:
+         set to True to calculate statistics of daily averages for all stocks
+         set to False to calculate statistics of stock averages over the given period
+        """
+        df = df.loc[start_date:end_date]
+        dt0, dt1 = get_date_minmax(df, date_format)
+        axis = 0 if stats_daily else 1
+        ps = 'daily' if stats_daily else 'stock'
+        print(f'Returning stats of {ps} averages from {dt0} to {dt1}') if msg else None
+        return df.mean(axis=axis).agg(stats)
+
         
 
 class KRXDownloader():
@@ -1489,13 +1506,13 @@ class StaticPortfolio():
     
         return df_rec
 
-
-    def view_record(self, n_latest=0, df_rec=None):
+    
+    def view_record(self, n_latest=0, df_rec=None, msg=True):
         """
         get 'n_latest' latest or oldest transaction record 
         """
         if df_rec is None:
-            df_rec = self._check_result()
+            df_rec = self._check_result(msg)
         if df_rec is None:
             return None
 
@@ -1894,10 +1911,6 @@ class MomentumPortfolio(StaticPortfolio):
             rank = stat.sort_values(ascending=sort_ascending)[:n_assets]
             if rank.index.difference(df_data.columns).size > 0:
                 print('ERROR: check selected assets if price data given')
-            else:
-                #s = stat.agg(['mean', 'std']).to_list()
-                #print(f'Mean ratio with std: {s[0]:.0f} ± {s[1]:.0f}')
-                pass
             method = 'Financial Ratio'
         else: # default simple
             #rank = bt.ffn.calc_total_return(df_data).sort_values(ascending=False)[:n_assets]
@@ -3092,6 +3105,51 @@ class FinancialRatios():
         col_date = self.cols_index['date']
         return res_rank.droplevel(col_date).sort_values(ascending=True).iloc[:topn]
 
+
+    def get_stats(self, metrics=None, start_date=None, end_date=None, stats=['mean', 'std'],
+                  stats_daily=True):
+        """
+        stats_daily:
+         set to True to calculate statistics of daily averages for all stocks
+         set to False to calculate statistics of stock averages over the given period
+        """
+        df_ratios = self.df_ratios
+        if df_ratios is None:
+            return print('ERROR: load ratios first')
+    
+        if metrics is None:
+            metrics = df_ratios.columns
+        if isinstance(metrics, str):
+            metrics = [metrics]
+    
+        col_date = self.cols_index['date']
+        col_ticker = self.cols_index['ticker']
+        col_metric = 'metric'
+        idx = pd.IndexSlice
+        df_r = (df_ratios.sort_index().loc[idx[:, start_date:end_date], metrics]
+                    .rename_axis(col_metric, axis=1))
+        # get dates
+        cols_fn = ['first', 'last']
+        cols_se = ['start','end']
+        df_d = (df_r.stack().dropna().reset_index(col_date)
+                .groupby(col_metric).date.agg(cols_fn)
+                .apply(lambda x: x.dt.strftime(self.date_format))
+                .rename(columns=dict(zip(cols_fn, cols_se)))
+                .T
+                .loc[:, metrics] # set to original order of metrics
+               )
+        # calc stats
+        by = col_date if stats_daily else col_ticker
+        ps = 'stats of daily averages' if stats_daily else 'stats of stock averages'
+        df_s = (df_r.dropna()
+                .groupby(by).mean() # daily mean of each metric
+                .agg(stats) # stats of daily mean of each metric
+                .map(lambda x: f'{x:.1f}'))
+
+        print(f'Returning {ps}')
+        # calc stats and append to date
+        return pd.concat([df_d, df_s])
+        
 
     def calc_historical(self, metrics='PER', scale='minmax'):
         df_ratios = self.df_ratios
