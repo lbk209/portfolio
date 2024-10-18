@@ -413,6 +413,18 @@ def mldate(date, date_format='%Y-%m-%d'):
         return date
 
 
+def set_matplotlib_twins(ax1, ax2):
+    axes = [ax1, ax2]
+    # set legend
+    hs = [x.get_legend_handles_labels()[0][0] for x in axes]
+    _ = [x.set_label(f'plot_{i}') for i, x in enumerate(hs)]
+    ax1.legend(handles=hs)
+
+    # set tick color
+    _ = [x.tick_params(axis='y', labelcolor=x.get_lines()[0].get_color()) for x in axes]
+    return (ax1, ax2)
+
+
 class AssetDict(dict):
     """
     A dictionary subclass that associates keys (ex:asset tickers) with names.
