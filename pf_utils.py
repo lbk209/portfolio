@@ -858,20 +858,30 @@ class DataManager():
 
     
     @staticmethod
-    def get_stats(df, start_date=None, end_date=None, stats=['mean', 'std'], 
-                  stats_daily=True, date_format='%Y-%m-%d', msg=True):
+    def get_stats(df, start_date=None, end_date=None, stats=['mean', 'median', 'std'], 
+                  stats_daily=True, date_format='%Y-%m-%d', msg=True,
+                  plot=False, figsize=(7,3)):
         """
         df: df of date index and ticker columns. ex) self.df_prices 
         stats_daily:
          set to True to calculate statistics of daily averages for all stocks
-         set to False to calculate statistics of stock averages over the given period
+         set to False to calculate statistics of stock averages for the period
         """
         df = df.loc[start_date:end_date]
-        dt0, dt1 = get_date_minmax(df, date_format)
-        axis = 0 if stats_daily else 1
-        ps = 'daily' if stats_daily else 'stock'
-        print(f'Returning stats of {ps} averages from {dt0} to {dt1}') if msg else None
-        return df.mean(axis=axis).agg(stats)
+        axis = 1 if stats_daily else 0
+        df_m = df.mean(axis=axis)
+        df_stats = df_m.agg(stats)
+        
+        if msg:
+            dt0, dt1 = get_date_minmax(df, date_format)
+            ps = 'daily' if stats_daily else 'stock'
+            print(f'Stats of {ps} averages from {dt0} to {dt1}:')
+            print(df_stats.map(lambda x: f'{x:.1f}').to_frame(ps).T.to_string())
+    
+        if plot and stats_daily:
+            ax = df_m.plot(figsize=figsize)
+            
+        return df_m
 
         
 
@@ -1957,6 +1967,45 @@ class MomentumPortfolio(StaticPortfolio):
         else:
             print('Nothing to save')
         return df_rec
+
+
+    def check_additional(self, date=None, df_additional=None, 
+                         stats=['mean', 'median', 'std'], plot=False, figsize=(8,5)):
+        """
+        check df_additional
+        date: a transaction date from record
+        """
+        df_additional = self._check_var(df_additional, self.df_additional)
+        if df_additional is None:
+            return print('ERROR: no df_additional available')
+    
+        df_rec = self._check_result(False)
+        if df_rec is None:
+            print('No record')
+            assets = None
+        else:
+            # Retrieve the date and assets for the transaction closest to the arg date
+            df = df_rec.loc[:date]
+            if len(df) > 0:
+                date = df.index.get_level_values(0).max() 
+                assets = df.loc[date].index.to_list()
+            else:
+                # date is not None since df is df_rec then
+                print(f'No record on {date}')
+                assets = None
+        df_all = df_additional.loc[date:]
+    
+        try:
+            df_res = None if assets is None else df_all[assets] 
+        except KeyError as e:
+            return print(f'ERROR: KeyError {e}')
+    
+        if plot:
+            ax = df_all.mean(axis=1).plot(figsize=figsize)
+            if df_res is not None:
+                ax2 = df_res.plot(ax=ax.twinx())
+    
+        return df_res
 
 
 
@@ -3140,13 +3189,13 @@ class FinancialRatios():
                )
         # calc stats
         by = col_date if stats_daily else col_ticker
-        ps = 'stats of daily averages' if stats_daily else 'stats of stock averages'
+        ps = 'daily' if stats_daily else 'stock'
         df_s = (df_r.dropna()
                 .groupby(by).mean() # daily mean of each metric
                 .agg(stats) # stats of daily mean of each metric
                 .map(lambda x: f'{x:.1f}'))
 
-        print(f'Returning {ps}')
+        print(f'Returning stats of {ps} averages')
         # calc stats and append to date
         return pd.concat([df_d, df_s])
         
