@@ -415,11 +415,12 @@ def mldate(date, date_format='%Y-%m-%d'):
 
 def set_matplotlib_twins(ax1, ax2):
     axes = [ax1, ax2]
+    # drop individual legends
+    _ = [None if x.get_legend() is None else x.get_legend().remove() for x in axes]
     # set legend
-    hs = [x.get_legend_handles_labels()[0][0] for x in axes]
-    _ = [x.set_label(f'plot_{i}') for i, x in enumerate(hs)]
-    ax1.legend(handles=hs)
-
+    h1, h2 = [x.get_legend_handles_labels()[0] for x in axes]
+    if len(h1)*len(h2) > 0:
+        ax1.legend(handles=h1+h2)
     # set tick color
     _ = [x.tick_params(axis='y', labelcolor=x.get_lines()[0].get_color()) for x in axes]
     return (ax1, ax2)
@@ -1379,11 +1380,9 @@ class StaticPortfolio():
         ax2 = ax1.twinx()
         #self._plot_cashflow(ax2, sr_cf, xmax) # cashflow
         ax2 = self._plot_profit(ax2, sr_historical, sr_cf) # profit
-        
-        # set legend
-        h1, _ = ax1.get_legend_handles_labels()
-        h2, _ = ax2.get_legend_handles_labels()
-        ax1.legend(handles=[h1[0], h2[0]])
+        # set env for the twins
+        _ = set_matplotlib_twins(ax1, ax2)
+
         return None
         
 
@@ -1637,7 +1636,6 @@ class StaticPortfolio():
             df = df.apply(lambda x: x.value - x.cflow, axis=1)
 
         ax = df.plot(ax=ax, label=label, alpha=alpha, color=color)
-        ax.tick_params(axis='y', labelcolor=ax.get_lines()[0].get_color())
         return ax
         
 
@@ -1982,7 +1980,9 @@ class MomentumPortfolio(StaticPortfolio):
 
 
     def check_additional(self, date=None, df_additional=None, 
-                         stats=['mean', 'median', 'std'], plot=False, figsize=(8,5)):
+                         stats=['mean', 'median', 'std'], 
+                         plot=False, figsize=(8,5), title='History of Additional data',
+                         market_label='Market', market_color='grey', market_alpha=0.5, market_line='--'):
         """
         check df_additional
         date: a transaction date from record
@@ -2013,9 +2013,12 @@ class MomentumPortfolio(StaticPortfolio):
             return print(f'ERROR: KeyError {e}')
     
         if plot:
-            ax = df_all.mean(axis=1).plot(figsize=figsize)
+            ax1 = (df_all.mean(axis=1)
+                   .plot(figsize=figsize, title=title, label=market_label, 
+                         alpha=market_alpha, c=market_color, linestyle=market_line))
             if df_res is not None:
-                ax2 = df_res.plot(ax=ax.twinx())
+                ax2 = df_res.plot(ax=ax1.twinx())
+                _ = set_matplotlib_twins(ax1, ax2)
     
         return df_res
 
