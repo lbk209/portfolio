@@ -2387,11 +2387,11 @@ class BacktestManager():
         return self.benchmark(df, **kwargs)
 
 
-    def build_batch(self, *kwa_list, reset_portfolios=False, run_cv=False, **kwargs):
+    def build_batch(self, *kwa_list, reset_portfolios=False, run_cv=True, **kwargs):
         """
         kwa_list: list of k/w args for each backtest
         kwargs: k/w args common for all backtest
-        run_cv: set to True when runing self.cross_validate
+        run_cv: Set to True to suppress excessive algo messages, especially during cross validation.
         """
         if reset_portfolios:
             self.portfolios = AssetDict(names=self.asset_names)
@@ -2546,16 +2546,21 @@ class BacktestManager():
         if (cv_result is None) or not isinstance(cv_result, dict):
             return print('ERROR: cv result is not dict')
         df_cv = None
-        for name, stats in cv_result.items():
-            idx = stats.index.difference(['start', 'end'])
-            df = (stats.loc[idx]
-                  .agg(['mean', 'std', 'min', 'max'], axis=1)
-                  .apply(lambda x: f'{x['mean']:.02f} ± {x['std']:.03f}', axis=1)
-                  .to_frame(name))
-            if df_cv is None:
-                df_cv = df
-            else:
-                df_cv = df_cv.join(df)
+
+        # Suppress warnings as the Sortino can sometimes be infinite when calculating std.
+        with warnings.catch_warnings(category=RuntimeWarning):
+            warnings.simplefilter("ignore")
+            for name, stats in cv_result.items():
+                idx = stats.index.difference(['start', 'end'])
+                df = (stats.loc[idx]
+                      .agg(['mean', 'std', 'min', 'max'], axis=1)
+                      .apply(lambda x: f'{x['mean']:.02f} ± {x['std']:.03f}', axis=1)
+                      .to_frame(name))
+                if df_cv is None:
+                    df_cv = df
+                else:
+                    df_cv = df_cv.join(df)
+                    
         return df_cv     
         
 
