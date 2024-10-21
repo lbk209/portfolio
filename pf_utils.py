@@ -2006,6 +2006,8 @@ class MomentumPortfolio(StaticPortfolio):
                 print(f'No record on {date}')
                 assets = None
         df_all = df_additional.loc[date:]
+        if len(df_all) == 0:
+            return print('ERROR: update df_additional first')
     
         try:
             df_res = None if assets is None else df_all[assets] 
@@ -2042,6 +2044,7 @@ class BacktestManager():
         self.df_assets = df_assets
         self.portfolios = AssetDict(names=asset_names) # dict of bt.backtest.Backtest
         self.cv_strategies = AssetDict(names=asset_names) # dict of args of strategies to cross-validate
+        self.cv_result = None # dict of cv result
         self.metrics = metrics
         self.name_prfx = name_prfx
         self.n_names = 0 # see self._check_name
@@ -2157,6 +2160,7 @@ class BacktestManager():
         ratio_descending, df_ratio: args for AlgoSelectFinRatio 
         """
         cond = lambda x,y: False if x is None else x.lower() == y.lower()
+        lb_unit = 'months'
         
         if cond(select, 'Momentum'):
             algo_select = SelectMomentum(n=n_assets, lookback=pd.DateOffset(months=lookback),
@@ -2169,6 +2173,7 @@ class BacktestManager():
                                              lookback_days=pd.DateOffset(days=lookback),
                                              sort_descending=ratio_descending)
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
+            lb_unit = 'days'
         elif cond(select, 'k-ratio'):
             algo_select = AlgoSelectKRatio(n=n_assets, lookback=pd.DateOffset(months=lookback),
                                        lag=pd.DateOffset(days=lag))
@@ -2196,7 +2201,9 @@ class BacktestManager():
             algo_select = bt.AlgoStack(algo_after, bt.algos.SelectAll())
             if not cond(select, 'all'):
                 print('WARNING:SelectAll selected') if self.print_algos_msg else None
-          
+
+        if (lookback > 0) and self.print_algos_msg:
+            print(f'REMINDER: lookback is {lookback} {lb_unit}') 
         return algo_select
         
 
@@ -2380,11 +2387,11 @@ class BacktestManager():
         return self.benchmark(df, **kwargs)
 
 
-    def build_batch(self, *kwa_list, reset_portfolios=False, run_cv=False, **kwargs):
+    def build_batch(self, *kwa_list, reset_portfolios=False, run_cv=True, **kwargs):
         """
         kwa_list: list of k/w args for each backtest
         kwargs: k/w args common for all backtest
-        run_cv: set to True when runing self.cross_validate
+        run_cv: Set to True to suppress excessive algo messages, especially during cross validation.
         """
         if reset_portfolios:
             self.portfolios = AssetDict(names=self.asset_names)
@@ -2480,27 +2487,24 @@ class BacktestManager():
         else:
             offset_list = range(0, lag+1, round(lag/n_sample))
 
+        tracker = TimeTracker(auto_start=True)
         result = dict()
         for name in pf_list:
             kwargs_build = self.cv_strategies[name]
-            result[name] = self._cross_validate_strategy(name, offset_list, **kwargs_build)
+            result[name] = self._cross_validate_strategy(name, offset_list, metrics=metrics,
+                                                         **kwargs_build)
+        tracker.stop()
         
         if remove_portfolios:
             remove = [k for k in self.portfolios.keys() for name in pf_list if k.startswith(f'CV[{name}]')]
             remain = {k: v for k, v in self.portfolios.items() if k not in remove}
             self.portfolios = AssetDict(remain)
 
+        self.cv_result = result
         if simplify:
-            df_cv = None
-            for name, stats in result.items():
-                df = stats.apply(lambda x: f'{x['mean']:.02f} ± {x['std']:.03f}', axis=1).to_frame(name)
-                if df_cv is None:
-                    df_cv = df
-                else:
-                    df_cv = df_cv.join(df)
-            result = df_cv
-            
-        return result
+            return self.get_cv_simple(result)
+        else:
+            return None
         
         
     def _cross_validate_strategy(self, name, offset_list, metrics=None, **kwargs_build):
@@ -2512,10 +2516,53 @@ class BacktestManager():
             
         pf_list = [x['name'] for x in kwa_list]
         run_results = self._run(pf_list)
-        stats = self.get_stats(metrics=metrics, run_results=run_results) 
-        idx = stats.index.difference(['start', 'end'])
-        return stats.loc[idx].agg(['mean', 'std', 'min', 'max'], axis=1)
-     
+        return self.get_stats(metrics=metrics, run_results=run_results) 
+
+
+    def get_cat_data(self, kwa_list, cv_result=None):
+        """
+        convert cross validation result to catplot data
+        kwa_list: list of dicts of parameter sets. see build_batch for detail
+        cv_result: output of cross_validate with simplify=False
+        """
+        cv_result = self._check_var(cv_result, self.cv_result)
+        if (cv_result is None) or not isinstance(cv_result, dict):
+            return print('ERROR: cv result is not dict')
+            
+        df_parm = pd.DataFrame(kwa_list).set_index('name')
+        df_cv = pd.DataFrame()
+        for k, df in cv_result.items():
+            n = df.columns.size
+            idx = [[k], range(n)]
+            idx = pd.MultiIndex.from_product(idx)
+            df = df.T.set_index(idx).assign(**df_parm.loc[k].to_dict())
+            df_cv = pd.concat([df_cv, df])
+        df_cv.index.names = ['set','iteration']
+        return df_cv
+
+
+    def get_cv_simple(self, cv_result=None):
+        cv_result = self._check_var(cv_result, self.cv_result)
+        if (cv_result is None) or not isinstance(cv_result, dict):
+            return print('ERROR: cv result is not dict')
+        df_cv = None
+
+        # Suppress warnings as the Sortino can sometimes be infinite when calculating std.
+        with warnings.catch_warnings(category=RuntimeWarning):
+            warnings.simplefilter("ignore")
+            for name, stats in cv_result.items():
+                idx = stats.index.difference(['start', 'end'])
+                df = (stats.loc[idx]
+                      .agg(['mean', 'std', 'min', 'max'], axis=1)
+                      .apply(lambda x: f'{x['mean']:.02f} ± {x['std']:.03f}', axis=1)
+                      .to_frame(name))
+                if df_cv is None:
+                    df_cv = df
+                else:
+                    df_cv = df_cv.join(df)
+                    
+        return df_cv     
+        
 
     def check_portfolios(self, pf_list=None, run_results=None, convert_index=True, run_cv=False):
         """
