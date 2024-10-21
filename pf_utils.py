@@ -2006,6 +2006,8 @@ class MomentumPortfolio(StaticPortfolio):
                 print(f'No record on {date}')
                 assets = None
         df_all = df_additional.loc[date:]
+        if len(df_all) == 0:
+            return print('ERROR: update df_additional first')
     
         try:
             df_res = None if assets is None else df_all[assets] 
@@ -2480,10 +2482,13 @@ class BacktestManager():
         else:
             offset_list = range(0, lag+1, round(lag/n_sample))
 
+        tracker = TimeTracker(auto_start=True)
         result = dict()
         for name in pf_list:
             kwargs_build = self.cv_strategies[name]
-            result[name] = self._cross_validate_strategy(name, offset_list, **kwargs_build)
+            result[name] = self._cross_validate_strategy(name, offset_list, metrics=metrics,
+                                                         simplify=simplify, **kwargs_build)
+        tracker.stop()
         
         if remove_portfolios:
             remove = [k for k in self.portfolios.keys() for name in pf_list if k.startswith(f'CV[{name}]')]
@@ -2498,12 +2503,12 @@ class BacktestManager():
                     df_cv = df
                 else:
                     df_cv = df_cv.join(df)
-            result = df_cv
-            
-        return result
+            return df_cv
+        else:
+            return result
         
         
-    def _cross_validate_strategy(self, name, offset_list, metrics=None, **kwargs_build):
+    def _cross_validate_strategy(self, name, offset_list, metrics=None, simplify=True, **kwargs_build):
         keys = ['name', 'offset']
         kwa_list = [dict(zip(keys, [f'CV[{name}]: offset {x}', x])) for x in offset_list]
         kwargs_build = {k:v for k,v in kwargs_build.items() if k not in keys}
@@ -2513,8 +2518,32 @@ class BacktestManager():
         pf_list = [x['name'] for x in kwa_list]
         run_results = self._run(pf_list)
         stats = self.get_stats(metrics=metrics, run_results=run_results) 
-        idx = stats.index.difference(['start', 'end'])
-        return stats.loc[idx].agg(['mean', 'std', 'min', 'max'], axis=1)
+        if simplify:
+            idx = stats.index.difference(['start', 'end'])
+            return stats.loc[idx].agg(['mean', 'std', 'min', 'max'], axis=1)
+        else:
+            return stats
+
+
+    def get_cat_data(self, kwa_list, cv_result):
+        """
+        convert cross validation result to catplot data
+        kwa_list: list of dicts of parameter sets. see build_batch for detail
+        cv_result: output of cross_validate with simplify=False
+        """
+        if not isinstance(cv_result, dict):
+            return print('ERROR: cv result is not dict')
+            
+        df_parm = pd.DataFrame(kwa_list).set_index('name')
+        df_cv = pd.DataFrame()
+        for k, df in cv_result.items():
+            n = df.columns.size
+            idx = [[k], range(n)]
+            idx = pd.MultiIndex.from_product(idx)
+            df = df.T.set_index(idx).assign(**df_parm.loc[k].to_dict())
+            df_cv = pd.concat([df_cv, df])
+        df_cv.index.names = ['set','iteration']
+        return df_cv
      
 
     def check_portfolios(self, pf_list=None, run_results=None, convert_index=True, run_cv=False):
