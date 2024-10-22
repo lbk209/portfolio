@@ -977,7 +977,7 @@ class KRXDownloader():
 
 class StaticPortfolio():
     def __init__(self, df_universe, file=None, path='.', 
-                 method_weigh='ERC', lookback=12, lag=0,
+                 method_weigh='ERC', lookback=12, lag=0, lookback_w=None, lag_w=None,
                  days_in_year=246, align_axis=0, asset_names=None, name='portfolio',
                  cols_record = {'date':'date', 'ast':'asset', 'name':'name', 'prc':'price', 
                                 'trs':'transaction', 'net':'net', 'wgt':'weight', 'wgta':'weight*'},
@@ -1000,15 +1000,15 @@ class StaticPortfolio():
         self.path = path
         
         self.cols_record = cols_record
-        # period for select & weigh
-        # months for momentum & k-ratio, days for f-ratio. see MomentumPortfolio
-        self.lookback = lookback 
+        self.lookback = lookback # period for select
         self.lag = lag # days
+        self.lookback_w = self._check_var(lookback_w, self.lookback) # for weigh
+        self.lag_w = self._check_var(lag_w, self.lag)
         self.method_weigh = method_weigh
         self.asset_names = asset_names
         self.name = name # portfolio name
         self.date_format = date_format # date str format for record & printing
-        self.lb_unit = lb_unit # months or days
+        self.lb_unit = lb_unit # default unit for lookback
         
         self.selected = None # data for select, weigh and allocate
         self.df_rec = None # record updated with new transaction
@@ -1035,25 +1035,15 @@ class StaticPortfolio():
         
     def select(self, date=None):
         """
+        define data range for weigh with all equities
         date: transaction date
         """
-        df_data = self.df_universe
-        if date is not None:
-            df_data = df_data.loc[:date]
-        # setting liquidation
-        df_data = self.liquidation.set_price(df_data, select=True)
-
-        # prepare data for weigh procedure
-        date = df_data.index.max()
-        dt1 = date - pd.DateOffset(days=self.lag)
-        dt0 = dt1 - pd.DateOffset(**{self.lb_unit:self.lookback})
-        df_data = df_data.loc[dt0:dt1] 
-
+        df_data = self._get_data(self.lookback, self.lag, date=date)
         dts = get_date_minmax(df_data, self.date_format)
         n_assets = df_data.columns.size # all assets in the universe selected
         print(f'{n_assets} assets from {dts[0]} to {dts[1]} prepared for weight analysis')
         # date is datetime, data is dataframe
-        self.selected = {'date': date, 'data': df_data} 
+        self.selected = {'date': df_data.index.max(), 'assets': df_data.columns} 
         return None
 
     
@@ -1067,9 +1057,10 @@ class StaticPortfolio():
         if selected is None:
             return print('ERROR')
         else:
-            df_data = selected['data']
-            assets = df_data.columns
+            date = selected['date']
+            assets = selected['assets']
 
+        df_data = self._get_data(self.lookback_w, self.lag_w, date=date, assets=assets)
         if method.lower() == 'erc':
             weights = bt.ffn.calc_erc_weights(df_data.pct_change(1).dropna())
             method = 'ERC'
@@ -1119,9 +1110,7 @@ class StaticPortfolio():
         try:
             date = selected['date']
             weights = selected['weights']
-            assets = weights.index
-            # selected['data'] is not for price but for weigh
-            #df_prc = selected['data'] 
+            assets = selected['assets']
         except KeyError as e:
             return print('ERROR')
 
@@ -1712,6 +1701,28 @@ class StaticPortfolio():
                       .set_index(col_date, append=True).swaplevel())
 
     
+    def _get_date_offset(self, *args, **kwargs):
+        return BacktestManager.get_date_offset(*args, **kwargs)
+
+
+    def _get_data(self, lookback, lag, date=None, assets=None):
+        """
+        get data for select or weigh
+        """
+        df_data = self.df_universe
+        if date is not None:
+            df_data = df_data.loc[:date]
+        if assets is not None:
+            df_data = df_data[assets]
+            
+        # setting liquidation
+        df_data = self.liquidation.set_price(df_data, select=True)
+        # set date range
+        date = df_data.index.max()
+        dt1 = date - self._get_date_offset(lag, 'days')
+        dt0 = dt1 - self._get_date_offset(lookback, self.lb_unit)
+        return df_data.loc[dt0:dt1] 
+    
 
 class Liquidation():
     def __init__(self):
@@ -1850,6 +1861,7 @@ class MomentumPortfolio(StaticPortfolio):
                  **kwargs):
         """
         method_select: 'simple momentum', 'k-ratio', 'f-ratio'
+        lookback_w, lag_w: for weigh. reuse those for select if None
         sort_ascending: set to False for momentum & k-ratio, True for PER of f-ratio
         """
         super().__init__(*args, align_axis=align_axis, **kwargs)
@@ -1888,24 +1900,11 @@ class MomentumPortfolio(StaticPortfolio):
         method: simple, k-ratio, f-ratio
         df_additional: ex) df_ratio for f-ratio method
         """
-        df_data = self.df_universe
         method = self._check_var(method, self.method_select)
         sort_ascending = self._check_var(sort_ascending, self.sort_ascending)
         df_additional = self._check_var(df_additional, self.df_additional)
         
-        if date is not None:
-            df_data = df_data.loc[:date]
-        # setting liquidation
-        df_data = self.liquidation.set_price(df_data, select=True)
-
-        # prepare data for weigh procedure
-        if self.lookback > 0:
-            print(f'REMINDER: Make sure lookback {self.lookback} {self.lb_unit.lower()}')        
-        date = df_data.index.max()
-        dt1 = date - pd.DateOffset(days=self.lag)
-        dt0 = dt1 - pd.DateOffset(**{self.lb_unit:self.lookback})
-        df_data = df_data.loc[dt0:dt1] # always dataframe even if dt0==dt1
-
+        df_data = self._get_data(self.lookback, self.lag, date=date)  
         dts = get_date_minmax(df_data, self.date_format)
         info_date = f'from {dts[0]} to {dts[1]}'
         
@@ -1940,7 +1939,7 @@ class MomentumPortfolio(StaticPortfolio):
             method = 'Total return'
 
         assets = rank.index
-        self.selected = {'date': date, 'rank': rank, 'data': df_data[assets]}
+        self.selected = {'date': df_data.index.max(), 'assets': assets, 'rank': rank} 
         print(f'{n_assets} assets selected by {method} {info_date}')
         return rank
 
@@ -2160,50 +2159,41 @@ class BacktestManager():
         ratio_descending, df_ratio: args for AlgoSelectFinRatio 
         """
         cond = lambda x,y: False if x is None else x.lower() == y.lower()
-        lb_unit = 'months'
-        
+        lb = self._get_date_offset(lookback)
+        lg = self._get_date_offset(lag, 'days')
+              
         if cond(select, 'Momentum'):
-            algo_select = SelectMomentum(n=n_assets, lookback=pd.DateOffset(months=lookback),
-                                         lag=pd.DateOffset(days=lag), threshold=threshold)
+            algo_select = SelectMomentum(n=n_assets, lookback=lb, lag=lg, threshold=threshold)
             # SelectAll() or similar should be called before SelectMomentum(), 
             # as StatTotalReturn uses values of temp[‘selected’]
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'f-ratio'):
             algo_select = AlgoSelectFinRatio(df_ratio, n_assets, 
-                                             lookback_days=pd.DateOffset(days=lookback),
+                                             lookback_days=lb,
                                              sort_descending=ratio_descending)
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
-            lb_unit = 'days'
         elif cond(select, 'k-ratio'):
-            algo_select = AlgoSelectKRatio(n=n_assets, lookback=pd.DateOffset(months=lookback),
-                                       lag=pd.DateOffset(days=lag))
+            algo_select = AlgoSelectKRatio(n=n_assets, lookback=lb, lag=lg)
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'ID'):
             id_scale = id_scale if id_scale > 1 else 2
             n_pool = round(n_assets * id_scale)
-            algo_select1 = bt.algos.SelectMomentum(n=n_pool, lookback=pd.DateOffset(months=lookback),
-                                                  lag=pd.DateOffset(days=lag))
-            algo_select2 = AlgoSelectIDiscrete(n=n_assets, lookback=pd.DateOffset(months=lookback),
-                                       lag=pd.DateOffset(days=lag))
+            algo_select1 = bt.algos.SelectMomentum(n=n_pool, lookback=lb, lag=lg)
+            algo_select2 = AlgoSelectIDiscrete(n=n_assets, lookback=lb, lag=lg)
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select1, algo_select2)
         elif cond(select, 'IDRank'):
-            algo_select = AlgoSelectIDRank(n=n_assets, lookback=pd.DateOffset(months=lookback),
-                                       lag=pd.DateOffset(days=lag), scale=id_scale)
+            algo_select = AlgoSelectIDRank(n=n_assets, lookback=lb, lag=lg, scale=id_scale)
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'randomly'):
-            algo_after = AlgoRunAfter(lookback=pd.DateOffset(months=lookback), 
-                                      lag=pd.DateOffset(days=lag))
+            algo_after = AlgoRunAfter(lookback=lb, lag=lg)
             algo_select = bt.algos.SelectRandomly(n=n_assets)
             algo_select = bt.AlgoStack(algo_after, bt.algos.SelectAll(), algo_select)
         else:
-            algo_after = AlgoRunAfter(lookback=pd.DateOffset(months=lookback), 
-                                      lag=pd.DateOffset(days=lag))
+            algo_after = AlgoRunAfter(lookback=lb, lag=lg)
             algo_select = bt.AlgoStack(algo_after, bt.algos.SelectAll())
             if not cond(select, 'all'):
                 print('WARNING:SelectAll selected') if self.print_algos_msg else None
-
-        if (lookback > 0) and self.print_algos_msg:
-            print(f'REMINDER: lookback is {lookback} {lb_unit}') 
+ 
         return algo_select
         
 
@@ -2239,53 +2229,79 @@ class BacktestManager():
                          weights=None, lookback=0, lag=0, rf=0, bounds=(0.0, 1.0)):
         """
         weigh: equally, erc, specified, randomly, invvol, meanvar
-        lookback: month
-        lag: day
         """
         cond = lambda x,y: False if x is None else x.lower() == y.lower()
+        lb = self._get_date_offset(lookback)
+        lg = self._get_date_offset(lag, 'days')
         
         # reset weigh if weights not given
         if cond(weigh, 'Specified') and (weights is None):
             weigh = 'equally'
         
         if cond(weigh, 'ERC'):
-            algo_weigh = bt.algos.WeighERC(lookback=pd.DateOffset(months=lookback), 
-                                          lag=pd.DateOffset(days=lag))
+            algo_weigh = bt.algos.WeighERC(lookback=lb, lag=lg)
             # Use SelectHasData to avoid LedoitWolf ERROR; other weights like InvVol work fine without it.
-            algo_weigh = bt.AlgoStack(bt.algos.SelectHasData(lookback=pd.DateOffset(months=lookback)), 
-                                      algo_weigh)
+            algo_weigh = bt.AlgoStack(bt.algos.SelectHasData(lookback=lb), algo_weigh)
         elif cond(weigh, 'Specified'):
             algo_weigh = bt.algos.WeighSpecified(**weights)
         elif cond(weigh, 'Randomly'):
             algo_weigh = bt.algos.WeighRandomly()
         elif cond(weigh, 'InvVol'): # risk parity
-            algo_weigh = bt.algos.WeighInvVol(lookback=pd.DateOffset(months=lookback), 
-                                             lag=pd.DateOffset(days=lag))
+            algo_weigh = bt.algos.WeighInvVol(lookback=lb, lag=lg)
         elif cond(weigh, 'MeanVar'): # Markowitz’s mean-variance optimization
-            algo_weigh = bt.algos.WeighMeanVar(lookback=pd.DateOffset(months=lookback), 
-                                              lag=pd.DateOffset(days=lag),
-                                              rf=rf, bounds=bounds)
-            algo_weigh = bt.AlgoStack(bt.algos.SelectHasData(lookback=pd.DateOffset(months=lookback)), 
-                                      algo_weigh)
+            algo_weigh = bt.algos.WeighMeanVar(lookback=lb, lag=lg, rf=rf, bounds=bounds)
+            algo_weigh = bt.AlgoStack(bt.algos.SelectHasData(lookback=lb), algo_weigh)
         else:
             algo_weigh = bt.algos.WeighEqually()
             if not cond(weigh, 'equally'):
                 print('WARNING:WeighEqually selected') if self.print_algos_msg else None
             
         return algo_weigh
+
+
+    @staticmethod
+    def get_date_offset(n, unit='months'):
+        """
+        n: int or str such as '1 m'
+        unit: default unit
+        """
+        if isinstance(n, int):
+            kwarg = {unit: n}
+        elif isinstance(n, str):
+            match = re.match(r"(\d+)\s*([a-zA-Z]+)", n)
+            try:
+                v = int(match.group(1)) 
+                k = match.group(2).lower()[0]
+            except Exception as e:
+                return print(f'ERROR: {e}')
+
+            if k == 'd':
+                k = 'days' 
+            elif k == 'm':
+                k = 'months'
+            else:
+                return print(f'ERROR: {n}')
+            kwarg = {k: v}
+
+        return pd.DateOffset(**kwarg)
+
+
+    def _get_date_offset(self, *args, **kwargs):
+        return BacktestManager.get_date_offset(*args, **kwargs)
         
 
     def build(self, name=None, 
               freq='M', offset=0,
-              select='all', n_assets=0, lookback=0, lag=0, 
+              select='all', n_assets=0, lookback=0, lag=0,
+              lookback_w=None, lag_w=None,
               id_scale=1, threshold=None,
               df_ratio=None, ratio_descending=None, # args for select 'f-ratio'
               weigh='equally', weights=None, rf=0, bounds=(0.0, 1.0),
               initial_capital=None, commissions=None, algos=None, run_cv=False):
         """
         make backtest of a strategy
-        lookback: month
-        lag: day
+        lookback, lag: for select
+        lookback_w, lag_w: for weigh. reuse those for select if None
         commissions: %; same for all assets
         algos: set List of Algos to build backtest directly
         run_cv: flag to cross-validate
@@ -2302,17 +2318,18 @@ class BacktestManager():
                   'df_ratio':df_ratio, 'ratio_descending':ratio_descending}
         freq = {'freq':freq} # offset being saved when running backtest
         weigh = {'weigh':weigh, 'weights':weights, 'rf':rf, 'bounds':bounds,
-                 'lookback':lookback, 'lag':lag}
+                 'lookback':self._check_var(lookback_w, lookback), 
+                 'lag':self._check_var(lag_w, lag)}
         
         if run_cv:
             self.print_algos_msg = False
-        else:
-            self.print_algos_msg = True
             self.cv_strategies[name] = {
                 # convert args for self.build_batch in self._cross_validate_strategy
                 **select, **freq, **weigh, 'algos':None,
                 'initial_capital':initial_capital, 'commissions':commissions
             }
+        else:
+            self.print_algos_msg = True
 
         freq.update({'offset':offset, 'days_in_year':self.days_in_year})
         kwargs = {'select':select, 'freq':freq, 'weigh':weigh, 'algos':algos,
