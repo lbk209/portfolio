@@ -211,12 +211,15 @@ def get_date_range(dfs, symbol_name=None, return_intersection=False):
         return df.sort_values('start date')
 
 
-def get_date_minmax(df, date_format, level=0):
+def get_date_minmax(df, date_format=None, level=0):
     """
     get min & max from the datetime index of df
     """
     dts = df.index.get_level_values(level)
-    return [x.strftime(date_format) for x in (dts.min(), dts.max())]
+    dts = [dts.min(), dts.max()]
+    if date_format is not None:
+        dts = [x.strftime(date_format) for x in dts]
+    return dts
     
 
 def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10, msg=True):
@@ -3357,6 +3360,13 @@ class FinancialRatios():
         if not self._check_freq(df_ratios, col_date, n_in_year=12):
             print('WARNING: No interpolation as data is not monthly')
             return df_m
+
+        # set price date range with metric range
+        start_date, end_date = get_date_minmax(df_m, level=1)
+        if freq.lower() == 'm':
+            end_date = end_date + pd.DateOffset(months=1)
+        else:
+            raise NotImpelentedError
         
         # Get price at the end date of every month
         by = [pd.Grouper(level=0), pd.Grouper(level=1, freq=freq)]
@@ -3370,17 +3380,18 @@ class FinancialRatios():
         # Calculate multiplier from price and metric
         df_m = (df_m.to_frame().join(df_p).dropna()
                 .apply(lambda x: x[metric] / x[col_price], axis=1).rename(col_mpl))
-
         
         # interpolated ratio
-        df_res = (sr_prices.rename(col_price).reset_index(level=1)
-                .assign(**{col_ym: lambda x: x[col_date].dt.to_period(freq)})
-                .join(df_m, on=[col_ticker, col_ym])
-                .set_index(col_date, append=True)
-                .apply(lambda x: x[col_price] * x[col_mpl], axis=1)
-                #.unstack(0)
-                .rename(metric)
-               )
+        idx = pd.IndexSlice
+        df_res = (sr_prices.loc[idx[:, start_date:end_date]]
+                  .rename(col_price).reset_index(level=1)
+                  .assign(**{col_ym: lambda x: x[col_date].dt.to_period(freq)})
+                  .join(df_m, on=[col_ticker, col_ym])
+                  .set_index(col_date, append=True)
+                  .apply(lambda x: x[col_price] * x[col_mpl], axis=1)
+                  #.unstack(0)
+                  .rename(metric)
+                 )
         dt0, dt1 = get_date_minmax(df_res, self.date_format, 1)
         print(f'{metric} interpolated from {dt0} to {dt1}')
         return df_res
