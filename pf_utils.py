@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 import os, time, re, sys
 import bt
 import warnings
+import seaborn as sns
 
 from datetime import datetime, timedelta
 from contextlib import contextmanager
@@ -30,7 +31,7 @@ warnings.filterwarnings(action='ignore', category=pd.errors.PerformanceWarning)
 mpl.rcParams['axes.unicode_minus'] = False
 plt.rcParams["font.family"] = 'NanumBarunGothic'
 
-metrics = [
+METRICS = [
     'total_return', 'cagr', 'calmar', 
     'max_drawdown', 'avg_drawdown', 'avg_drawdown_days', 
     'daily_vol', 'daily_sharpe', 'daily_sortino', 
@@ -2027,7 +2028,7 @@ class MomentumPortfolio(StaticPortfolio):
 
 class BacktestManager():
     def __init__(self, df_assets, name_prfx='Portfolio',
-                 align_axis=0, fill_na=True, metrics=metrics,  
+                 align_axis=0, fill_na=True, metrics=METRICS,  
                  initial_capital=1000000, commissions=None, 
                  days_in_year=252, asset_names=None):
         """
@@ -2536,7 +2537,7 @@ class BacktestManager():
         return self.get_stats(metrics=metrics, run_results=run_results) 
 
 
-    def get_cat_data(self, kwa_list, cv_result=None):
+    def get_cat_data(self, kwa_list, cv_result=None, file=None, path='.'):
         """
         convert cross validation result to catplot data
         kwa_list: list of dicts of parameter sets. see build_batch for detail
@@ -2555,6 +2556,12 @@ class BacktestManager():
             df = df.T.set_index(idx).assign(**df_parm.loc[k].to_dict())
             df_cv = pd.concat([df_cv, df])
         df_cv.index.names = ['set','iteration']
+
+        if file is not None:
+            f = f'{path}/{file}'
+            df_cv.to_csv(f)
+            print(f'{f} saved')
+            
         return df_cv
 
 
@@ -2577,8 +2584,26 @@ class BacktestManager():
                     df_cv = df
                 else:
                     df_cv = df_cv.join(df)
-                    
         return df_cv     
+
+
+    @staticmethod
+    def catplot(data, path='.', **kw):
+        """
+        data: output of get_cat_data or its file
+        kw: kwargs of sns.catplot. 
+            ex) {'y':'cagr', 'x':'freq', 'row':'n_assets', 'col':'lookback', 'hue':'lag'}
+        """
+        if isinstance(data, str): # data is file
+            try:
+                f = f'{path}/{data}'
+                data = pd.read_csv(f, index_col=[0,1])
+                print(f'Returning {f}')
+                return data
+            except FileNotFoundError as e:
+                return print('ERROR: FileNotFoundError {e}')
+        else:  
+            return sns.catplot(data=data, **kw)
         
 
     def check_portfolios(self, pf_list=None, run_results=None, convert_index=True, run_cv=False):
@@ -2884,7 +2909,7 @@ class BacktestManager():
 
 
 class AssetEvaluator():
-    def __init__(self, df_prices, days_in_year=252, metrics=metrics):
+    def __init__(self, df_prices, days_in_year=252, metrics=METRICS):
         # df of assets (assets in columns) which of each might have its own periods.
         # the periods of all assets will be aligned in every calculation.
         df_prices = df_prices.to_frame() if isinstance(df_prices, pd.Series) else df_prices
