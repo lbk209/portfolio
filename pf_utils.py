@@ -903,12 +903,12 @@ class DataManager():
         
 
 class KRXDownloader():
-    def __init__(self, start, end=None, 
+    def __init__(self, start_date, end_date=None, 
                  cols_pykrx={'ticker':'Symbol', 'price':'종가', 'vol':'거래량', 'date':'date'}):
-        if end is None:
-            end = datetime.today().strftime('%Y%m%d')
-        self.start = start
-        self.end = end
+        if end_date is None:
+            end_date = datetime.today().strftime('%Y%m%d')
+        self.start_date = start_date
+        self.end_date = end_date
         self.cols_pykrx = cols_pykrx
         self.market = None
         self.tickers = None
@@ -923,7 +923,7 @@ class KRXDownloader():
         if not isinstance(market, list):
             return print('ERROR')
 
-        date = self.end
+        date = self.end_date
         col_symbol = self.cols_pykrx['ticker']
         
         tickers = list()
@@ -945,7 +945,7 @@ class KRXDownloader():
         col_date = cols['date']
         tickers = self.tickers
         
-        get_price = lambda x: pyk.get_market_ohlcv(self.start, self.end, x)[col_price].rename(x)
+        get_price = lambda x: pyk.get_market_ohlcv(self.start_date, self.end_date, x)[col_price].rename(x)
         
         tracker = TimeTracker(auto_start=True)
         df_data = get_price(tickers[0])
@@ -964,8 +964,8 @@ class KRXDownloader():
         name, ext = splitext(file)
         if ext == '':
             ext = '.csv'
-        start = self.convert_date_format(self.start)
-        end = self.convert_date_format(self.end)
+        start = self.convert_date_format(self.start_date)
+        end = self.convert_date_format(self.end_date)
         file = f'{name}_{start}_{end}{ext}'
         f = f'{path}/{file}'
         self.df_data.to_csv(f)
