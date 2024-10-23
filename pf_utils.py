@@ -607,7 +607,7 @@ class DataManager():
         
 
     @print_runtime
-    def download(self, start_date=None, n_years=3, tickers=None,
+    def download(self, start_date=None, end_date=None, n_years=3, tickers=None,
                  save=True, date_format='%Y-%m-%d', close_today=False,
                  **kwargs_download):
         """
@@ -615,11 +615,8 @@ class DataManager():
         n_years: int
         kwargs_download: args for krx. ex) interval=5, pause_duration=1, msg=False
         """
-        if start_date is None:
-            today = datetime.today()
-            start_date = (today.replace(year=today.year - n_years)
-                               .replace(month=1, day=1).strftime(date_format))
-            
+        start_date, end_date = DataManager.get_start_end_dates(start_date, end_date, 
+                                                               close_today, n_years, date_format)
         print('Downloading ...', end=' ')
         if tickers is None:
             asset_names = self._get_tickers(self.universe)
@@ -630,7 +627,8 @@ class DataManager():
                 self.asset_names = asset_names
             
         try:
-            df_prices = self._download(self.universe, tickers, start_date, **kwargs_download)
+            df_prices = self._download(self.universe, tickers, start_date, end_date,
+                                       **kwargs_download)
             if not close_today: # market today not closed yet
                 df_prices = df_prices.loc[:datetime.today() - timedelta(days=1)]
             print('... done')
@@ -722,6 +720,9 @@ class DataManager():
 
 
     def _download(self, universe, *args, **kwargs):
+        """
+        args: args for DataReader. ex) ticker, start_date, end_date
+        """
         if universe.lower() == 'krx':
             # use pykrx as fdr seems ineffective to download all tickers in krx
             func = self._download_krx
@@ -734,11 +735,12 @@ class DataManager():
             return print(f'ERROR: failed to download prices as {e}')
 
 
-    def _download_krx(self, tickers, start_date, interval=5, pause_duration=1, msg=False):
+    def _download_krx(self, tickers, start_date, end_date,
+                      interval=5, pause_duration=1, msg=False):
         """
         tickers: list of tickers
         """
-        krx = KRXDownloader(start_date)
+        krx = KRXDownloader(start_date, end_date)
         krx.tickers = tickers
         krx.download(interval=interval, pause_duration=pause_duration, msg=msg)
         return krx.df_data
@@ -900,13 +902,41 @@ class DataManager():
             
         return df_m
 
+    
+    @staticmethod
+    def get_start_end_dates(start_date: str = None, end_date: str = None, 
+                            close_today: bool = True, n_years: int = 3, 
+                            date_format: str = '%Y-%m-%d') -> tuple[str, str]:
+        """
+        get start & end dates for downloading stock price data 
+        """
+        today = datetime.today()
+        
+        # Set end_date
+        if end_date is None:
+            end_date = today
+        else:
+            end_date = datetime.strptime(end_date, date_format)
+        
+        # Adjust end_date if market should be closed today
+        if not close_today and end_date.date() == today.date():
+            end_date -= timedelta(days=1)
+        
+        # Set start_date
+        if start_date is None:
+            start_date = end_date.replace(year=end_date.year - n_years, month=1, day=1)
+        else:
+            start_date = datetime.strptime(start_date, date_format)
+        
+        return [x.strftime(date_format) for x in (start_date, end_date)]
+
         
 
 class KRXDownloader():
-    def __init__(self, start_date, end_date=None, 
+    def __init__(self, start_date, end_date=None, close_today=True,
                  cols_pykrx={'ticker':'Symbol', 'price':'종가', 'vol':'거래량', 'date':'date'}):
-        if end_date is None:
-            end_date = datetime.today().strftime('%Y%m%d')
+        _, end_date = DataManager.get_start_end_dates(start_date, end_date, close_today, 
+                                                      date_format='%Y-%m-%d')
         self.start_date = start_date
         self.end_date = end_date
         self.cols_pykrx = cols_pykrx
@@ -3161,13 +3191,8 @@ class FinancialRatios():
         date_format = self.date_format
 
         # check end date and closing
-        today = datetime.today().strftime(date_format)
-        if end_date is None:
-            end_date = today
-        if not close_today and (end_date == today):
-            end_date = datetime.strptime(end_date, date_format) - timedelta(days=1)
-            end_date = end_date.strftime(date_format)
-        
+        _, end_date = DataManager.get_start_end_dates(start_date, end_date, close_today, 
+                                                      date_format=date_format)
         tracker = TimeTracker(auto_start=True)
         df_ratios = pd.DataFrame()
         try:
