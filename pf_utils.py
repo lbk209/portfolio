@@ -2204,6 +2204,7 @@ class BacktestManager():
     def _get_algo_freq(self, freq='M', offset=0, days_in_year=252):
         """
         freq: W, M, Q, Y, or num of days
+        offset (int): Applies to the first run. If 0, this algo will run the first time it is called.
         """
         if isinstance(freq, int):
             n = freq
@@ -2412,10 +2413,12 @@ class BacktestManager():
         """
         kwa_list: list of k/w args for each backtest
         kwargs: k/w args common for all backtest
-        run_cv: Set to True to suppress excessive algo messages, especially during cross validation.
+        run_cv: set to True to run cross validation.
+        reset_portfolios: reset portfolios and cv_strategies
         """
         if reset_portfolios:
             self.portfolios = AssetDict(names=self.asset_names)
+            self.cv_strategies = AssetDict(names=self.asset_names)
         else:
             #return print('WARNING: set reset_portfolios to True to run')
             pass
@@ -2481,7 +2484,7 @@ class BacktestManager():
 
 
     def cross_validate(self, pf_list=None, lag=None, n_sample=10, sampling='random',
-                       metrics=None, simplify=True, remove_portfolios=True):
+                       metrics=None, simplify=False, remove_portfolios=True):
         """
         pf_list: str, index, list of str or list of index
         simplify: result format mean ± std if True, dict of cv if False 
