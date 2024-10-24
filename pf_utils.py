@@ -617,7 +617,7 @@ class DataManager():
         """
         start_date, end_date = DataManager.get_start_end_dates(start_date, end_date, 
                                                                close_today, n_years, date_format)
-        print('Downloading ...', end=' ')
+        print('Downloading ...')
         if tickers is None:
             asset_names = self._get_tickers(self.universe)
             if (asset_names is None) or len(asset_names) == 0:
@@ -741,7 +741,7 @@ class DataManager():
         tickers: list of tickers
         """
         krx = KRXDownloader(start_date, end_date)
-        krx.tickers = tickers
+        krx.get_tickers(tickers=tickers)
         krx.download(interval=interval, pause_duration=pause_duration, msg=msg)
         return krx.df_data
         
@@ -943,16 +943,23 @@ class KRXDownloader():
         self.market = None
         self.tickers = None
         self.df_data = None
+        self.failed = [] # tickers failed to download
     
-    def get_tickers(self, market=['KOSPI', 'KOSDAQ']):
+    def get_tickers(self, market=['KOSPI', 'KOSDAQ'], tickers=None):
         """
         market: KOSPI, KOSDAQ
+        tickers: list of tickers to download
         """
+        if tickers is not None:
+            self.market = None
+            self.tickers = tickers
+            return print(f'REMINDER: {len(tickers)} tickers set regardless of market')
+            
         if isinstance(market, str):
             market = [market]
         if not isinstance(market, list):
             return print('ERROR')
-
+       
         date = self.end_date
         col_symbol = self.cols_pykrx['ticker']
         
@@ -974,19 +981,25 @@ class KRXDownloader():
         col_vol = cols['vol']
         col_date = cols['date']
         tickers = self.tickers
+        self.failed = [] # reset for new downloading
         
-        get_price = lambda x: pyk.get_market_ohlcv(self.start_date, self.end_date, x)[col_price].rename(x)
-        
+        get_price = lambda x: pyk.get_market_ohlcv(self.start_date, self.end_date, x)
+
         tracker = TimeTracker(auto_start=True)
-        df_data = get_price(tickers[0])
-        for x in tqdm(tickers[1:]):
+        df_data = None
+        for x in tqdm(tickers):
             df = get_price(x)
-            df_data = pd.concat([df_data, df], axis=1)
+            if len(df) > 0:
+                df = df[col_price].rename(x)
+                df_data = df if df_data is None else pd.concat([df_data, df], axis=1)
+            else:
+                self.failed.append(x)
             tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
         tracker.stop()
         
         self.df_data = df_data.rename_axis(col_date)
-        return None
+        n = len(self.failed)
+        return print(f'WARNING: {n} tickers failed to download') if n>0 else None
 
     def save(self, file='krx_prices.csv', path='.'):
         if self.df_data is None:
