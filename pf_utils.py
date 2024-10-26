@@ -7,7 +7,7 @@ import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
 import xml.etree.ElementTree as ET
-import os, time, re, sys
+import os, time, re, sys, pickle
 import bt
 import warnings
 import seaborn as sns
@@ -2527,7 +2527,9 @@ class BacktestManager():
 
 
     def cross_validate(self, pf_list=None, lag=None, n_sample=10, sampling='random',
-                       metrics=None, simplify=False, remove_portfolios=True):
+                       metrics=None, simplify=False, remove_portfolios=True,
+                       size_batch=0, file_batch='tmp_batch', path_batch='.', 
+                       delete_batch=False, clear_batch=True):
         """
         pf_list: str, index, list of str or list of index
         simplify: result format mean ± std if True, dict of cv if False 
@@ -2556,10 +2558,15 @@ class BacktestManager():
 
         tracker = TimeTracker(auto_start=True)
         result = dict()
+        batch = BatchCV(size_batch, result, start=True, path=path_batch)
         for name in pf_list:
+            if batch.check(name):
+                continue
             kwargs_build = self.cv_strategies[name]
             result[name] = self._cross_validate_strategy(name, offset_list, metrics=metrics,
                                                          **kwargs_build)
+            result = batch.update(result, clear=clear_batch)
+        result = batch.finish(result, delete=delete_batch)    
         tracker.stop()
         
         if remove_portfolios:
@@ -3549,3 +3556,141 @@ class FinancialRatios():
                 return df.unstack(0)
         except Exception as e:
             return print(f'ERROR: {e}')
+
+
+
+class BatchCV():
+    """
+    manage batch process of cross_validation
+    """
+    def __init__(self, size=0, result_reset=dict(), start=True,
+                 file='tmp_batch.pkl', path='.', pattern=r"_\d+(?=\.\w+$)"):
+        self.size = size # batch size
+        self.result_reset = result_reset # result reset
+        self.file = file # temp file to save result
+        self.path = path
+        self.pattern = pattern # suffix for temp file name
+        # the number of batches done in the latest cross validation
+        self.n_last = 0
+        # list of cross validation finished last time
+        self.jobs_finished = list()
+        self.start() if start else None
+
+    def start(self, msg=True):
+        if self.size == 0: # not batch process
+            return None
+        result = self.load()
+        self.n_last = self._get_last()
+        self.jobs_finished = self._get_finished(result)
+        n = len(self.jobs_finished)
+        if msg and (n>0):
+            print(f'{n} jobs done before')
+        return None
+    
+    def load(self, files=None):
+        result = self.result_reset
+        if files is None:
+            files = get_file_list(self.file, self.path)
+        for file in files:
+            f = f'{self.path}/{file}'
+            with open(f, 'rb') as handle:
+                res = pickle.load(handle)
+                result = self._append(result, res)
+        return result
+
+    def check(self, job):
+        """
+        use to process cross validation
+        job: name of cv iteration
+        """
+        if self.size == 0:
+            # skip continue and do the following process as not batch process
+            return False 
+            
+        if job in self.jobs_finished:
+            return True # skip to next job as the job done before
+        else:
+            return False # do the following process
+
+    def update(self, result, forced=False, clear=True):
+        """
+        save result of a batch and reset the result for next batch
+        result: dict of results of _cross_validate_strategy
+        forced: set to True to save regardless of size_batch
+        """
+        size_batch = self.size
+        if size_batch == 0: # not batch
+            return result
+
+        # save result every size_batch jobs finished
+        if (len(result) % size_batch == 0) or forced:
+            self.n_last += 1
+            self._save(result, self.n_last)
+            if clear:
+                result.clear()
+                gc.collect()
+            return self.result_reset # reset the result for next batch
+        else: # pass result w/o saving batch
+            return result
+            
+    def finish(self, result, delete=False):
+        """
+        run after batch loop to save the rest of jobs
+        delete: set to True to delete temp files
+        """
+        if self.size == 0:
+            return result
+            
+        # save the rest of jobs
+        _ = self.update(result, forced=True)
+        # reload all batch files
+        result = self.load()
+        # update batch status
+        self.n_last = self._get_last()
+        self.jobs_finished = self._get_finished(result)
+        if delete:
+            files = get_file_list(self.file, self.path)
+            _ = [os.remove(f'{self.path}/{x}') for x in files]
+            print('Temp batch files deleted')
+        return result        
+    
+    def _get_last(self):
+        """
+        get the last batch number from temp files saved during the last cross validation
+        """
+        file = get_file_latest(self.file, self.path)
+        match = re.search(self.pattern, file)
+        return int(match[0].lstrip('_')) if bool(match) else 0
+
+    def _get_finished(self, result):
+        """
+        get the list of names of jobs done the last cross validation
+        """
+        if isinstance(result, dict):
+            return list(result.keys())
+        else:
+            raise NotImpelentedError
+
+    def _append(self, result, new_result):
+        """
+        combine results in temp files to one obj such as dict
+        """
+        if result is None:
+            result = new_result
+        elif isinstance(result, dict):
+            if isinstance(new_result, dict):
+                result.update(new_result)
+            else:
+                print('ERROR: Update failed as result is not dict')
+        else:
+            raise NotImpelentedError
+        return result
+        
+    def _save(self, result, n_current):
+        """
+        save a batch to temp file of pickle
+        """
+        f, ext = splitext(self.file)
+        f = f'{self.path}/{f}_{n_current:03}.pkl'
+        with open(f, 'wb') as handle:
+            pickle.dump(result, handle)
