@@ -2529,7 +2529,7 @@ class BacktestManager():
     def cross_validate(self, pf_list=None, lag=None, n_sample=10, sampling='random',
                        metrics=None, simplify=False, remove_portfolios=True,
                        size_batch=0, file_batch='tmp_batch', path_batch='.', 
-                       delete_batch=False, release=True):
+                       delete_batch=False, clear_mem=True):
         """
         pf_list: str, index, list of str or list of index
         simplify: result format mean ± std if True, dict of cv if False 
@@ -2563,9 +2563,10 @@ class BacktestManager():
             if batch.check(name):
                 continue
             kwargs_build = self.cv_strategies[name]
-            result[name] = self._cross_validate_strategy(name, offset_list, metrics=metrics,
-                                                         clear=release, **kwargs_build)
+            result[name] = self._cross_validate_strategy(name, offset_list, 
+                                                         metrics=metrics, **kwargs_build)
             result = batch.update(result)
+            self.portfolios.pop(name) if clear_mem else None
         result = batch.finish(result, delete=delete_batch)    
         tracker.stop()
         
@@ -2581,7 +2582,7 @@ class BacktestManager():
             return None
         
         
-    def _cross_validate_strategy(self, name, offset_list, metrics=None, clear=False, **kwargs_build):
+    def _cross_validate_strategy(self, name, offset_list, metrics=None, **kwargs_build):
         keys = ['name', 'offset']
         kwa_list = [dict(zip(keys, [f'CV[{name}]: offset {x}', x])) for x in offset_list]
         kwargs_build = {k:v for k,v in kwargs_build.items() if k not in keys}
@@ -2590,11 +2591,7 @@ class BacktestManager():
             
         pf_list = [x['name'] for x in kwa_list]
         run_results = self._run(pf_list)
-        result = self.get_stats(metrics=metrics, run_results=run_results)
-        if clear:
-            del run_results
-            gc.collect()
-        return result
+        return self.get_stats(metrics=metrics, run_results=run_results)
 
 
     def get_cat_data(self, kwa_list, cv_result=None, file=None, path='.'):
