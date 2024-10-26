@@ -7,7 +7,7 @@ import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
 import xml.etree.ElementTree as ET
-import os, time, re, sys, pickle
+import os, time, re, sys, pickle, gc
 import bt
 import warnings
 import seaborn as sns
@@ -2529,7 +2529,7 @@ class BacktestManager():
     def cross_validate(self, pf_list=None, lag=None, n_sample=10, sampling='random',
                        metrics=None, simplify=False, remove_portfolios=True,
                        size_batch=0, file_batch='tmp_batch', path_batch='.', 
-                       delete_batch=False, clear_batch=True):
+                       delete_batch=False, clear_mem=True):
         """
         pf_list: str, index, list of str or list of index
         simplify: result format mean ± std if True, dict of cv if False 
@@ -2558,14 +2558,15 @@ class BacktestManager():
 
         tracker = TimeTracker(auto_start=True)
         result = dict()
-        batch = BatchCV(size_batch, result, start=True, path=path_batch)
+        batch = BatchCV(size_batch, start=True, path=path_batch)
         for name in pf_list:
             if batch.check(name):
                 continue
             kwargs_build = self.cv_strategies[name]
-            result[name] = self._cross_validate_strategy(name, offset_list, metrics=metrics,
-                                                         **kwargs_build)
-            result = batch.update(result, clear=clear_batch)
+            result[name] = self._cross_validate_strategy(name, offset_list, 
+                                                         metrics=metrics, **kwargs_build)
+            result = batch.update(result)
+            self.portfolios.pop(name) if clear_mem else None
         result = batch.finish(result, delete=delete_batch)    
         tracker.stop()
         
@@ -2590,7 +2591,7 @@ class BacktestManager():
             
         pf_list = [x['name'] for x in kwa_list]
         run_results = self._run(pf_list)
-        return self.get_stats(metrics=metrics, run_results=run_results) 
+        return self.get_stats(metrics=metrics, run_results=run_results)
 
 
     def get_cat_data(self, kwa_list, cv_result=None, file=None, path='.'):
@@ -3588,7 +3589,7 @@ class BatchCV():
         return None
     
     def load(self, files=None):
-        result = self.result_reset
+        result = self._reset_result()
         if files is None:
             files = get_file_list(self.file, self.path)
         for file in files:
@@ -3612,7 +3613,7 @@ class BatchCV():
         else:
             return False # do the following process
 
-    def update(self, result, forced=False, clear=True):
+    def update(self, result, forced=False):
         """
         save result of a batch and reset the result for next batch
         result: dict of results of _cross_validate_strategy
@@ -3626,10 +3627,7 @@ class BatchCV():
         if (len(result) % size_batch == 0) or forced:
             self.n_last += 1
             self._save(result, self.n_last)
-            if clear:
-                result.clear()
-                gc.collect()
-            return self.result_reset # reset the result for next batch
+            return self._reset_result() # reset the result for next batch
         else: # pass result w/o saving batch
             return result
             
@@ -3652,7 +3650,13 @@ class BatchCV():
             files = get_file_list(self.file, self.path)
             _ = [os.remove(f'{self.path}/{x}') for x in files]
             print('Temp batch files deleted')
-        return result        
+        return result
+
+    def _reset_result(self):
+        if isinstance(self.result_reset, dict):
+            return self.result_reset.copy()
+        else:
+            return None
     
     def _get_last(self):
         """
