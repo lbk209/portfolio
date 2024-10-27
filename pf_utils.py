@@ -7,7 +7,7 @@ import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
 import xml.etree.ElementTree as ET
-import os, time, re, sys, pickle, gc
+import os, time, re, sys, pickle
 import bt
 import warnings
 import seaborn as sns
@@ -2345,14 +2345,15 @@ class BacktestManager():
               id_scale=1, threshold=None,
               df_ratio=None, ratio_descending=None, # args for select 'f-ratio'
               weigh='equally', weights=None, rf=0, bounds=(0.0, 1.0),
-              initial_capital=None, commissions=None, algos=None, run_cv=False):
+              initial_capital=None, commissions=None, algos=None, build_cv=False):
         """
         make backtest of a strategy
         lookback, lag: for select
         lookback_w, lag_w: for weigh. reuse those for select if None
         commissions: %; same for all assets
         algos: set List of Algos to build backtest directly
-        run_cv: flag to cross-validate
+        build_cv: set to True to prepare cross-validate,
+                  which makes self.portfolios only when running cross-validate
         """
         dfs = self.df_assets
         weights = self._check_weights(weights, dfs)
@@ -2369,7 +2370,7 @@ class BacktestManager():
                  'lookback':self._check_var(lookback_w, lookback), 
                  'lag':self._check_var(lag_w, lag)}
         
-        if run_cv:
+        if build_cv: # backtest inserted to self.portfolios when running cross_validate
             self.print_algos_msg = False
             self.cv_strategies[name] = {
                 # convert args for self.build_batch in self._cross_validate_strategy
@@ -2378,11 +2379,10 @@ class BacktestManager():
             }
         else:
             self.print_algos_msg = True
-
-        freq.update({'offset':offset, 'days_in_year':self.days_in_year})
-        kwargs = {'select':select, 'freq':freq, 'weigh':weigh, 'algos':algos,
-                  'initial_capital':initial_capital, 'commissions':commissions}
-        self.portfolios[name] = self.backtest(dfs, name=name, **kwargs)
+            freq.update({'offset':offset, 'days_in_year':self.days_in_year})
+            kwargs = {'select':select, 'freq':freq, 'weigh':weigh, 'algos':algos,
+                      'initial_capital':initial_capital, 'commissions':commissions}
+            self.portfolios[name] = self.backtest(dfs, name=name, **kwargs)
         
         return None
         
@@ -2452,23 +2452,20 @@ class BacktestManager():
         return self.benchmark(df, **kwargs)
 
 
-    def build_batch(self, *kwa_list, reset_portfolios=False, run_cv=True, **kwargs):
+    def build_batch(self, *kwa_list, reset_portfolios=False, build_cv=False, **kwargs):
         """
         kwa_list: list of k/w args for each backtest
         kwargs: k/w args common for all backtest
-        run_cv: set to True to run cross validation.
+        build_cv: set to True to prepare cross-validation.
         reset_portfolios: reset portfolios and cv_strategies
         """
         if reset_portfolios:
             self.portfolios = AssetDict(names=self.asset_names)
             self.cv_strategies = AssetDict(names=self.asset_names)
-        else:
-            #return print('WARNING: set reset_portfolios to True to run')
-            pass
-        for kwa in kwa_list:
-            self.build(**{**kwa, **kwargs, 'run_cv':run_cv})
-        return None
-
+            
+        _ = [self.build(**{**kwa, **kwargs, 'build_cv':build_cv}) for kwa in kwa_list]
+        return print(f'{len(kwa_list)} jobs prepared for cross-validation') if build_cv else None
+        
     
     def run(self, pf_list=None, metrics=None, stats=True, stats_sort_by=None,
             plot=True, start=None, end=None, freq='D', figsize=None):
@@ -2476,7 +2473,7 @@ class BacktestManager():
         pf_list: List of backtests or list of index of backtest
         """
         # convert pf_list for printing msg purpose
-        pf_list = self.check_portfolios(pf_list, run_results=None, convert_index=True, run_cv=False)
+        pf_list = self.check_portfolios(pf_list, run_results=None, convert_index=True, build_cv=False)
         self._print_strategies(pf_list, n_max=5, work='Backtesting')
         
         run_results = self._run(pf_list)
@@ -2527,9 +2524,8 @@ class BacktestManager():
 
 
     def cross_validate(self, pf_list=None, lag=None, n_sample=10, sampling='random',
-                       metrics=None, simplify=False, remove_portfolios=True,
-                       size_batch=0, file_batch='tmp_batch', path_batch='.', 
-                       delete_batch=False, clear_mem=True):
+                       metrics=None, simplify=False,
+                       size_batch=0, file_batch='tmp_batch', path_batch='.',  delete_batch=False):
         """
         pf_list: str, index, list of str or list of index
         simplify: result format mean ± std if True, dict of cv if False 
@@ -2538,7 +2534,7 @@ class BacktestManager():
             return print('ERROR: no strategy to evaluate')
         else:
             n_given = 0 if pf_list is None else len(pf_list)
-            pf_list = self.check_portfolios(pf_list, run_results=None, convert_index=True, run_cv=True)
+            pf_list = self.check_portfolios(pf_list, run_results=None, convert_index=True, build_cv=True)
             if (n_given > 0) and len(pf_list) != n_given:
                 return print('ERROR: run after checking pf_list')
             else:
@@ -2566,14 +2562,8 @@ class BacktestManager():
             result[name] = self._cross_validate_strategy(name, offset_list, 
                                                          metrics=metrics, **kwargs_build)
             result = batch.update(result)
-            self.portfolios.pop(name) if clear_mem else None
         result = batch.finish(result, delete=delete_batch)    
         tracker.stop()
-        
-        if remove_portfolios:
-            remove = [k for k in self.portfolios.keys() for name in pf_list if k.startswith(f'CV[{name}]')]
-            remain = {k: v for k, v in self.portfolios.items() if k not in remove}
-            self.portfolios = AssetDict(remain)
 
         self.cv_result = result
         if simplify:
@@ -2586,17 +2576,19 @@ class BacktestManager():
         keys = ['name', 'offset']
         kwa_list = [dict(zip(keys, [f'CV[{name}]: offset {x}', x])) for x in offset_list]
         kwargs_build = {k:v for k,v in kwargs_build.items() if k not in keys}
-        # no saving param study in cv_strategies by setting run_cv to True
-        self.build_batch(*kwa_list, run_cv=True, **kwargs_build)
+        # set build_cv to False to run self.backtest which saved into self.portfolios
+        self.build_batch(*kwa_list, build_cv=False, **kwargs_build)
             
         pf_list = [x['name'] for x in kwa_list]
         run_results = self._run(pf_list)
+        # drop backtests after getting run_results hopelly to save mem
+        self.portfolios = {k: v for k, v in self.portfolios.items() if k not in pf_list}
         return self.get_stats(metrics=metrics, run_results=run_results)
 
 
     def get_cat_data(self, kwa_list, cv_result=None, file=None, path='.'):
         """
-        convert cross validation result to catplot data
+        convert cross-validation result to catplot data
         kwa_list: list of dicts of parameter sets. see build_batch for detail
         cv_result: output of cross_validate with simplify=False
         """
@@ -2618,7 +2610,8 @@ class BacktestManager():
             f = f'{path}/{file}'
             df_cv.to_csv(f)
             print(f'{f} saved')
-            
+        
+        BacktestManager.print_cv(df_cv)
         return df_cv
 
 
@@ -2656,21 +2649,29 @@ class BacktestManager():
                 f = f'{path}/{data}'
                 data = pd.read_csv(f, index_col=[0,1])
                 print(f'Returning {f}')
+                BacktestManager.print_cv(data)
                 return data
             except FileNotFoundError as e:
                 return print('ERROR: FileNotFoundError {e}')
         else:  
             return sns.catplot(data=data, **kw)
+
+    
+    @staticmethod
+    def print_cv(df_cv):
+        n_s = df_cv.index.get_level_values(0).nunique()
+        n_i = df_cv.index.get_level_values(1).size
+        return print(f'{n_s} param sets with {round(n_i/n_s)} iterations per set')
         
 
-    def check_portfolios(self, pf_list=None, run_results=None, convert_index=True, run_cv=False):
+    def check_portfolios(self, pf_list=None, run_results=None, convert_index=True, build_cv=False):
         """
         run_results: output from bt.run
         convert_index: convert pf_list of index to pf_list of portfolio names 
-        run_cv: search porfolio args from self.cv_strategies
+        build_cv: search porfolio args from self.cv_strategies
         """
         if run_results is None:
-            if run_cv:
+            if build_cv:
                 pf_list_all = list(self.cv_strategies.keys())
             else:
                 pf_list_all = list(self.portfolios.keys())
@@ -2707,7 +2708,7 @@ class BacktestManager():
             run_results = self.run_results
             
         pf_list  = self.check_portfolios(pf_list, run_results=run_results)
-        if pf_list is None:
+        if len(pf_list) == 0:
             return None
             
         metrics = self._check_var(metrics, self.metrics)
@@ -2763,7 +2764,7 @@ class BacktestManager():
     def plot_security_weights(self, pf_list=None, **kwargs):
         run_results = self.run_results
         pf_list = self.check_portfolios(pf_list, run_results=run_results)
-        if pf_list is None:
+        if len(pf_list) == 0:
             return None
         
         plot_func = run_results.plot_security_weights
@@ -2773,7 +2774,7 @@ class BacktestManager():
     def plot_weights(self, pf_list=None, **kwargs):
         run_results = self.run_results
         pf_list  = self.check_portfolios(pf_list, run_results=run_results)
-        if pf_list is None:
+        if len(pf_list) == 0:
             return None
         
         plot_func = run_results.plot_weights
@@ -2783,7 +2784,7 @@ class BacktestManager():
     def plot_histogram(self, pf_list=None, **kwargs):
         run_results = self.run_results
         pf_list  = self.check_portfolios(pf_list, run_results=run_results)
-        if pf_list is None:
+        if len(pf_list) == 0:
             return None
         
         if len(pf_list) > 1:
@@ -2800,7 +2801,7 @@ class BacktestManager():
         func_result is func with ffn.core.PerformanceStats or bt.backtest.Backtest
         """
         pf_list  = self.check_portfolios(pf_list, run_results=self.run_results, convert_index=True)
-        if pf_list is None:
+        if len(pf_list) == 0:
             return None
 
         df_all = None
@@ -2837,7 +2838,7 @@ class BacktestManager():
             ax = run_results.plot(freq=freq, figsize=figsize, legend=legend)
         else:
             pf_list  = self.check_portfolios(pf_list, run_results=run_results, convert_index=True)
-            if pf_list is None:
+            if len(pf_list) == 0:
                 return None
             fig, ax = plt.subplots()
             _ = [run_results[x].plot(ax=ax, freq=freq, figsize=figsize) for x in pf_list]
@@ -2884,7 +2885,7 @@ class BacktestManager():
             return print('WARNING: set one portfolio')
         run_results = self.run_results
         pf_list  = self.check_portfolios(pf, run_results=run_results, convert_index=True)
-        if pf_list is None:
+        if len(pf_list) == 0:
             return None
         else:
             pf = pf_list[0]
@@ -2908,7 +2909,7 @@ class BacktestManager():
             return print('WARNING: set one portfolio')
         run_results = self.run_results
         pf_list  = self.check_portfolios(pf, run_results=run_results, convert_index=True)
-        if pf_list is None:
+        if len(pf_list) == 0:
             return None
         else:
             pf = pf_list[0]
@@ -3571,9 +3572,9 @@ class BatchCV():
         self.file = file # temp file to save result
         self.path = path
         self.pattern = pattern # suffix for temp file name
-        # the number of batches done in the latest cross validation
+        # the number of batches done in the latest cross-validation
         self.n_last = 0
-        # list of cross validation finished last time
+        # list of cross-validation finished last time
         self.jobs_finished = list()
         self.start() if start else None
 
@@ -3601,7 +3602,7 @@ class BatchCV():
 
     def check(self, job):
         """
-        use to process cross validation
+        use to process cross-validation
         job: name of cv iteration
         """
         if self.size == 0:
@@ -3660,7 +3661,7 @@ class BatchCV():
     
     def _get_last(self):
         """
-        get the last batch number from temp files saved during the last cross validation
+        get the last batch number from temp files saved during the last cross-validation
         """
         file = get_file_latest(self.file, self.path)
         match = re.search(self.pattern, file)
@@ -3668,7 +3669,7 @@ class BatchCV():
 
     def _get_finished(self, result):
         """
-        get the list of names of jobs done the last cross validation
+        get the list of names of jobs done the last cross-validation
         """
         if isinstance(result, dict):
             return list(result.keys())
