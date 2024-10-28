@@ -2371,14 +2371,12 @@ class BacktestManager():
                  'lag':self._check_var(lag_w, lag)}
         
         if build_cv: # backtest inserted to self.portfolios when running cross_validate
-            self.print_algos_msg = False
             self.cv_strategies[name] = {
                 # convert args for self.build_batch in self._cross_validate_strategy
                 **select, **freq, **weigh, 'algos':None,
                 'initial_capital':initial_capital, 'commissions':commissions
             }
         else:
-            self.print_algos_msg = True
             freq.update({'offset':offset, 'days_in_year':self.days_in_year})
             kwargs = {'select':select, 'freq':freq, 'weigh':weigh, 'algos':algos,
                       'initial_capital':initial_capital, 'commissions':commissions}
@@ -2539,6 +2537,8 @@ class BacktestManager():
                 return print('ERROR: run after checking pf_list')
             else:
                 self._print_strategies(pf_list, n_max=5, work='Cross-validating')
+                print_algos_msg_backup = self.print_algos_msg
+                self.print_algos_msg = False # hide msg from self._get_algo_*
             
         metrics = self._check_var(metrics, self.metrics)
         
@@ -2566,6 +2566,7 @@ class BacktestManager():
         tracker.stop()
 
         self.cv_result = result
+        self.print_algos_msg = print_algos_msg_backup # restore the flag
         if simplify:
             return self.get_cv_simple(result)
         else:
@@ -3394,52 +3395,55 @@ class FinancialRatios():
         calculates an interpolated ratio for sr_prices
         sr_prices: series of price with index of (ticker, date)
         """
+        col_ticker = self.cols_index['ticker']
+        col_date = self.cols_index['date']
+        col_price = 'price'
+        col_mpl = 'multiplier'
+        col_ym = 'year_month'
+    
         df_ratios = self.df_ratios
         if df_ratios is None:
             return print('ERROR: load ratios first')
             
-        col_ticker = self.cols_index['ticker']
-        col_date = self.cols_index['date']
-        col_price='price'
-        col_mpl = 'multiplier'
-        col_ym = 'year_month'
-
         # Copy metric column to avoid modifying original
-        df_m = df_ratios[metric].copy() 
-        
+        df_m = df_ratios[metric].copy()
+    
+        # check if ratios missing
+        gtck = lambda x: x.index.get_level_values(0).unique()
+        n = gtck(sr_prices).difference(gtck(df_m)).size 
+        if n > 0:
+            return print(f'ERROR: ratios of {n} stocks missing')
+    
+        # check frequency
         if not self._check_freq(df_ratios, col_date, n_in_year=12):
             print('WARNING: No interpolation as data is not monthly')
             return df_m
-
+    
         # set price date range with metric range
         start_date, end_date = get_date_minmax(df_m, level=1)
         if freq.lower() == 'm':
             end_date = end_date + pd.DateOffset(months=1)
         else:
             raise NotImpelentedError
-        
-        # Get price at the end date of every month
-        by = [pd.Grouper(level=0), pd.Grouper(level=1, freq=freq)]
-        df_p = sr_prices.groupby(by).last().rename(col_price)
-        
-        # Update date index to year and month
-        reset_index = lambda x: x.index.set_levels(x.index.levels[1].to_period(freq), level=1)
-        df_m.index = reset_index(df_m)
-        df_p.index = reset_index(df_p)
     
-        # Calculate multiplier from price and metric
-        df_m = (df_m.to_frame().join(df_p).dropna()
-                .apply(lambda x: x[metric] / x[col_price], axis=1).rename(col_mpl))
+        # get multiplier to calc ratio from price
+        i0 = df_m.index.get_level_values(0).unique()
+        i1 = pd.date_range(start=start_date, end=end_date)
+        idx = pd.MultiIndex.from_product([i0, i1], names=df_m.index.names)
+        df_m = (sr_prices.to_frame(col_price)
+                .join(df_m, how='outer').ffill()  # combine all dates of both price and ratio
+                .apply(lambda x: x[metric] / x[col_price], axis=1).rename(col_mpl) # calc multiplier
+                .loc[df_m.index].to_frame(col_mpl) # slice multipliers with dates in ratio
+                # ffill multipliers from start_date and end_date
+                .join(pd.DataFrame(index=idx), how='right').ffill()
+        )
         
-        # interpolated ratio
+        # interpolate ratio
         idx = pd.IndexSlice
         df_res = (sr_prices.loc[idx[:, start_date:end_date]]
-                  .rename(col_price).reset_index(level=1)
-                  .assign(**{col_ym: lambda x: x[col_date].dt.to_period(freq)})
-                  .join(df_m, on=[col_ticker, col_ym])
-                  .set_index(col_date, append=True)
+                  .to_frame(col_price)
+                  .join(df_m) # join with ratio multiplier
                   .apply(lambda x: x[col_price] * x[col_mpl], axis=1)
-                  #.unstack(0)
                   .rename(metric)
                  )
         dt0, dt1 = get_date_minmax(df_res, self.date_format, 1)
