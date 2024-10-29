@@ -2444,10 +2444,14 @@ class BacktestManager():
         return None
 
 
-    def benchmark_ticker(self, ticker='069500', name='KODEX200', **kwargs):
-        print(f'Benchmark is {name}')
-        df = self.util_import_data(ticker, name=name)
-        return self.benchmark(df, **kwargs)
+    def benchmark_ticker(self, name='KODEX200', ticker=None, **kwargs):
+        start, end = get_date_minmax(self.df_assets, date_format='%Y-%m-%d')
+        df = BacktestManager.util_import_data(name, ticker, start_date=start, end_date=end)
+        if df is None:
+            return None
+        else:
+            print(f'Benchmark is {df.name}')
+            return self.benchmark(df, **kwargs)
 
 
     def build_batch(self, *kwa_list, reset_portfolios=False, build_cv=False, **kwargs):
@@ -2523,7 +2527,7 @@ class BacktestManager():
 
     def cross_validate(self, pf_list=None, lag=None, n_sample=10, sampling='random',
                        metrics=None, simplify=False,
-                       size_batch=0, file_batch='tmp_batch', path_batch='.',  delete_batch=False):
+                       size_batch=0, file_batch='tmp_batch', path_batch='.',  delete_batch=True):
         """
         pf_list: str, index, list of str or list of index
         simplify: result format mean ± std if True, dict of cv if False 
@@ -2552,9 +2556,9 @@ class BacktestManager():
         else:
             offset_list = range(0, lag+1, round(lag/n_sample))
 
-        tracker = TimeTracker(auto_start=True)
         result = dict()
         batch = BatchCV(size_batch, start=True, path=path_batch)
+        tracker = TimeTracker(auto_start=True)
         for name in pf_list:
             if batch.check(name):
                 continue
@@ -2562,9 +2566,9 @@ class BacktestManager():
             result[name] = self._cross_validate_strategy(name, offset_list, 
                                                          metrics=metrics, **kwargs_build)
             result = batch.update(result)
-        result = batch.finish(result, delete=delete_batch)    
         tracker.stop()
-
+        result = batch.finish(result, delete=delete_batch)    
+        
         self.cv_result = result
         self.print_algos_msg = print_algos_msg_backup # restore the flag
         if simplify:
@@ -2639,7 +2643,7 @@ class BacktestManager():
 
 
     @staticmethod
-    def catplot(data, path='.', **kw):
+    def catplot(data, path='.', ref_val=None, **kw):
         """
         data: output of get_cat_data or its file
         kw: kwargs of sns.catplot. 
@@ -2654,8 +2658,10 @@ class BacktestManager():
                 return data
             except FileNotFoundError as e:
                 return print('ERROR: FileNotFoundError {e}')
-        else:  
-            return sns.catplot(data=data, **kw)
+        else:
+            g = sns.catplot(data=data, **kw)
+            g.refline(y=ref_val) if ref_val is not None else None
+            return g
 
     
     @staticmethod
@@ -2663,6 +2669,24 @@ class BacktestManager():
         n_s = df_cv.index.get_level_values(0).nunique()
         n_i = df_cv.index.get_level_values(1).size
         return print(f'{n_s} param sets with {round(n_i/n_s)} iterations per set')
+
+
+    @staticmethod
+    def benchmark_stats(metric='cagr', name='KODEX200', ticker=None,
+                        start_date=None, end_date=None, data=None):
+        """
+        data: output of get_cat_data
+        """
+        if data is not None:
+            start_date, end_date = data['start'].min(), data['end'].max()
+
+        df = BacktestManager.util_import_data(name, ticker, start_date=start_date, end_date=end_date)
+        if df is None:
+            return None
+        else:
+            dt0, dt1 = get_date_minmax(df, date_format='%Y-%m-%d')
+            print(f'Returning {metric} of {df.name} from {dt0} to {dt1}')
+            return performance_stats(df).loc[metric][0]
         
 
     def check_portfolios(self, pf_list=None, run_results=None, convert_index=True, build_cv=False):
@@ -2941,20 +2965,29 @@ class BacktestManager():
         else:
             return df_bal
         
-        
-    def util_import_data(self, symbol, col='Close', name=None, date_format='%Y-%m-%d'):
-        """
-        import historical of symbol by using FinanceDataReader.DataReader
-        """
-        if name is None:
-            name = symbol
 
-        df_assets = self.df_assets
-        start = df_assets.index[0].strftime(date_format)
-        end = df_assets.index[-1].strftime(date_format)
-        
+    @staticmethod
+    def util_import_data(name='KODEX200', ticker=None, start_date=None, end_date=None,
+                         col='Close', date_format='%Y-%m-%d',
+                         tickers={'KODEX200':'069500', 'KOSPI':'KS11', 'KOSDAQ':'KQ11', 'KOSPI200':'KS200',
+                                  'S&P500':'S&P500', 'DOW':'DJI', 'NASDAQ':'IXIC'}):
+        """
+        import historical of ticker by using FinanceDataReader.DataReader
+        """
+        # set name and set ticker if name in tickers
+        if name is None: 
+            name = ticker
+        else:
+            _name = name.upper()
+            if _name in tickers.keys():
+                ticker = tickers[_name]
+        # show available name for benchmark if no ticker given
+        if ticker is None:
+            names = ', '.join(tickers.keys())
+            return print(f'ERROR: Set ticker or name from {names}')
+        # download
         try:
-            df = fdr.DataReader(symbol, start, end)
+            df = fdr.DataReader(ticker, start_date, end_date)
             return df[col].rename(name)
         except Exception as e:
             return print(f'ERROR: {e}')
@@ -3590,7 +3623,7 @@ class BatchCV():
         self.jobs_finished = self._get_finished(result)
         n = len(self.jobs_finished)
         if msg and (n>0):
-            print(f'{n} jobs done before')
+            print(f'Make sure {n} jobs done before')
         return None
     
     def load(self, files=None):
