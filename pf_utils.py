@@ -11,6 +11,7 @@ import os, time, re, sys, pickle
 import bt
 import warnings
 import seaborn as sns
+import yfinance as yf
 
 from datetime import datetime, timedelta
 from contextlib import contextmanager
@@ -673,7 +674,7 @@ class DataManager():
         return print(f'{s1}{n} assets from {dt0} to {dt1}{s2}')
 
 
-    def _get_tickers(self, universe='kospi200', **kwargs):
+    def _get_tickers(self, universe='kospi200', tickers=None, **kwargs):
         if universe.lower() == 'kospi200':
             func = self._get_tickers_kospi200
         elif universe.lower() == 'etf':
@@ -682,6 +683,8 @@ class DataManager():
             func = self._get_tickers_fund
         elif universe.lower() == 'krx':
             func = self._get_tickers_krx
+        elif universe.lower() == 'yahoo':
+            func = lambda *a, **k: self._get_tickers_yahoo(tickers, *a, **k)
         else:
             func = lambda **x: None
 
@@ -717,6 +720,15 @@ class DataManager():
         path = self.path
         tickers = pd.read_csv(f'{path}/{file}')
         return tickers.set_index(col_asset)[col_name].to_dict()
+
+
+    def _get_tickers_yahoo(self, tickers):
+        if tickers is None:
+            return print('ERROR: set tickers for names')
+        if isinstance(tickers, str):
+            tickers = [tickers]
+        yft = yf.Tickers(' '.join(tickers))
+        return {x:yft.tickers[x].info['shortName'] for x in tickers}
 
 
     def _download(self, universe, *args, **kwargs):
@@ -796,8 +808,11 @@ class DataManager():
         asset_names = self.asset_names
         df_prices = self.df_prices
         if reset or (asset_names is None):
-            asset_names = self._get_tickers(self.universe)
-            self.asset_names = asset_names
+            asset_names = self._get_tickers(self.universe, tickers=tickers)
+            if (asset_names is None) or len(asset_names) == 0:
+                return print('ERROR: no ticker found')
+            else:
+                self.asset_names = asset_names
 
         try:
             if tickers is None:
