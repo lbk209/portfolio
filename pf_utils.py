@@ -11,6 +11,7 @@ import os, time, re, sys, pickle
 import bt
 import warnings
 import seaborn as sns
+import yfinance as yf
 
 from datetime import datetime, timedelta
 from contextlib import contextmanager
@@ -673,7 +674,7 @@ class DataManager():
         return print(f'{s1}{n} assets from {dt0} to {dt1}{s2}')
 
 
-    def _get_tickers(self, universe='kospi200', **kwargs):
+    def _get_tickers(self, universe='kospi200', tickers=None, **kwargs):
         if universe.lower() == 'kospi200':
             func = self._get_tickers_kospi200
         elif universe.lower() == 'etf':
@@ -682,6 +683,8 @@ class DataManager():
             func = self._get_tickers_fund
         elif universe.lower() == 'krx':
             func = self._get_tickers_krx
+        elif universe.lower() == 'yahoo':
+            func = lambda *a, **k: self._get_tickers_yahoo(tickers, *a, **k)
         else:
             func = lambda **x: None
 
@@ -717,6 +720,15 @@ class DataManager():
         path = self.path
         tickers = pd.read_csv(f'{path}/{file}')
         return tickers.set_index(col_asset)[col_name].to_dict()
+
+
+    def _get_tickers_yahoo(self, tickers, col_name='longName'):
+        if tickers is None:
+            return print('ERROR: set tickers for names')
+        if isinstance(tickers, str):
+            tickers = [tickers]
+        yft = yf.Tickers(' '.join(tickers))
+        return {x:yft.tickers[x].info[col_name] for x in tickers}
 
 
     def _download(self, universe, *args, **kwargs):
@@ -796,8 +808,11 @@ class DataManager():
         asset_names = self.asset_names
         df_prices = self.df_prices
         if reset or (asset_names is None):
-            asset_names = self._get_tickers(self.universe)
-            self.asset_names = asset_names
+            asset_names = self._get_tickers(self.universe, tickers=tickers)
+            if (asset_names is None) or len(asset_names) == 0:
+                return print('ERROR: no ticker found')
+            else:
+                self.asset_names = asset_names
 
         try:
             if tickers is None:
@@ -812,8 +827,8 @@ class DataManager():
             return print(f'ERROR from get_names: {e}')
 
 
-    def get_date_range(self, return_intersection=False):
-        df_prices = self.df_prices
+    def get_date_range(self, df_prices=None, return_intersection=False):
+        df_prices = self._check_var(df_prices, self.df_prices)
         if df_prices is None:
             return print('ERROR')
         else:
@@ -2166,16 +2181,6 @@ class BacktestManager():
             if none_weight_is_error:
                 print('ERROR: weights is None')
             return weights
-        
-
-    def _check_algos(self, select, freq, weigh):
-        cond = lambda x,y: False if x is None else x.lower() == y.lower()
-        # managed to make it work
-        if cond(select['select'], 'randomly') and cond(weigh['weigh'], 'ERC'):
-            #return print('WARNING: random select does not work with ERC weighting')
-            return None
-        else:
-            return None
     
 
     def backtest(self, dfs, name='portfolio', 
@@ -2185,7 +2190,6 @@ class BacktestManager():
         kwargs: keyword args for bt.Backtest except commissions
         algos: List of Algos
         """
-        _ = self._check_algos(select, freq, weigh)
         if algos is None:
             algos = [
                 self._get_algo_select(**select), 
@@ -2200,14 +2204,20 @@ class BacktestManager():
 
 
     def _get_algo_select(self, select='all', n_assets=0, lookback=0, lag=0, 
-                         id_scale=1, threshold=None, df_ratio=None, ratio_descending=None):
+                         id_scale=1, threshold=None, df_ratio=None, ratio_descending=None,
+                         tickers=None):
         """
-        select: all, momentum, kratio, randomly
-        ratio_descending, df_ratio: args for AlgoSelectFinRatio 
+        select: all, momentum, kratio, randomly, specified
+        ratio_descending, df_ratio: args for AlgoSelectFinRatio
+        tickers: list of tickers to select in SelectThese algo
         """
         cond = lambda x,y: False if x is None else x.lower() == y.lower()
         lb = self._get_date_offset(lookback)
         lg = self._get_date_offset(lag, 'days')
+
+        if isinstance(select, list): # set for SelectThese
+            tickers = select
+            select = 'Specified'
               
         if cond(select, 'Momentum'):
             algo_select = SelectMomentum(n=n_assets, lookback=lb, lag=lg, threshold=threshold)
@@ -2234,6 +2244,10 @@ class BacktestManager():
         elif cond(select, 'randomly'):
             algo_after = AlgoRunAfter(lookback=lb, lag=lg)
             algo_select = bt.algos.SelectRandomly(n=n_assets)
+            algo_select = bt.AlgoStack(algo_after, bt.algos.SelectAll(), algo_select)
+        elif cond(select, 'specified'):
+            algo_after = AlgoRunAfter(lookback=lb, lag=lg)
+            algo_select = bt.algos.SelectThese(tickers)
             algo_select = bt.AlgoStack(algo_after, bt.algos.SelectAll(), algo_select)
         else:
             algo_after = AlgoRunAfter(lookback=lb, lag=lg)
@@ -2444,10 +2458,14 @@ class BacktestManager():
         return None
 
 
-    def benchmark_ticker(self, ticker='069500', name='KODEX200', **kwargs):
-        print(f'Benchmark is {name}')
-        df = self.util_import_data(ticker, name=name)
-        return self.benchmark(df, **kwargs)
+    def benchmark_ticker(self, name='KODEX200', ticker=None, **kwargs):
+        start, end = get_date_minmax(self.df_assets, date_format='%Y-%m-%d')
+        df = BacktestManager.util_import_data(name, ticker, start_date=start, end_date=end)
+        if df is None:
+            return None
+        else:
+            print(f'Benchmark is {df.name}')
+            return self.benchmark(df, **kwargs)
 
 
     def build_batch(self, *kwa_list, reset_portfolios=False, build_cv=False, **kwargs):
@@ -2523,7 +2541,7 @@ class BacktestManager():
 
     def cross_validate(self, pf_list=None, lag=None, n_sample=10, sampling='random',
                        metrics=None, simplify=False,
-                       size_batch=0, file_batch='tmp_batch', path_batch='.',  delete_batch=False):
+                       size_batch=0, file_batch='tmp_batch', path_batch='.',  delete_batch=True):
         """
         pf_list: str, index, list of str or list of index
         simplify: result format mean ± std if True, dict of cv if False 
@@ -2552,19 +2570,19 @@ class BacktestManager():
         else:
             offset_list = range(0, lag+1, round(lag/n_sample))
 
-        tracker = TimeTracker(auto_start=True)
         result = dict()
         batch = BatchCV(size_batch, start=True, path=path_batch)
+        tracker = TimeTracker(auto_start=True)
         for name in pf_list:
             if batch.check(name):
                 continue
             kwargs_build = self.cv_strategies[name]
             result[name] = self._cross_validate_strategy(name, offset_list, 
                                                          metrics=metrics, **kwargs_build)
-            result = batch.update(result)
-        result = batch.finish(result, delete=delete_batch)    
+            result = batch.update(result) # result reset if saved
         tracker.stop()
-
+        result = batch.finish(result, delete=delete_batch)    
+        
         self.cv_result = result
         self.print_algos_msg = print_algos_msg_backup # restore the flag
         if simplify:
@@ -2639,7 +2657,7 @@ class BacktestManager():
 
 
     @staticmethod
-    def catplot(data, path='.', **kw):
+    def catplot(data, path='.', ref_val=None, **kw):
         """
         data: output of get_cat_data or its file
         kw: kwargs of sns.catplot. 
@@ -2654,8 +2672,10 @@ class BacktestManager():
                 return data
             except FileNotFoundError as e:
                 return print('ERROR: FileNotFoundError {e}')
-        else:  
-            return sns.catplot(data=data, **kw)
+        else:
+            g = sns.catplot(data=data, **kw)
+            g.refline(y=ref_val) if ref_val is not None else None
+            return g
 
     
     @staticmethod
@@ -2663,6 +2683,24 @@ class BacktestManager():
         n_s = df_cv.index.get_level_values(0).nunique()
         n_i = df_cv.index.get_level_values(1).size
         return print(f'{n_s} param sets with {round(n_i/n_s)} iterations per set')
+
+
+    @staticmethod
+    def benchmark_stats(metric='cagr', name='KODEX200', ticker=None,
+                        start_date=None, end_date=None, data=None):
+        """
+        data: output of get_cat_data
+        """
+        if data is not None:
+            start_date, end_date = data['start'].min(), data['end'].max()
+
+        df = BacktestManager.util_import_data(name, ticker, start_date=start_date, end_date=end_date)
+        if df is None:
+            return None
+        else:
+            dt0, dt1 = get_date_minmax(df, date_format='%Y-%m-%d')
+            print(f'Returning {metric} of {df.name} from {dt0} to {dt1}')
+            return performance_stats(df).loc[metric][0]
         
 
     def check_portfolios(self, pf_list=None, run_results=None, convert_index=True, build_cv=False):
@@ -2941,20 +2979,29 @@ class BacktestManager():
         else:
             return df_bal
         
-        
-    def util_import_data(self, symbol, col='Close', name=None, date_format='%Y-%m-%d'):
-        """
-        import historical of symbol by using FinanceDataReader.DataReader
-        """
-        if name is None:
-            name = symbol
 
-        df_assets = self.df_assets
-        start = df_assets.index[0].strftime(date_format)
-        end = df_assets.index[-1].strftime(date_format)
-        
+    @staticmethod
+    def util_import_data(name='KODEX200', ticker=None, start_date=None, end_date=None,
+                         col='Close', date_format='%Y-%m-%d',
+                         tickers={'KODEX200':'069500', 'KOSPI':'KS11', 'KOSDAQ':'KQ11', 'KOSPI200':'KS200',
+                                  'S&P500':'S&P500', 'DOW':'DJI', 'NASDAQ':'IXIC'}):
+        """
+        import historical of ticker by using FinanceDataReader.DataReader
+        """
+        # set name and set ticker if name in tickers
+        if name is None: 
+            name = ticker
+        else:
+            _name = name.upper()
+            if _name in tickers.keys():
+                ticker = tickers[_name]
+        # show available name for benchmark if no ticker given
+        if ticker is None:
+            names = ', '.join(tickers.keys())
+            return print(f'ERROR: Set ticker or name from {names}')
+        # download
         try:
-            df = fdr.DataReader(symbol, start, end)
+            df = fdr.DataReader(ticker, start_date, end_date)
             return df[col].rename(name)
         except Exception as e:
             return print(f'ERROR: {e}')
@@ -3424,7 +3471,7 @@ class FinancialRatios():
         if freq.lower() == 'm':
             end_date = end_date + pd.DateOffset(months=1)
         else:
-            raise NotImpelentedError
+            raise NotImplementedError
     
         # get multiplier to calc ratio from price
         i0 = df_m.index.get_level_values(0).unique()
@@ -3590,7 +3637,7 @@ class BatchCV():
         self.jobs_finished = self._get_finished(result)
         n = len(self.jobs_finished)
         if msg and (n>0):
-            print(f'{n} jobs done before')
+            print(f'Make sure {n} jobs done before')
         return None
     
     def load(self, files=None):
@@ -3641,11 +3688,14 @@ class BatchCV():
         run after batch loop to save the rest of jobs
         delete: set to True to delete temp files
         """
-        if self.size == 0:
+        # pass result if no batch or no temp saved
+        if self.size * self.n_last == 0:
             return result
             
         # save the rest of jobs
-        _ = self.update(result, forced=True)
+        if not self._is_reset(result):
+            _ = self.update(result, forced=True)
+    
         # reload all batch files
         result = self.load()
         # update batch status
@@ -3658,10 +3708,28 @@ class BatchCV():
         return result
 
     def _reset_result(self):
-        if isinstance(self.result_reset, dict):
-            return self.result_reset.copy()
-        else:
+        """
+        return reset value for batch
+        """
+        result_reset = self.result_reset
+        if isinstance(result_reset, dict):
+            return result_reset.copy()
+        elif result_reset is None:
             return None
+        else:
+            raise NotImplementedError
+            
+    def _is_reset(self, result):
+        """
+        return True if result is reset
+        """
+        result_reset = self.result_reset
+        if isinstance(result_reset, dict):
+            return len(result) == 0
+        elif result_reset is None:
+            return result is None
+        else:
+            raise NotImplementedError
     
     def _get_last(self):
         """
@@ -3678,7 +3746,7 @@ class BatchCV():
         if isinstance(result, dict):
             return list(result.keys())
         else:
-            raise NotImpelentedError
+            raise NotImplementedError
 
     def _append(self, result, new_result):
         """
@@ -3692,7 +3760,7 @@ class BatchCV():
             else:
                 print('ERROR: Update failed as result is not dict')
         else:
-            raise NotImpelentedError
+            raise NotImplementedError
         return result
         
     def _save(self, result, n_current):
