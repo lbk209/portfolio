@@ -722,13 +722,13 @@ class DataManager():
         return tickers.set_index(col_asset)[col_name].to_dict()
 
 
-    def _get_tickers_yahoo(self, tickers):
+    def _get_tickers_yahoo(self, tickers, col_name='longName'):
         if tickers is None:
             return print('ERROR: set tickers for names')
         if isinstance(tickers, str):
             tickers = [tickers]
         yft = yf.Tickers(' '.join(tickers))
-        return {x:yft.tickers[x].info['shortName'] for x in tickers}
+        return {x:yft.tickers[x].info[col_name] for x in tickers}
 
 
     def _download(self, universe, *args, **kwargs):
@@ -827,8 +827,8 @@ class DataManager():
             return print(f'ERROR from get_names: {e}')
 
 
-    def get_date_range(self, return_intersection=False):
-        df_prices = self.df_prices
+    def get_date_range(self, df_prices=None, return_intersection=False):
+        df_prices = self._check_var(df_prices, self.df_prices)
         if df_prices is None:
             return print('ERROR')
         else:
@@ -2181,16 +2181,6 @@ class BacktestManager():
             if none_weight_is_error:
                 print('ERROR: weights is None')
             return weights
-        
-
-    def _check_algos(self, select, freq, weigh):
-        cond = lambda x,y: False if x is None else x.lower() == y.lower()
-        # managed to make it work
-        if cond(select['select'], 'randomly') and cond(weigh['weigh'], 'ERC'):
-            #return print('WARNING: random select does not work with ERC weighting')
-            return None
-        else:
-            return None
     
 
     def backtest(self, dfs, name='portfolio', 
@@ -2200,7 +2190,6 @@ class BacktestManager():
         kwargs: keyword args for bt.Backtest except commissions
         algos: List of Algos
         """
-        _ = self._check_algos(select, freq, weigh)
         if algos is None:
             algos = [
                 self._get_algo_select(**select), 
@@ -2215,14 +2204,20 @@ class BacktestManager():
 
 
     def _get_algo_select(self, select='all', n_assets=0, lookback=0, lag=0, 
-                         id_scale=1, threshold=None, df_ratio=None, ratio_descending=None):
+                         id_scale=1, threshold=None, df_ratio=None, ratio_descending=None,
+                         tickers=None):
         """
-        select: all, momentum, kratio, randomly
-        ratio_descending, df_ratio: args for AlgoSelectFinRatio 
+        select: all, momentum, kratio, randomly, specified
+        ratio_descending, df_ratio: args for AlgoSelectFinRatio
+        tickers: list of tickers to select in SelectThese algo
         """
         cond = lambda x,y: False if x is None else x.lower() == y.lower()
         lb = self._get_date_offset(lookback)
         lg = self._get_date_offset(lag, 'days')
+
+        if isinstance(select, list): # set for SelectThese
+            tickers = select
+            select = 'Specified'
               
         if cond(select, 'Momentum'):
             algo_select = SelectMomentum(n=n_assets, lookback=lb, lag=lg, threshold=threshold)
@@ -2249,6 +2244,10 @@ class BacktestManager():
         elif cond(select, 'randomly'):
             algo_after = AlgoRunAfter(lookback=lb, lag=lg)
             algo_select = bt.algos.SelectRandomly(n=n_assets)
+            algo_select = bt.AlgoStack(algo_after, bt.algos.SelectAll(), algo_select)
+        elif cond(select, 'specified'):
+            algo_after = AlgoRunAfter(lookback=lb, lag=lg)
+            algo_select = bt.algos.SelectThese(tickers)
             algo_select = bt.AlgoStack(algo_after, bt.algos.SelectAll(), algo_select)
         else:
             algo_after = AlgoRunAfter(lookback=lb, lag=lg)
@@ -2580,7 +2579,7 @@ class BacktestManager():
             kwargs_build = self.cv_strategies[name]
             result[name] = self._cross_validate_strategy(name, offset_list, 
                                                          metrics=metrics, **kwargs_build)
-            result = batch.update(result)
+            result = batch.update(result) # result reset if saved
         tracker.stop()
         result = batch.finish(result, delete=delete_batch)    
         
@@ -3472,7 +3471,7 @@ class FinancialRatios():
         if freq.lower() == 'm':
             end_date = end_date + pd.DateOffset(months=1)
         else:
-            raise NotImpelentedError
+            raise NotImplementedError
     
         # get multiplier to calc ratio from price
         i0 = df_m.index.get_level_values(0).unique()
@@ -3689,11 +3688,14 @@ class BatchCV():
         run after batch loop to save the rest of jobs
         delete: set to True to delete temp files
         """
-        if self.size == 0:
+        # pass result if no batch or no temp saved
+        if self.size * self.n_last == 0:
             return result
             
         # save the rest of jobs
-        _ = self.update(result, forced=True)
+        if not self._is_reset(result):
+            _ = self.update(result, forced=True)
+    
         # reload all batch files
         result = self.load()
         # update batch status
@@ -3706,10 +3708,28 @@ class BatchCV():
         return result
 
     def _reset_result(self):
-        if isinstance(self.result_reset, dict):
-            return self.result_reset.copy()
-        else:
+        """
+        return reset value for batch
+        """
+        result_reset = self.result_reset
+        if isinstance(result_reset, dict):
+            return result_reset.copy()
+        elif result_reset is None:
             return None
+        else:
+            raise NotImplementedError
+            
+    def _is_reset(self, result):
+        """
+        return True if result is reset
+        """
+        result_reset = self.result_reset
+        if isinstance(result_reset, dict):
+            return len(result) == 0
+        elif result_reset is None:
+            return result is None
+        else:
+            raise NotImplementedError
     
     def _get_last(self):
         """
@@ -3726,7 +3746,7 @@ class BatchCV():
         if isinstance(result, dict):
             return list(result.keys())
         else:
-            raise NotImpelentedError
+            raise NotImplementedError
 
     def _append(self, result, new_result):
         """
@@ -3740,7 +3760,7 @@ class BatchCV():
             else:
                 print('ERROR: Update failed as result is not dict')
         else:
-            raise NotImpelentedError
+            raise NotImplementedError
         return result
         
     def _save(self, result, n_current):
