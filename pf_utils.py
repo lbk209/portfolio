@@ -418,16 +418,17 @@ def mldate(date, date_format='%Y-%m-%d'):
         return date
 
 
-def set_matplotlib_twins(ax1, ax2):
+def set_matplotlib_twins(ax1, ax2, legend=True):
     axes = [ax1, ax2]
-    # drop individual legends
-    _ = [None if x.get_legend() is None else x.get_legend().remove() for x in axes]
-    # set legend
-    h1, h2 = [x.get_legend_handles_labels()[0] for x in axes]
-    if len(h1)*len(h2) > 0:
-        ax1.legend(handles=h1+h2)
     # set tick color
     _ = [x.tick_params(axis='y', labelcolor=x.get_lines()[0].get_color()) for x in axes]
+    # drop individual legends
+    _ = [None if x.get_legend() is None else x.get_legend().remove() for x in axes]
+    if legend:
+        # set legend
+        h1, h2 = [x.get_legend_handles_labels()[0] for x in axes]
+        if len(h1)*len(h2) > 0:
+            ax1.legend(handles=h1+h2)
     return (ax1, ax2)
 
 
@@ -1043,7 +1044,7 @@ class StaticPortfolio():
                  days_in_year=246, align_axis=0, asset_names=None, name='portfolio',
                  cols_record = {'date':'date', 'ast':'asset', 'name':'name', 'prc':'price', 
                                 'trs':'transaction', 'net':'net', 'wgt':'weight', 'wgta':'weight*'},
-                 date_format='%Y-%m-%d', lb_unit='months'
+                 date_format='%Y-%m-%d'
                 ):
         """
         file: file of transaction history. 
@@ -1070,7 +1071,6 @@ class StaticPortfolio():
         self.asset_names = asset_names
         self.name = name # portfolio name
         self.date_format = date_format # date str format for record & printing
-        self.lb_unit = lb_unit # default unit for lookback
         
         self.selected = None # data for select, weigh and allocate
         self.df_rec = None # record updated with new transaction
@@ -1400,7 +1400,8 @@ class StaticPortfolio():
             return self._calc_historical(df_rec, self.name, msg=True)
 
     
-    def plot(self, figsize=(10,4), msg_cr=True, start_date=None, end_date=None, margin=0.02):
+    def plot(self, figsize=(10,4), legend=True, 
+             msg_cr=True, start_date=None, end_date=None, margin=0.02):
         """
         plot total value of portfolio
         """
@@ -1432,7 +1433,7 @@ class StaticPortfolio():
         #self._plot_cashflow(ax2, sr_cf, xmax) # cashflow
         ax2 = self._plot_profit(ax2, sr_historical, sr_cf) # profit
         # set env for the twins
-        _ = set_matplotlib_twins(ax1, ax2)
+        _ = set_matplotlib_twins(ax1, ax2, legend=legend)
 
         return None
         
@@ -1781,8 +1782,8 @@ class StaticPortfolio():
         df_data = self.liquidation.set_price(df_data, select=True)
         # set date range
         date = df_data.index.max()
-        dt1 = date - self._get_date_offset(lag, 'days')
-        dt0 = dt1 - self._get_date_offset(lookback, self.lb_unit)
+        dt1 = date - self._get_date_offset(lag, 'weeks')
+        dt0 = dt1 - self._get_date_offset(lookback, 'month')
         return df_data.loc[dt0:dt1] 
     
 
@@ -1917,7 +1918,7 @@ class Liquidation():
 
 
 
-class MomentumPortfolio(StaticPortfolio):
+class DynamicPortfolio(StaticPortfolio):
     def __init__(self, *args, align_axis=1, 
                  method_select='simple', sort_ascending=False, df_additional=None,
                  **kwargs):
@@ -1942,14 +1943,12 @@ class MomentumPortfolio(StaticPortfolio):
             return dict(
                 method_select='f-ratio',
                 sort_ascending=True,
-                align_axis=None,
-                lb_unit='days'
+                align_axis=None
             )
         elif strategy in ['momentum', 'k-ratio', 'simple']:
             return dict(
                 sort_ascending=False,
-                align_axis=1,
-                lb_unit='months'
+                align_axis=1
             )
         else:
             return dict()
@@ -2042,7 +2041,7 @@ class MomentumPortfolio(StaticPortfolio):
 
     def check_additional(self, date=None, df_additional=None, 
                          stats=['mean', 'median', 'std'], 
-                         plot=False, figsize=(8,5), title='History of Additional data',
+                         plot=False, figsize=(8,5), title='History of Additional data', legend=True,
                          market_label='Market', market_color='grey', market_alpha=0.5, market_line='--'):
         """
         check df_additional
@@ -2081,7 +2080,7 @@ class MomentumPortfolio(StaticPortfolio):
                          alpha=market_alpha, c=market_color, linestyle=market_line))
             if df_res is not None:
                 ax2 = df_res.plot(ax=ax1.twinx())
-                _ = set_matplotlib_twins(ax1, ax2)
+                _ = set_matplotlib_twins(ax1, ax2, legend=legend)
     
         return df_res
 
@@ -3044,7 +3043,7 @@ class BacktestManager():
         df = self._check_var(df, self.df_assets)
         days_in_year = self._check_var(days_in_year, self.days_in_year)
         return check_days_in_year(df, days_in_year=days_in_year, freq=freq, n_thr=n_thr)
-
+            
 
 
 class AssetEvaluator():
@@ -3472,7 +3471,7 @@ class FinancialRatios():
 
     def interpolate(self, sr_prices, metric='PER', freq='M'):
         """
-        calculates an interpolated ratio for sr_prices
+        calculates an interpolated ratio for date range intersection of price & ratio
         sr_prices: series of price with index of (ticker, date)
         """
         col_ticker = self.cols_index['ticker']
@@ -3633,25 +3632,49 @@ class FinancialRatios():
             return False
 
 
-    def util_reshape(self, df, stack=True, swaplevel=True):
+    def util_reshape(self, df_ratios=None, stack=True, swaplevel=True):
         """
         Converts price data from **DataManager** 
          to f-ratios in **FinancialRatios** format, or vice versa 
+        df: price of f-ratios
         """
         cols_index = self.cols_index
         col_ticker = cols_index['ticker']
         col_date = cols_index['date']
+        df_ratios = self._check_var(df_ratios, self.df_ratios)
+        if df_ratios is None:
+            return print('ERROR: load or set ratios first')
+            
         try:
-            if stack:
-                df = df.stack()
+            if stack: # convert to DataManager format
+                df = df_ratios.stack()
                 if swaplevel:
-                    df = df.swaplevel()
-                return df.rename_axis([col_ticker,col_date]).sort_index()
-            else:
-                return df.unstack(0)
+                    df = df.swaplevel().rename_axis([col_ticker,col_date]).sort_index()
+            else: # convert to FinancialRatios format
+                df = df_ratios.unstack(0)
         except Exception as e:
             return print(f'ERROR: {e}')
 
+        return df
+
+
+    def util_compare_periods(self, df, level=0):
+        """
+        compare date index between df_ratios and df (ex. price)
+        level: index level of date
+        """
+        df_ratios = self.df_ratios
+        date_format = self.date_format
+
+        getd = lambda x, l=1: x.index.get_level_values(l).unique()
+        dts = getd(df, level).difference(getd(df_ratios))
+        n = dts.size
+        if n > 0:
+            d0 = dts.min().strftime(date_format)
+            d1 = dts.max().strftime(date_format)
+            print(f'WARNING: {n} days from {d0} to {d1} missing in the ratio')
+        return None
+        
 
 
 class BatchCV():
