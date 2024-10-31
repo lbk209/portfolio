@@ -2213,7 +2213,7 @@ class BacktestManager():
         """
         cond = lambda x,y: False if x is None else x.lower() == y.lower()
         lb = self._get_date_offset(lookback)
-        lg = self._get_date_offset(lag, 'days')
+        lg = self._get_date_offset(lag, 'weeks')
 
         if isinstance(select, list): # set for SelectThese
             tickers = select
@@ -2260,27 +2260,37 @@ class BacktestManager():
 
     def _get_algo_freq(self, freq='M', offset=0, days_in_year=252):
         """
-        freq: W, M, Q, Y, or num of days
+        freq: W, M, Q, Y, or num of months considering days_in_year
         offset (int): Applies to the first run. If 0, this algo will run the first time it is called.
         """
-        if isinstance(freq, int):
-            n = freq
+        if isinstance(freq, str) and (freq.lower() == 'once'):
+            n_t = (0, 'once')
         else:
-            cond = lambda x, y: False if x is None else x[0].lower() == y[0].lower()
-            if cond(freq, 'W'):
-                n = round(days_in_year / WEEKS_IN_YEAR)
-            elif cond(freq, 'M'):
-                n = round(days_in_year / 12)
-            elif cond(freq, 'Q'):
-                n = round(days_in_year / 4)
-            elif cond(freq, 'Y'):
-                n = days_in_year
-            else:  # default run once
-                n = -1
-                if freq.lower() != 'once':
-                    print('WARNING:RunOnce selected') if self.print_algos_msg else None
+            n_t = BacktestManager.split_int_n_temporal(freq, 'M') # default month
+    
+        if n_t is None:
+            return
+        else:
+            n, temporal = n_t        
+
+        cond = lambda x, y: False if x is None else x[0].lower() == y[0].lower()
+        if cond(temporal, 'W'):
+            n *= round(days_in_year / WEEKS_IN_YEAR)
+        elif cond(temporal, 'M'):
+            n *= round(days_in_year / 12)
+        elif cond(temporal, 'Q'):
+            n *= round(days_in_year / 4)
+        elif cond(temporal, 'Y'):
+            n *= days_in_year
+        elif cond(temporal, 'D'):
+            return print(f'ERROR: days freq not supported')
+        else:  # default run once
+            n = 0
+            if freq.lower() != 'once':
+                print('WARNING:RunOnce selected') if self.print_algos_msg else None
             
         if n > 0:
+            # RunEveryNPeriods counts number of index in data (not actual days)
             algo_freq = bt.algos.RunEveryNPeriods(n, offset=offset)
         else:
             algo_freq = bt.algos.RunOnce()
@@ -2293,8 +2303,8 @@ class BacktestManager():
         weigh: equally, erc, specified, randomly, invvol, meanvar
         """
         cond = lambda x,y: False if x is None else x.lower() == y.lower()
-        lb = self._get_date_offset(lookback)
-        lg = self._get_date_offset(lag, 'days')
+        lb = self._get_date_offset(lookback) # default month
+        lg = self._get_date_offset(lag, 'weeks') # default week
         
         # reset weigh if weights not given
         if cond(weigh, 'Specified') and (weights is None):
@@ -2324,32 +2334,55 @@ class BacktestManager():
     @staticmethod
     def get_date_offset(n, unit='months'):
         """
-        n: int or str such as '1 m'
+        n: int or str such as '1m', '2months', '3M'
         unit: default unit
         """
-        if isinstance(n, int):
-            kwarg = {unit: n}
-        elif isinstance(n, str):
-            match = re.match(r"(\d+)\s*([a-zA-Z]+)", n)
-            try:
-                v = int(match.group(1)) 
-                k = match.group(2).lower()[0]
-            except Exception as e:
-                return print(f'ERROR: {e}')
+        n_t = BacktestManager.split_int_n_temporal(n, unit)
+        if n_t is None:
+            return
+        else:
+            v, k = n_t
 
-            if k == 'd':
-                k = 'days' 
-            elif k == 'm':
-                k = 'months'
-            else:
-                return print(f'ERROR: {n}')
-            kwarg = {k: v}
+        cond = lambda x, y: False if x is None else x[0].lower() == y[0].lower()            
+        if cond(k, 'd'):
+            #k = 'days'
+            return print(f'ERROR: days offset not supported')
+        elif  cond(k, 'w'):
+            k = 'weeks'
+        elif  cond(k, 'm'):
+            k = 'months'
+        elif  cond(k, 'q'):
+            k = 'months'
+            v *= 3
+        elif  cond(k, 'y'):
+            k = 'years'
+        else:
+            return print(f'ERROR: {n}')
+        kwarg = {k: v}
 
         return pd.DateOffset(**kwarg)
 
 
-    def _get_date_offset(self, *args, **kwargs):
-        return BacktestManager.get_date_offset(*args, **kwargs)
+    @staticmethod
+    def split_int_n_temporal(nt, unit='months'):
+        """
+        nt: int or str. ex) 0, '1m', '2months', '3M'
+        unit: default unit
+        """
+        if isinstance(nt, int):
+            return (nt, unit)
+        
+        match = re.match(r"(\d+)\s*([a-zA-Z]+)", nt)
+        try:
+            n = int(match.group(1)) 
+            t = match.group(2).lower()[0]
+            return (n,t)
+        except Exception as e:
+            return print(f'ERROR: {e}')
+                
+
+    def _get_date_offset(self, n, unit='months'):
+        return BacktestManager.get_date_offset(n, unit=unit)
         
 
     def build(self, name=None, 
