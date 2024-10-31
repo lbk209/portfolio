@@ -3498,13 +3498,18 @@ class FinancialRatios():
         if not self._check_freq(df_ratios, col_date, n_in_year=12):
             print('WARNING: No interpolation as data is not monthly')
             return df_m
-    
+
         # set price date range with metric range
         start_date, end_date = get_date_minmax(df_m, level=1)
         if freq.lower() == 'm':
             end_date = end_date + pd.DateOffset(months=1)
         else:
             raise NotImplementedError
+    
+        # check date intersection
+        start, end = get_date_minmax(sr_prices, level=1)
+        if (start_date > end) or (end_date < start):
+            return print('ERROR: no intersection of dates btw price and ratios')
     
         # get multiplier to calc ratio from price
         i0 = df_m.index.get_level_values(0).unique()
@@ -3526,9 +3531,13 @@ class FinancialRatios():
                   .apply(lambda x: x[col_price] * x[col_mpl], axis=1)
                   .rename(metric)
                  )
-        dt0, dt1 = get_date_minmax(df_res, self.date_format, 1)
-        print(f'{metric} interpolated from {dt0} to {dt1}')
-        return df_res
+        if len(df_res) == 0:
+            # redundant?
+            return print('ERROR: no intersection of dates btw price and ratios')
+        else:    
+            dt0, dt1 = get_date_minmax(df_res, self.date_format, 1)
+            print(f'{metric} interpolated from {dt0} to {dt1}')
+            return df_res
     
 
     def _calc_historical(self, sr_ratio, ascending, scale, col_date):
