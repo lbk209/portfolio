@@ -852,9 +852,14 @@ class DataManager():
         if confirm:
             if assets is None:
                 assets = df_prices.columns
-            self.df_prices[assets] = df_prices[assets].apply(lambda x: convert_to_daily(x.dropna()))
+            # convert assets to daily
+            df = df_prices[assets].apply(lambda x: convert_to_daily(x.dropna()))
+            # update self.df_prices with the converted by unstack, concat and unstack 
+            # to makes sure outer join of datetime index 
+            self.df_prices = (pd.concat([df_prices.drop(assets, axis=1).unstack(), df.unstack()])
+                              .unstack(0).ffill())
             days_in_year = 365
-            print(f'REMINDER: data converted to daily (days in year: {days_in_year})')
+            print(f'REMINDER: {len(assets)} equities converted to daily (days in year: {days_in_year})')
             print('Daily metrics in Performance statistics must be meaningless')
             return None
         else:
