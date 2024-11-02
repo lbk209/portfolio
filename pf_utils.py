@@ -2711,7 +2711,10 @@ class BacktestManager():
                 return print('ERROR: FileNotFoundError {e}')
         else:
             g = sns.catplot(data=data, **kw)
-            g.refline(y=ref_val) if ref_val is not None else None
+            if ref_val is not None:
+                if isinstance(ref_val, str):
+                    ref_val = BacktestManager.benchmark_stats(kw['y'], data=data, name=ref_val)
+                g.refline(y=ref_val)
             return g
 
     
