@@ -1045,7 +1045,7 @@ class KRXDownloader():
 
 class StaticPortfolio():
     def __init__(self, df_universe, file=None, path='.', 
-                 method_weigh='ERC', lookback=12, lag=0, lookback_w=None, lag_w=None,
+                 method_weigh='ERC', lookback=0, lag=0, lookback_w=None, lag_w=None,
                  days_in_year=246, align_axis=0, asset_names=None, name='portfolio',
                  cols_record = {'date':'date', 'ast':'asset', 'name':'name', 'prc':'price', 
                                 'trs':'transaction', 'net':'net', 'wgt':'weight', 'wgta':'weight*'},
@@ -1406,7 +1406,8 @@ class StaticPortfolio():
 
     
     def plot(self, figsize=(10,4), legend=True, 
-             msg_cr=True, start_date=None, end_date=None, margin=0.02):
+             msg_cr=True, start_date=None, end_date=None, margin=0.02, 
+             pnl_percet=True, pnl_log=False):
         """
         plot total value of portfolio
         """
@@ -1417,29 +1418,29 @@ class StaticPortfolio():
         sr_historical = self._calc_historical(df_rec, self.name, msg=msg_cr)
         if (sr_historical is None) or (len(sr_historical)==1):
             return print('ERROR: need more data to plot')
-            
+    
+        sr_cf = self._calc_cashflow_history(df_rec) # cashflow
+        sr_prf = self._calc_profit(sr_historical, sr_cf, pnl_percet, pnl_log) # profit
         dates_trs = df_rec.index.get_level_values(0).unique()
-        sr_cf = self._calc_cashflow_history(df_rec)
-        #xmax = sr_historical.index.max()
             
         # plot historical of portfolio value
         ax1 = sr_historical.plot(figsize=figsize, label='Value', title='Portfolio Growth')
         ax1.vlines(dates_trs, 0, 1, transform=ax1.get_xaxis_transform(), lw=0.5, color='grey')
         ax1.tick_params(axis='y', labelcolor=ax1.get_lines()[0].get_color())
         #ax1.autoscale(enable=True, axis='x', tight=True)
-
+    
         # set x & y lim
         ax1.set_xlim(mldate(start_date), mldate(end_date))
         sr = sr_historical.loc[start_date:end_date]
         ax1.set_ylim(sr.min()*(1-margin), sr.max()*(1+margin))
         
-        # plot twin
-        ax2 = ax1.twinx()
-        #self._plot_cashflow(ax2, sr_cf, xmax) # cashflow
-        ax2 = self._plot_profit(ax2, sr_historical, sr_cf) # profit
+        # plot profit history
+        label = 'Profit'
+        label = f'{label} (%)' if pnl_percet else label
+        ax2 = sr_prf.plot(ax=ax1.twinx(), label=label, alpha=0.4, color='orange')
         # set env for the twins
         _ = set_matplotlib_twins(ax1, ax2, legend=legend)
-
+    
         return None
         
 
@@ -1681,19 +1682,18 @@ class StaticPortfolio():
                 for args in args_vline]
 
 
-    def _plot_profit(self, ax, sr_historical, sr_cashflow_history, 
-                     label='Profit', alpha=0.4, color='orange', percent=True):
+    def _calc_profit(self, sr_historical, sr_cashflow_history, percent=True, log=False):
         df = (sr_historical.to_frame('value')
                            .join(sr_cashflow_history.abs().rename('cflow'), how='outer')
                            .ffill().fillna(0))
         if percent:
-            df = df.apply(lambda x: x.value / x.cflow - 1, axis=1).mul(100)
-            label = f'{label} (%)'
+            if log:
+                df = df.apply(lambda x: np.log(x.value / x.cflow), axis=1).mul(100)
+            else:
+                df = df.apply(lambda x: x.value / x.cflow - 1, axis=1).mul(100)
         else:
             df = df.apply(lambda x: x.value - x.cflow, axis=1)
-
-        ax = df.plot(ax=ax, label=label, alpha=alpha, color=color)
-        return ax
+        return df
         
 
     def _check_result(self, msg=True):
