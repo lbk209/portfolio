@@ -1045,7 +1045,7 @@ class KRXDownloader():
 
 class StaticPortfolio():
     def __init__(self, df_universe, file=None, path='.', 
-                 method_weigh='ERC', lookback=12, lag=0, lookback_w=None, lag_w=None,
+                 method_weigh='ERC', lookback=0, lag=0, lookback_w=None, lag_w=None,
                  days_in_year=246, align_axis=0, asset_names=None, name='portfolio',
                  cols_record = {'date':'date', 'ast':'asset', 'name':'name', 'prc':'price', 
                                 'trs':'transaction', 'net':'net', 'wgt':'weight', 'wgta':'weight*'},
