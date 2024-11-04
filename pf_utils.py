@@ -1419,7 +1419,7 @@ class StaticPortfolio():
             return self._calc_cashflow_history(df_rec)
 
 
-    def get_profit_history(self, percent=False, log=False):
+    def get_profit_history(self, percent=True, log=False):
         """
         get history of profit/loss
         """
@@ -3087,7 +3087,7 @@ class BacktestManager():
             
 
 
-class AssetEvaluator():
+class BayesianEstimator():
     def __init__(self, df_prices, days_in_year=252, metrics=METRICS):
         # df of assets (assets in columns) which of each might have its own periods.
         # the periods of all assets will be aligned in every calculation.
@@ -3873,7 +3873,7 @@ class BatchCV():
         """
         save a batch to temp file of pickle
         """
-        f, ext = splitext(self.file)
+        f, _ = splitext(self.file)
         f = f'{self.path}/{f}_{n_current:03}.pkl'
         with open(f, 'wb') as handle:
             pickle.dump(result, handle)
