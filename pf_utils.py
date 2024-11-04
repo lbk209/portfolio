@@ -1397,17 +1397,48 @@ class StaticPortfolio():
         return df_rec
 
 
-    def get_historical(self):
+    def get_value_history(self):
+        """
+        get history of portfolio value
+        """
         df_rec = self._check_result()
         if df_rec is None:
             return None
         else:
-            return self._calc_historical(df_rec, self.name, msg=True)
+            return self._calc_value_history(df_rec, self.name, msg=True)
+
+
+    def get_cash_history(self):
+        """
+        get history of cash-flow
+        """
+        df_rec = self._check_result()
+        if df_rec is None:
+            return None
+        else:
+            return self._calc_cashflow_history(df_rec)
+
+
+    def get_profit_history(self, percent=False, log=False):
+        """
+        get history of profit/loss
+        """
+        df_rec = self._check_result()
+        if df_rec is None:
+            return None
+            
+        sr_val = self._calc_value_history(df_rec, self.name, msg=True)
+        if (sr_val is None) or (len(sr_val)==1):
+            return print('ERROR: need more data to plot')
+
+        sr_cf = self._calc_cashflow_history(df_rec) # cashflow
+        sr_prf = self._calc_profit(sr_val, sr_cf, percent, log) # profit
+        return sr_prf
 
     
     def plot(self, figsize=(10,4), legend=True, 
              msg_cr=True, start_date=None, end_date=None, margin=0.02, 
-             pnl_percet=True, pnl_log=False):
+             pnl_percent=True, pnl_log=False):
         """
         plot total value of portfolio
         """
@@ -1415,28 +1446,30 @@ class StaticPortfolio():
         if df_rec is None:
             return None
         
-        sr_historical = self._calc_historical(df_rec, self.name, msg=msg_cr)
-        if (sr_historical is None) or (len(sr_historical)==1):
+        sr_val = self._calc_value_history(df_rec, self.name, msg=True)
+        if (sr_val is None) or (len(sr_val)==1):
             return print('ERROR: need more data to plot')
-    
+
         sr_cf = self._calc_cashflow_history(df_rec) # cashflow
-        sr_prf = self._calc_profit(sr_historical, sr_cf, pnl_percet, pnl_log) # profit
+        sr_prf = self._calc_profit(sr_val, sr_cf, pnl_percent, pnl_log) # profit
+
+        # transaction dates
         dates_trs = df_rec.index.get_level_values(0).unique()
             
         # plot historical of portfolio value
-        ax1 = sr_historical.plot(figsize=figsize, label='Value', title='Portfolio Growth')
+        ax1 = sr_val.plot(figsize=figsize, label='Value', title='Portfolio Growth')
         ax1.vlines(dates_trs, 0, 1, transform=ax1.get_xaxis_transform(), lw=0.5, color='grey')
         ax1.tick_params(axis='y', labelcolor=ax1.get_lines()[0].get_color())
         #ax1.autoscale(enable=True, axis='x', tight=True)
     
         # set x & y lim
         ax1.set_xlim(mldate(start_date), mldate(end_date))
-        sr = sr_historical.loc[start_date:end_date]
+        sr = sr_val.loc[start_date:end_date]
         ax1.set_ylim(sr.min()*(1-margin), sr.max()*(1+margin))
         
         # plot profit history
         label = 'Profit'
-        label = f'{label} (%)' if pnl_percet else label
+        label = f'{label} (%)' if pnl_percent else label
         ax2 = sr_prf.plot(ax=ax1.twinx(), label=label, alpha=0.4, color='orange')
         # set env for the twins
         _ = set_matplotlib_twins(ax1, ax2, legend=legend)
@@ -1452,11 +1485,11 @@ class StaticPortfolio():
         if df_rec is None:
             return None
         
-        sr_historical = self._calc_historical(df_rec, self.name)
-        if sr_historical is None:
+        sr_val = self._calc_value_history(df_rec, self.name)
+        if sr_val is None:
             return None
         else:
-            return performance_stats(sr_historical, metrics=metrics, sort_by=sort_by)
+            return performance_stats(sr_val, metrics=metrics, sort_by=sort_by)
 
     
     def check_new_transaction(self, date=None,
@@ -1641,7 +1674,7 @@ class StaticPortfolio():
             return df_prices
 
 
-    def _calc_historical(self, df_rec, name, msg=False):
+    def _calc_value_history(self, df_rec, name, msg=False):
         """
         calc historical of portfolio value from transaction
         """
@@ -1682,10 +1715,10 @@ class StaticPortfolio():
                 for args in args_vline]
 
 
-    def _calc_profit(self, sr_historical, sr_cashflow_history, percent=True, log=False):
-        df = (sr_historical.to_frame('value')
-                           .join(sr_cashflow_history.abs().rename('cflow'), how='outer')
-                           .ffill().fillna(0))
+    def _calc_profit(self, sr_val, sr_cashflow_history, percent=True, log=False):
+        df = (sr_val.to_frame('value')
+              .join(sr_cashflow_history.abs().rename('cflow'), how='outer')
+              .ffill().fillna(0))
         if percent:
             if log:
                 df = df.apply(lambda x: np.log(x.value / x.cflow), axis=1).mul(100)
