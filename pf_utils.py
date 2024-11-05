@@ -608,7 +608,8 @@ class TimeTracker:
 
 class DataManager():
     def __init__(self, file=None, path='.', 
-                 universe='kospi200', upload_type='price'):
+                 universe='kospi200', upload_type='price', 
+                 daily=True, days_in_year=12):
         """
         universe: kospi200, etf, krx, fund. used only for ticker name
         """
@@ -619,6 +620,9 @@ class DataManager():
         self.asset_names = None
         self.upload_type = upload_type
         self.df_prices = None
+        self.daily = daily
+        self.upload(self.file_historical)
+        self.convert_to_daily(True, days_in_year) if not daily else None
 
     
     def upload(self, file=None, path=None):
@@ -1371,7 +1375,7 @@ class StaticPortfolio():
         else: # to get the value of the date regardeless of the last transaction
             if isinstance(date, str):
                 date = datetime.strptime(date, date_format)
-            df_prices = df_prices.loc[:date]
+            #df_prices = df_prices.loc[:date]
             date_lp = df_prices.index.max()
             date_ft = df_rec.index.get_level_values(0).min()
             if not (date_ft <= date <= date_lp):
@@ -1453,7 +1457,7 @@ class StaticPortfolio():
             return self._calc_cashflow_history(df_rec)
 
 
-    def get_profit_history(self, percent=True, log=False):
+    def get_profit_history(self, percent=True, log=False, msg=True):
         """
         get history of profit/loss
         """
@@ -1461,7 +1465,7 @@ class StaticPortfolio():
         if df_rec is None:
             return None
             
-        sr_val = self._calc_value_history(df_rec, self.name, msg=True)
+        sr_val = self._calc_value_history(df_rec, self.name, msg=msg)
         if (sr_val is None) or (len(sr_val)==1):
             return print('ERROR: need more data to plot')
 
@@ -3940,7 +3944,6 @@ class PortfolioManager():
     @staticmethod
     def get_universe(*args, **kwargs):
         dm = DataManager(*args, **kwargs)
-        dm.upload()
         return dm
 
     @staticmethod
@@ -3950,20 +3953,27 @@ class PortfolioManager():
         else:
             return DynamicPortfolio(*args, **kwargs)
             
-    def plot_profit(self, start_date=None, end_date=None, percent=True, 
+    def plot_profit(self, pf_list=None, start_date=None, end_date=None, percent=True, 
                     figsize=(8,4), legend=True, colors = plt.cm.Spectral(np.linspace(0,1,10))):
-        names = self.portfolios.keys()
+        pf_all = self.portfolios.keys()
+        if pf_list is None:
+            pf_list = pf_all
+        else:
+            pf_list = [pf_list] if isinstance(pf_list, str) else pf_list
+            if len(set(pf_list)-set(pf_all)) > 0:
+                return print('ERROR: check portfolio names')
+            
         # total profit/loss
-        dfs = [self.portfolios[x].get_profit_history(percent=False) for x in names]
-        ax1 = (pd.concat(dfs, axis=1).sum(axis=1).rename('Total')
+        dfs = [self.portfolios[x].get_profit_history(percent=False, msg=False) for x in pf_list]
+        ax1 = (pd.concat(dfs, axis=1).ffill().sum(axis=1).rename('Total')
                .loc[start_date:end_date]
                .plot(ls='--', title='Portfolio Returns', figsize=figsize))
         # individual return
-        dfs = [self.portfolios[x].get_profit_history(percent=percent) for x in names]
-        dfs = [v.rename(k) for k,v in zip(names, dfs) if v is not None]
+        dfs = [self.portfolios[x].get_profit_history(percent=percent, msg=False) for x in pf_list]
+        dfs = [v.rename(k) for k,v in zip(pf_list, dfs) if v is not None]
         ax2 = ax1.twinx()
         ax2.set_prop_cycle(color=colors)
-        _ = pd.concat(dfs, axis=1).loc[start_date:end_date].plot(ax=ax2, alpha=0.5)
+        _ = pd.concat(dfs, axis=1).ffill().loc[start_date:end_date].plot(ax=ax2, alpha=0.5)
         _ = set_matplotlib_twins(ax1, ax2, legend=legend)
 
     def valuate(self, date=None):
