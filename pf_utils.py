@@ -3749,11 +3749,11 @@ class BatchCV():
     manage batch process of cross_validation
     """
     def __init__(self, size=0, result_reset=dict(), start=True,
-                 file='tmp_batch.pkl', path='.', pattern=r"_\d+(?=\.\w+$)"):
+                 file=None, path='.', pattern=r"_\d+(?=\.\w+$)"):
         self.size = size # batch size
         self.result_reset = result_reset # result reset
         # temp file to save result
-        self.file = set_filename(file, 'pkl')
+        self.file = set_filename(file, 'pkl', 'tmp_batch')
         self.path = path
         self.pattern = pattern # suffix for temp file name
         # the number of batches done in the latest cross-validation
@@ -3900,9 +3900,9 @@ class BatchCV():
         """
         save a batch to temp file of pickle
         """
-        f, _ = splitext(self.file)
-        f = f'{self.path}/{f}_{n_current:03}.pkl'
-        with open(f, 'wb') as handle:
+        file, ext = splitext(self.file)
+        file = f'{self.path}/{file}_{n_current:03}{ext}'
+        with open(file, 'wb') as handle:
             pickle.dump(result, handle)
 
 
