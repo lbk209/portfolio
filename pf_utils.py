@@ -331,21 +331,52 @@ def get_file_list(file, path='.'):
     return sorted(flist)
 
 
-def get_file_latest(file, path='.'):
+def get_file_latest(file, path='.', msg=False, file_type=None):
     files = get_file_list(file, path)
     if len(files) == 0:
+        if msg and (file is not None):
+            name, ext = splitext(file)
+            name = name if file_type is None else f'{file_type} {name}'
+            print(f'WARNING: no {name}*{ext} exists')
         return file
     else:
         return files[-1] # latest file
 
 
 def get_filename(file, repl, pattern=r"_\d+(?=\.\w+$)"):
+    """
+    replace pattern of file with repl or insert repl if no pattern in file
+    """
     match = re.search(pattern, file)
     if bool(match):
         file = re.sub(match[0], repl, file)
     else:
         name, ext = splitext(file)
         file = f'{name}{repl}{ext}'
+    return file
+
+
+def set_filename(file, ext=None, default=None):
+    """
+    return default for file name if file is None
+    set extension if no extension in file
+    defaule: ex) 'temp.csv', 'temp', None
+    ext: ex) '.csv', 'csv', None
+    """
+    # set dault file name and extension
+    if default is not None:
+        name, _ext = splitext(default)
+        ext = _ext if ext is None else ext
+        ext = ext.replace('.', '')
+    # return default if file is None
+    if file is None:
+        if default is not None:
+            default = name if ext is None else f'{name}.{ext}'
+        return default
+    # set ext if no ext in file    
+    name, _ext = splitext(file)
+    if len(_ext) == 0:
+        file = name if ext is None else f'{name}.{ext}'
     return file
 
 
@@ -581,6 +612,7 @@ class DataManager():
         """
         universe: kospi200, etf, krx, fund. used only for ticker name
         """
+        file = set_filename(file, 'csv') 
         self.file_historical = get_file_latest(file, path) # latest file
         self.path = path
         self.universe = universe
@@ -1025,9 +1057,8 @@ class KRXDownloader():
     def save(self, file='krx_prices.csv', path='.'):
         if self.df_data is None:
             print('ERROR')
+        file = set_filename(file, 'csv')
         name, ext = splitext(file)
-        if ext == '':
-            ext = '.csv'
         start = self.convert_date_format(self.start_date)
         end = self.convert_date_format(self.end_date)
         file = f'{name}_{start}_{end}{ext}'
@@ -1061,8 +1092,8 @@ class StaticPortfolio():
         self.df_universe = bm.df_assets
         self._check_weights = bm._check_weights
 
-        if file is None:
-            file = 'tmp.csv' # set temp name for self._load_transaction
+        # set temp name for self._load_transaction
+        file = set_filename(file, default='tmp.csv')
         file = self._retrieve_transaction_file(file, path)
         self.file = file
         self.path = path
@@ -1781,13 +1812,7 @@ class StaticPortfolio():
         """
         get the latest transaction file
         """
-        files = get_file_list(file, path)
-        if len(files) == 0:
-            name, ext = splitext(file)
-            print(f'WARNING: no record {name}* exists')
-            return file
-        else:
-            return files[-1]
+        return get_file_latest(file, path, msg=True, file_type='record')
 
 
     def _update_transaction_dates(self, record, df_universe, col_date):
@@ -3297,6 +3322,7 @@ class FinancialRatios():
                  cols_index={'date':'date', 'ticker':'ticker'},
                  ratios={'BPS':False, 'PER':True, 'PBR':True, 
                          'EPS':False, 'DIV':False, 'DPS':False}):
+        file = set_filename(file, 'csv') 
         self.file = get_file_latest(file, path) # latest file
         self.path = path
         self.date_format = date_format
@@ -3726,7 +3752,8 @@ class BatchCV():
                  file='tmp_batch.pkl', path='.', pattern=r"_\d+(?=\.\w+$)"):
         self.size = size # batch size
         self.result_reset = result_reset # result reset
-        self.file = file # temp file to save result
+        # temp file to save result
+        self.file = set_filename(file, 'pkl')
         self.path = path
         self.pattern = pattern # suffix for temp file name
         # the number of batches done in the latest cross-validation
@@ -3877,3 +3904,57 @@ class BatchCV():
         f = f'{self.path}/{f}_{n_current:03}.pkl'
         with open(f, 'wb') as handle:
             pickle.dump(result, handle)
+
+
+
+class PortfolioManager():
+    def __init__(self, portfolios, path_price='.', path_transaction='.'):
+        """
+        portfolios: dict of list of universe, price file and trasaction file.
+                    ex) portfolios['Momentum'] = ['kospi200', 'kospi200_prices.csv', 'pf_k200_momentum.csv']
+        """
+        pf_dict = dict()
+        for name, data in portfolios.items():
+            try:
+                universe, file_price, file_transaction = data
+                df = self._get_price(universe, file_price, path_price)
+                pf_dict[name] = self._import_portfolio(df, file_transaction, path_transaction)
+            except Exception as e:
+                print('ERROR')
+        self.portfolios = pf_dict
+
+    def _get_price(self, universe, file, path):
+        dm = DataManager(universe=universe, file=file, path=path)
+        dm.upload()
+        return dm.df_prices        
+
+    def _import_portfolio(self, df, file, path):
+        return StaticPortfolio(df, file=file, path=path, align_axis=None)
+
+    def plot_profit(self, percent=True, figsize=(8,4), legend=True,
+                    colors = plt.cm.Spectral(np.linspace(0,1,10))):
+        # total profit/loss
+        dfs = [self.portfolios[x].get_profit_history(percent=False) 
+               for x in self.portfolios.keys()]
+        ax1 = (pd.concat(dfs, axis=1).sum(axis=1).rename('Total')
+               .plot(ls='--', title='Portfolio Returns', figsize=figsize))
+        # individual return
+        dfs = [self.portfolios[x].get_profit_history(percent=percent).rename(x) 
+               for x in self.portfolios.keys()]
+        ax2 = ax1.twinx()
+        ax2.set_prop_cycle(color=colors)
+        _ = pd.concat(dfs, axis=1).plot(ax=ax2, alpha=0.5)
+        _ = set_matplotlib_twins(ax1, ax2, legend=legend)
+
+    def valuate(self, date=None):
+        print('Profit/Loss')
+        val, cflow = 0, 0
+        for name, pf in self.portfolios.items():
+            try:
+                v, c = pf.valuate(date=date, plot=False, print_msg=False)
+            except Exception as e:
+                print(f'ERROR:({name}) {e}')
+            print(f'{name:<5}: {v/c-1:.1%}')
+            val += v
+            cflow += c
+        print(f'Total: {val/cflow-1:.1%} ({val-cflow:,})')
