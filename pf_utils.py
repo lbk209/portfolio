@@ -3923,8 +3923,8 @@ class PortfolioManager():
         """
         pf_dict = dict()
         for name, data in portfolios.items():
-            universe = UNIVERSE[data['universe']]
-            strategy = STRATEGY[data['strategy']]
+            universe = data['universe']
+            strategy = data['strategy']
             print(f'{name}:')
             try:
                 PM = PortfolioManager
@@ -3950,19 +3950,20 @@ class PortfolioManager():
         else:
             return DynamicPortfolio(*args, **kwargs)
             
-    def plot_profit(self, percent=True, figsize=(8,4), legend=True,
-                    colors = plt.cm.Spectral(np.linspace(0,1,10))):
+    def plot_profit(self, start_date=None, end_date=None, percent=True, 
+                    figsize=(8,4), legend=True, colors = plt.cm.Spectral(np.linspace(0,1,10))):
         names = self.portfolios.keys()
         # total profit/loss
         dfs = [self.portfolios[x].get_profit_history(percent=False) for x in names]
         ax1 = (pd.concat(dfs, axis=1).sum(axis=1).rename('Total')
+               .loc[start_date:end_date]
                .plot(ls='--', title='Portfolio Returns', figsize=figsize))
         # individual return
         dfs = [self.portfolios[x].get_profit_history(percent=percent) for x in names]
         dfs = [v.rename(k) for k,v in zip(names, dfs) if v is not None]
         ax2 = ax1.twinx()
         ax2.set_prop_cycle(color=colors)
-        _ = pd.concat(dfs, axis=1).plot(ax=ax2, alpha=0.5)
+        _ = pd.concat(dfs, axis=1).loc[start_date:end_date].plot(ax=ax2, alpha=0.5)
         _ = set_matplotlib_twins(ax1, ax2, legend=legend)
 
     def valuate(self, date=None):
