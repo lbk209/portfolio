@@ -1076,7 +1076,7 @@ class KRXDownloader():
 
 class StaticPortfolio():
     def __init__(self, df_universe, file=None, path='.', 
-                 method_weigh='ERC', lookback=0, lag=0, lookback_w=None, lag_w=None,
+                 method_weigh='Equally', lookback=0, lag=0, lookback_w=None, lag_w=None,
                  days_in_year=246, align_axis=0, asset_names=None, name='portfolio',
                  cols_record = {'date':'date', 'ast':'asset', 'name':'name', 'prc':'price', 
                                 'trs':'transaction', 'net':'net', 'wgt':'weight', 'wgta':'weight*'},
@@ -1136,12 +1136,15 @@ class StaticPortfolio():
         define data range for weigh with all equities
         date: transaction date
         """
+        # search transaction date from universe
+        date = self._get_data(0, 0, date=date).index.max() 
+        # get data for select procedure
         df_data = self._get_data(self.lookback, self.lag, date=date)
         dts = get_date_minmax(df_data, self.date_format)
         n_assets = df_data.columns.size # all assets in the universe selected
         print(f'{n_assets} assets from {dts[0]} to {dts[1]} prepared for weight analysis')
         # date is datetime, data is dataframe
-        self.selected = {'date': df_data.index.max(), 'assets': df_data.columns} 
+        self.selected = {'date': date, 'assets': df_data.columns} 
         return None
 
     
@@ -1982,7 +1985,7 @@ class Liquidation():
 
 
 class DynamicPortfolio(StaticPortfolio):
-    def __init__(self, *args, align_axis=1, 
+    def __init__(self, *args, align_axis=1, n_assets=5,
                  method_select='simple', sort_ascending=False, df_additional=None,
                  **kwargs):
         """
@@ -1994,6 +1997,7 @@ class DynamicPortfolio(StaticPortfolio):
         self.method_select = method_select
         self.sort_ascending = sort_ascending
         self.df_additional = df_additional
+        self.n_assets = n_assets
 
 
     @staticmethod
@@ -2017,7 +2021,7 @@ class DynamicPortfolio(StaticPortfolio):
             return dict()
         
     
-    def select(self, date=None, n_assets=5, method=None, 
+    def select(self, date=None, n_assets=None, method=None, 
                sort_ascending=None, df_additional=None):
         """
         date: transaction date
@@ -2027,7 +2031,10 @@ class DynamicPortfolio(StaticPortfolio):
         method = self._check_var(method, self.method_select)
         sort_ascending = self._check_var(sort_ascending, self.sort_ascending)
         df_additional = self._check_var(df_additional, self.df_additional)
-        
+        n_assets = self._check_var(n_assets, self.n_assets)
+
+        # search transaction date from universe
+        date = self._get_data(0, 0, date=date).index.max()
         df_data = self._get_data(self.lookback, self.lag, date=date)  
         dts = get_date_minmax(df_data, self.date_format)
         info_date = f'from {dts[0]} to {dts[1]}'
@@ -2063,16 +2070,17 @@ class DynamicPortfolio(StaticPortfolio):
             method = 'Total return'
 
         assets = rank.index
-        self.selected = {'date': df_data.index.max(), 'assets': assets, 'rank': rank} 
+        self.selected = {'date': date, 'assets': assets, 'rank': rank} 
         print(f'{n_assets} assets selected by {method} {info_date}')
         return rank
 
     
-    def transaction_pipeline(self, date=None, n_assets=5, 
+    def transaction_pipeline(self, date=None, n_assets=None, 
                              method_select=None, method_weigh=None, weights=None,
                              sort_ascending=None, df_additional=None,
                              capital=10000000, commissions=0, 
                              record=None, save=False, **kw_liq):
+        n_assets = self._check_var(n_assets, self.n_assets)
         self.liquidation.prepare(self.record, **kw_liq)
         rank = self.select(date=date, n_assets=n_assets, method=method_select,
                            sort_ascending=sort_ascending, df_additional=df_additional)
@@ -2184,8 +2192,9 @@ class BacktestManager():
 
         # run after set self.df_assets
         DataManager.print_info(df_assets, str_sfx='uploaded.')
-        print('running self.util_check_days_in_year to check days in a year')
-        _ = self.util_check_days_in_year(df_assets, days_in_year, freq='M', n_thr=1)
+        if days_in_year > 0:
+            print('running self.util_check_days_in_year to check days in a year')
+            _ = self.util_check_days_in_year(df_assets, days_in_year, freq='M', n_thr=1)
         
 
     def align_period(self, df_assets, axis=0, date_format='%Y-%m-%d',
@@ -3908,39 +3917,49 @@ class BatchCV():
 
 
 class PortfolioManager():
-    def __init__(self, portfolios, path_price='.', path_transaction='.'):
+    def __init__(self, portfolios):
         """
-        portfolios: dict of list of universe, price file and trasaction file.
-                    ex) portfolios['Momentum'] = ['kospi200', 'kospi200_prices.csv', 'pf_k200_momentum.csv']
+        portfolios: dict of portfolios with strategy and universe
         """
         pf_dict = dict()
         for name, data in portfolios.items():
+            universe = UNIVERSE[data['universe']]
+            strategy = STRATEGY[data['strategy']]
+            print(f'{name}:')
             try:
-                universe, file_price, file_transaction = data
-                df = self._get_price(universe, file_price, path_price)
-                pf_dict[name] = self._import_portfolio(df, file_transaction, path_transaction)
+                PM = PortfolioManager
+                dm = PM.get_universe(**universe)
+                # days_in_year only for freq in backtesting 
+                strategy = {**strategy, 'name':name, 'days_in_year':-1, 'asset_names':dm.get_names()}
+                pf_dict[name] = PM.create_portfolio(dm.df_prices, **strategy)
             except Exception as e:
-                print('ERROR')
+                print(f'ERROR: {e}')
+            print()
         self.portfolios = pf_dict
 
-    def _get_price(self, universe, file, path):
-        dm = DataManager(universe=universe, file=file, path=path)
+    @staticmethod
+    def get_universe(*args, **kwargs):
+        dm = DataManager(*args, **kwargs)
         dm.upload()
-        return dm.df_prices        
+        return dm
 
-    def _import_portfolio(self, df, file, path):
-        return StaticPortfolio(df, file=file, path=path, align_axis=None)
-
+    @staticmethod
+    def create_portfolio(*args, static=True, **kwargs):
+        if static:
+            return StaticPortfolio(*args, **kwargs)
+        else:
+            return DynamicPortfolio(*args, **kwargs)
+            
     def plot_profit(self, percent=True, figsize=(8,4), legend=True,
                     colors = plt.cm.Spectral(np.linspace(0,1,10))):
+        names = self.portfolios.keys()
         # total profit/loss
-        dfs = [self.portfolios[x].get_profit_history(percent=False) 
-               for x in self.portfolios.keys()]
+        dfs = [self.portfolios[x].get_profit_history(percent=False) for x in names]
         ax1 = (pd.concat(dfs, axis=1).sum(axis=1).rename('Total')
                .plot(ls='--', title='Portfolio Returns', figsize=figsize))
         # individual return
-        dfs = [self.portfolios[x].get_profit_history(percent=percent).rename(x) 
-               for x in self.portfolios.keys()]
+        dfs = [self.portfolios[x].get_profit_history(percent=percent) for x in names]
+        dfs = [v.rename(k) for k,v in zip(names, dfs) if v is not None]
         ax2 = ax1.twinx()
         ax2.set_prop_cycle(color=colors)
         _ = pd.concat(dfs, axis=1).plot(ax=ax2, alpha=0.5)
