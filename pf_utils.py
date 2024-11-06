@@ -200,9 +200,10 @@ def get_date_range(dfs, symbol_name=None, return_intersection=False):
     symbol_name: dict of symbols to names
     """
     df = dfs.apply(lambda x: x[x.notna()].index.min()).to_frame('start date')
-    df = df.join(dfs.apply(lambda x: x[x.notna()].index.max()).to_frame('end date'))
+    df = df.join(dfs.apply(lambda x: x[x.notna()].index.max()).rename('end date'))
+    df = df.join(dfs.apply(lambda x: x[x.notna()].count()).rename('n'))
     if symbol_name is not None:
-        df = pd.Series(symbol_name).to_frame('name').join(df)
+        df = pd.Series(symbol_name).to_frame('name').join(df, how='right')
 
     if return_intersection:
         start_date = df.iloc[:, 0].max()
@@ -772,10 +773,13 @@ class DataManager():
         """
         args: args for DataReader. ex) ticker, start_date, end_date
         """
-        if universe.lower() == 'krx':
+        uv = universe.lower()
+        if uv == 'krx':
             # use pykrx as fdr seems ineffective to download all tickers in krx
-            func = self._download_krx
-        elif universe.lower() == 'file':
+            func = DataManager.download_krx
+        elif uv == 'yahoo':
+            func = DataManager.download_yahoo
+        elif uv == 'file':
             return print("ERROR: Downloading not supported for universe 'file'")
         else:
             func = fdr.DataReader
@@ -785,8 +789,8 @@ class DataManager():
         except Exception as e:
             return print(f'ERROR: failed to download prices as {e}')
 
-
-    def _download_krx(self, tickers, start_date, end_date,
+    @staticmethod
+    def download_krx(tickers, start_date, end_date,
                       interval=5, pause_duration=1, msg=False):
         """
         tickers: list of tickers
@@ -795,6 +799,15 @@ class DataManager():
         krx.get_tickers(tickers=tickers)
         krx.download(interval=interval, pause_duration=pause_duration, msg=msg)
         return krx.df_data
+
+    @staticmethod
+    def download_yahoo(tickers, start_date, end_date, col_price='Adj Close'):
+        if isinstance(tickers, str):
+            tickers = [tickers]
+        df_data = yf.download(tickers, start_date, end_date)
+        df_data = df_data[col_price]
+        df_data.index = df_data.index.tz_convert(None)
+        return df_data
         
 
     def _upload(self, file, path, upload_type='price', msg_exception=''):
@@ -868,10 +881,12 @@ class DataManager():
 
     def get_date_range(self, df_prices=None, return_intersection=False):
         df_prices = self._check_var(df_prices, self.df_prices)
+        asset_names = self.asset_names
         if df_prices is None:
             return print('ERROR')
         else:
-            return get_date_range(df_prices, return_intersection=return_intersection)
+            return get_date_range(df_prices, asset_names, 
+                                  return_intersection=return_intersection)
 
 
     def check_days_in_year(self, days_in_year=251, freq='M', n_thr=10):
