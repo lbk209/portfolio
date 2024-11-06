@@ -608,7 +608,8 @@ class TimeTracker:
 
 class DataManager():
     def __init__(self, file=None, path='.', 
-                 universe='kospi200', upload_type='price'):
+                 universe='kospi200', upload_type='price', 
+                 daily=True, days_in_year=12):
         """
         universe: kospi200, etf, krx, fund. used only for ticker name
         """
@@ -619,6 +620,9 @@ class DataManager():
         self.asset_names = None
         self.upload_type = upload_type
         self.df_prices = None
+        self.days_in_year = days_in_year # only for convert_to_daily
+        self.upload(self.file_historical)
+        self.convert_to_daily(True, days_in_year) if not daily else None
 
     
     def upload(self, file=None, path=None):
@@ -898,7 +902,8 @@ class DataManager():
             return print('WARNING: set confirm to True to convert df_assets to daily')
 
 
-    def convert_to_daily(self, confirm=False, days_in_year=12):
+    def convert_to_daily(self, confirm=False, days_in_year=None):
+        days_in_year = self._check_var(days_in_year, self.days_in_year)
         df = self.check_days_in_year(252)
         if df is None:
             return None
@@ -1371,7 +1376,6 @@ class StaticPortfolio():
         else: # to get the value of the date regardeless of the last transaction
             if isinstance(date, str):
                 date = datetime.strptime(date, date_format)
-            df_prices = df_prices.loc[:date]
             date_lp = df_prices.index.max()
             date_ft = df_rec.index.get_level_values(0).min()
             if not (date_ft <= date <= date_lp):
@@ -1453,7 +1457,7 @@ class StaticPortfolio():
             return self._calc_cashflow_history(df_rec)
 
 
-    def get_profit_history(self, percent=True, log=False):
+    def get_profit_history(self, percent=True, log=False, msg=True):
         """
         get history of profit/loss
         """
@@ -1461,7 +1465,7 @@ class StaticPortfolio():
         if df_rec is None:
             return None
             
-        sr_val = self._calc_value_history(df_rec, self.name, msg=True)
+        sr_val = self._calc_value_history(df_rec, self.name, msg=msg)
         if (sr_val is None) or (len(sr_val)==1):
             return print('ERROR: need more data to plot')
 
@@ -3940,7 +3944,6 @@ class PortfolioManager():
     @staticmethod
     def get_universe(*args, **kwargs):
         dm = DataManager(*args, **kwargs)
-        dm.upload()
         return dm
 
     @staticmethod
@@ -3950,22 +3953,33 @@ class PortfolioManager():
         else:
             return DynamicPortfolio(*args, **kwargs)
             
-    def plot_profit(self, start_date=None, end_date=None, percent=True, 
-                    figsize=(8,4), legend=True, colors = plt.cm.Spectral(np.linspace(0,1,10))):
-        names = self.portfolios.keys()
-        # total profit/loss
-        dfs = [self.portfolios[x].get_profit_history(percent=False) for x in names]
-        ax1 = (pd.concat(dfs, axis=1).sum(axis=1).rename('Total')
-               .loc[start_date:end_date]
-               .plot(ls='--', title='Portfolio Returns', figsize=figsize))
-        # individual return
-        dfs = [self.portfolios[x].get_profit_history(percent=percent) for x in names]
-        dfs = [v.rename(k) for k,v in zip(names, dfs) if v is not None]
-        ax2 = ax1.twinx()
-        ax2.set_prop_cycle(color=colors)
-        _ = pd.concat(dfs, axis=1).loc[start_date:end_date].plot(ax=ax2, alpha=0.5)
-        _ = set_matplotlib_twins(ax1, ax2, legend=legend)
+    def plot_profit(self, pf_list=None, start_date=None, end_date=None, percent=True, 
+                    figsize=(8,4), legend=True, 
+                    #colors = plt.cm.Spectral(np.linspace(0,1,10))
+                    colors = plt.cm.Spectral):
+        # check portfolios
+        pf_all = self.portfolios.keys()
+        if pf_list is None:
+            pf_list = pf_all
+        else:
+            pf_list = [pf_list] if isinstance(pf_list, str) else pf_list
+            if len(set(pf_list)-set(pf_all)) > 0:
+                return print('ERROR: check portfolio names')
 
+        # individual return
+        dfs = [self.portfolios[x].get_profit_history(percent=percent, msg=False) for x in pf_list]
+        dfs = [v.rename(k) for k,v in zip(pf_list, dfs) if v is not None]
+        ax1 = pd.concat(dfs, axis=1).ffill().loc[start_date:end_date].plot(alpha=0.5)
+        ax1.set_prop_cycle(color=colors(np.linspace(0,1,len(pf_list))))
+        
+        # total profit/loss
+        dfs = [self.portfolios[x].get_profit_history(percent=False, msg=False) for x in pf_list]
+        ax2 = ax1.twinx()
+        _ = (pd.concat(dfs, axis=1).ffill().sum(axis=1).rename('Total')
+               .loc[start_date:end_date]
+               .plot(ax=ax2, c='gray', ls='--', title='Portfolio Returns', figsize=figsize))
+        _ = set_matplotlib_twins(ax1, ax2, legend=legend)
+        
     def valuate(self, date=None):
         print('Profit/Loss')
         val, cflow = 0, 0
