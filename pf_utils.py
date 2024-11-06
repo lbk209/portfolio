@@ -611,7 +611,7 @@ class DataManager():
                  universe='kospi200', upload_type='price', 
                  daily=True, days_in_year=12):
         """
-        universe: kospi200, etf, krx, fund. used only for ticker name
+        universe: kospi200, etf, krx, file. used only for ticker name
         """
         file = set_filename(file, 'csv') 
         self.file_historical = get_file_latest(file, path) # latest file
@@ -716,8 +716,8 @@ class DataManager():
             func = self._get_tickers_kospi200
         elif universe.lower() == 'etf':
             func = self._get_tickers_etf
-        elif universe.lower() == 'fund':
-            func = self._get_tickers_fund
+        elif universe.lower() == 'file':
+            func = self._get_tickers_file
         elif universe.lower() == 'krx':
             func = self._get_tickers_krx
         elif universe.lower() == 'yahoo':
@@ -752,7 +752,7 @@ class DataManager():
         return tickers
 
 
-    def _get_tickers_fund(self, col_asset='ticker', col_name='name'):
+    def _get_tickers_file(self, col_asset='ticker', col_name='name'):
         file = self.file_historical
         path = self.path
         tickers = pd.read_csv(f'{path}/{file}')
@@ -775,6 +775,8 @@ class DataManager():
         if universe.lower() == 'krx':
             # use pykrx as fdr seems ineffective to download all tickers in krx
             func = self._download_krx
+        elif universe.lower() == 'file':
+            return print("ERROR: Downloading not supported for universe 'file'")
         else:
             func = fdr.DataReader
             
@@ -3958,13 +3960,9 @@ class PortfolioManager():
                     #colors = plt.cm.Spectral(np.linspace(0,1,10))
                     colors = plt.cm.Spectral):
         # check portfolios
-        pf_all = self.portfolios.keys()
+        pf_list = self.check_portfolios(pf_list)
         if pf_list is None:
-            pf_list = pf_all
-        else:
-            pf_list = [pf_list] if isinstance(pf_list, str) else pf_list
-            if len(set(pf_list)-set(pf_all)) > 0:
-                return print('ERROR: check portfolio names')
+            return None
 
         # individual return
         dfs = [self.portfolios[x].get_profit_history(percent=percent, msg=False) for x in pf_list]
@@ -3980,10 +3978,15 @@ class PortfolioManager():
                .plot(ax=ax2, c='gray', ls='--', title='Portfolio Returns', figsize=figsize))
         _ = set_matplotlib_twins(ax1, ax2, legend=legend)
         
-    def valuate(self, date=None):
+    def valuate(self, pf_list=None, date=None):
+        pf_list = self.check_portfolios(pf_list)
+        if pf_list is None:
+            return None
+            
         print('Profit/Loss')
         val, cflow = 0, 0
-        for name, pf in self.portfolios.items():
+        for name in pf_list:
+            pf = self.portfolios[name]
             try:
                 v, c = pf.valuate(date=date, plot=False, print_msg=False)
             except Exception as e:
@@ -3992,3 +3995,14 @@ class PortfolioManager():
             val += v
             cflow += c
         print(f'Total: {val/cflow-1:.1%} ({val-cflow:,})')
+
+
+    def check_portfolios(self, pf_list):
+        pf_all = self.portfolios.keys()
+        if pf_list is None:
+            pf_list = pf_all
+        else:
+            pf_list = [pf_list] if isinstance(pf_list, str) else pf_list
+            if len(set(pf_list)-set(pf_all)) > 0:
+                return print('ERROR: check portfolio names')
+        return pf_list
