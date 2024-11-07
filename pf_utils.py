@@ -326,7 +326,7 @@ def get_file_list(file, path='.'):
     name, ext = splitext(file)
     name = name.replace('*', r'(.*?)')
     try:
-        rex = f'{name}.*{ext}'
+        rex = f'^{name}.*{ext}'
         flist = [f for f in listdir(path) if isfile(join(path, f)) and re.search(rex, f)]
     except Exception as e:
         print(f'ERROR: {e}')
@@ -620,13 +620,14 @@ class DataManager():
         self.file_historical = get_file_latest(file, path) # latest file
         self.path = path
         self.universe = universe
-        self.asset_names = None
+        self.asset_names = None 
         self.upload_type = upload_type
         self.df_prices = None
         self.days_in_year = days_in_year # only for convert_to_daily
         self.upload(self.file_historical)
         self.convert_to_daily(True, days_in_year) if not daily else None
-
+        # asset_names set in downloading except for 'file' universe
+        _ = self.get_names() if universe == 'file' else None
     
     def upload(self, file=None, path=None):
         """
@@ -654,6 +655,7 @@ class DataManager():
         """
         download df_prices by using FinanceDataReader
         n_years: int
+        tickers: None, 'selected', list of tickers
         kwargs_download: args for krx. ex) interval=5, pause_duration=1, msg=False
         """
         start_date, end_date = DataManager.get_start_end_dates(start_date, end_date, 
@@ -665,8 +667,16 @@ class DataManager():
                 return print('ERROR: no ticker found')
             else:
                 tickers = list(asset_names.keys())
-                self.asset_names = asset_names
-            
+        else: 
+            if isinstance(tickers, str) and (tickers.lower() == 'selected'):
+                if self.df_prices is None:
+                    return print('ERROR: No selected tickers as no file exists')
+                else:
+                    tickers = self.df_prices.columns.to_list()
+            elif not isinstance(tickers, list):
+                return print('ERROR: check tickers set')
+            asset_names = self._get_tickers(self.universe, tickers)
+                   
         try:
             df_prices = self._download(self.universe, tickers, start_date, end_date,
                                        **kwargs_download)
@@ -678,6 +688,7 @@ class DataManager():
             return print(f'ERROR: {e}')
             
         self.df_prices = df_prices
+        self.asset_names = asset_names     
         if save:
             self.save(date=df_prices.index.max())
         return print('df_prices updated')
@@ -938,6 +949,7 @@ class DataManager():
         
         df_stat = performance_stats(df_prices, metrics=None)
         df_stat = df_stat.T
+        
         if metrics is None:
             metrics = df_stat.columns
         else:
@@ -945,6 +957,9 @@ class DataManager():
                 metrics = [metrics]
             metrics = [y for x in metrics for y in df_stat.columns if x in y]
             df_stat = df_stat[metrics]
+        
+        if self.asset_names is not None:
+            df_stat = pd.Series(self.asset_names).to_frame('name').join(df_stat, how='right')
         
         if sort_by is not None:
             sort_by = [x for x in metrics if sort_by in x]
@@ -1101,7 +1116,7 @@ class KRXDownloader():
 class StaticPortfolio():
     def __init__(self, df_universe, file=None, path='.', 
                  method_weigh='Equally', lookback=0, lag=0, lookback_w=None, lag_w=None,
-                 days_in_year=246, align_axis=0, asset_names=None, name='portfolio',
+                 days_in_year=246, align_axis=0, assets=None, asset_names=None, name='portfolio',
                  cols_record = {'date':'date', 'ast':'asset', 'name':'name', 'prc':'price', 
                                 'trs':'transaction', 'net':'net', 'wgt':'weight', 'wgta':'weight*'},
                  date_format='%Y-%m-%d'
@@ -1129,6 +1144,7 @@ class StaticPortfolio():
         self.lag_w = self._check_var(lag_w, self.lag)
         self.method_weigh = method_weigh
         self.asset_names = asset_names
+        self.assets = assets # see select
         self.name = name # portfolio name
         self.date_format = date_format # date str format for record & printing
         
@@ -1155,15 +1171,17 @@ class StaticPortfolio():
         return record
         
         
-    def select(self, date=None):
+    def select(self, date=None, assets=None):
         """
         define data range for weigh with all equities
         date: transaction date
         """
+        assets = self._check_var(assets, self.assets)
         # search transaction date from universe
-        date = self._get_data(0, 0, date=date).index.max() 
+        kwa = dict(date=date, assets=assets)
+        date = self._get_data(0, 0, **kwa).index.max() 
         # get data for select procedure
-        df_data = self._get_data(self.lookback, self.lag, date=date)
+        df_data = self._get_data(self.lookback, self.lag, **kwa)
         dts = get_date_minmax(df_data, self.date_format)
         n_assets = df_data.columns.size # all assets in the universe selected
         print(f'{n_assets} assets from {dts[0]} to {dts[1]} prepared for weight analysis')
@@ -2301,7 +2319,7 @@ class BacktestManager():
                          id_scale=1, threshold=None, df_ratio=None, ratio_descending=None,
                          tickers=None):
         """
-        select: all, momentum, kratio, randomly, specified
+        select: all, momentum, kratio, randomly, specified, list of tickers
         ratio_descending, df_ratio: args for AlgoSelectFinRatio
         tickers: list of tickers to select in SelectThese algo
         """
@@ -3959,15 +3977,42 @@ class PortfolioManager():
         pf_dict = dict()
         for name in pf_names:
             print(f'{name}:')
+            # days_in_year only for backtesting
             pf_dict[name] = PortfolioManager.create_portfolio(name, days_in_year=-1)
             print()
         return pf_dict
+
+
+    @staticmethod
+    def check_names(space=None):
+        pfd = PortfolioData()
+        space = 'P' if space is None else space[0].upper()
+        if space == 'U':
+            space = 'Universes'
+            result = pfd.universes.keys()
+        elif space == 'S':
+            space = 'Strategies'
+            result = pfd.strategies.keys()
+        else: # default portfolio names
+            space = 'Portfolios'
+            result = pfd.portfolios.keys()
+        return print(f"{space}: {', '.join(result)}")
 
     
     @staticmethod
     def check_arguments(pf_name, strategy=False, universe=False):
         pfd = PortfolioData()
         return pfd.get(pf_name, strategy=strategy, universe=universe)
+
+    @staticmethod
+    def check_universe(name):
+        pfd = PortfolioData()
+        return pfd.get_universe(name)
+
+    @staticmethod
+    def check_strategy(name):
+        pfd = PortfolioData()
+        return pfd.get_strategy(name)
 
     
     @staticmethod
