@@ -326,7 +326,7 @@ def get_file_list(file, path='.'):
     name, ext = splitext(file)
     name = name.replace('*', r'(.*?)')
     try:
-        rex = f'{name}.*{ext}'
+        rex = f'^{name}.*{ext}'
         flist = [f for f in listdir(path) if isfile(join(path, f)) and re.search(rex, f)]
     except Exception as e:
         print(f'ERROR: {e}')
@@ -654,6 +654,7 @@ class DataManager():
         """
         download df_prices by using FinanceDataReader
         n_years: int
+        tickers: None, 'selected', list of tickers
         kwargs_download: args for krx. ex) interval=5, pause_duration=1, msg=False
         """
         start_date, end_date = DataManager.get_start_end_dates(start_date, end_date, 
@@ -666,6 +667,11 @@ class DataManager():
             else:
                 tickers = list(asset_names.keys())
                 self.asset_names = asset_names
+        elif isinstance(tickers, str) and (tickers.lower() == 'selected'):
+            if self.df_prices is None:
+                return print('ERROR: No selected tickers as no file exists')
+            else:
+                tikers = self.df_prices.columns.to_list()
             
         try:
             df_prices = self._download(self.universe, tickers, start_date, end_date,
@@ -1155,15 +1161,16 @@ class StaticPortfolio():
         return record
         
         
-    def select(self, date=None):
+    def select(self, date=None, assets=None):
         """
         define data range for weigh with all equities
         date: transaction date
         """
         # search transaction date from universe
-        date = self._get_data(0, 0, date=date).index.max() 
+        kwa = dict(date=date, assets=assets)
+        date = self._get_data(0, 0, **kwa).index.max() 
         # get data for select procedure
-        df_data = self._get_data(self.lookback, self.lag, date=date)
+        df_data = self._get_data(self.lookback, self.lag, **kwa)
         dts = get_date_minmax(df_data, self.date_format)
         n_assets = df_data.columns.size # all assets in the universe selected
         print(f'{n_assets} assets from {dts[0]} to {dts[1]} prepared for weight analysis')
@@ -2301,7 +2308,7 @@ class BacktestManager():
                          id_scale=1, threshold=None, df_ratio=None, ratio_descending=None,
                          tickers=None):
         """
-        select: all, momentum, kratio, randomly, specified
+        select: all, momentum, kratio, randomly, specified, list of tickers
         ratio_descending, df_ratio: args for AlgoSelectFinRatio
         tickers: list of tickers to select in SelectThese algo
         """
@@ -3963,11 +3970,37 @@ class PortfolioManager():
             print()
         return pf_dict
 
+
+    @staticmethod
+    def check_names(space=None):
+        pfd = PortfolioData()
+        space = 'P' if space is None else space[0].upper()
+        if space == 'U':
+            space = 'Universes'
+            result = pfd.universes.keys()
+        elif space == 'S':
+            space = 'Strategies'
+            result = pfd.strategies.keys()
+        else: # default portfolio names
+            space = 'Portfolios'
+            result = pfd.portfolios.keys()
+        return print(f"{space}: {', '.join(result)}")
+
     
     @staticmethod
     def check_arguments(pf_name, strategy=False, universe=False):
         pfd = PortfolioData()
         return pfd.get(pf_name, strategy=strategy, universe=universe)
+
+    @staticmethod
+    def check_universe(name):
+        pfd = PortfolioData()
+        return pfd.get_universe(name)
+
+    @staticmethod
+    def check_strategy(name):
+        pfd = PortfolioData()
+        return pfd.get_strategy(name)
 
     
     @staticmethod
