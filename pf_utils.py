@@ -25,6 +25,8 @@ from tqdm import tqdm
 from matplotlib.dates import num2date, date2num
 from numbers import Number
 
+from pf_data import PortfolioData
+
 warnings.filterwarnings(action='ignore', category=FutureWarning)
 warnings.filterwarnings(action='ignore', category=pd.errors.PerformanceWarning)
 
@@ -3938,69 +3940,113 @@ class BatchCV():
 
 
 class PortfolioManager():
-    def __init__(self, portfolios):
+    """
+    pipeline for StaticPortfolio and DynamicPortfolio from params to performance
+    """
+    def __init__(self, pf_names=None):
         """
-        portfolios: dict of portfolios with strategy and universe
+        pf_names: list of portfolio names
+        """
+        self.pf_data = PortfolioData()
+        self.pf_names = self.check_portfolios(pf_names)
+        self.portfolios = self.load(self.pf_names)
+
+    
+    def load(self, pf_names=None):
+        """
+        pf_names: list of portfolio names
         """
         pf_dict = dict()
-        for name, data in portfolios.items():
-            universe = data['universe']
-            strategy = data['strategy']
+        for name in pf_names:
             print(f'{name}:')
-            try:
-                PM = PortfolioManager
-                dm = PM.get_universe(**universe)
-                # days_in_year only for freq in backtesting 
-                strategy = {**strategy, 'name':name, 'days_in_year':-1, 'asset_names':dm.get_names()}
-                pf_dict[name] = PM.create_portfolio(dm.df_prices, **strategy)
-            except Exception as e:
-                print(f'ERROR: {e}')
+            pf_dict[name] = PortfolioManager.create_portfolio(name, days_in_year=-1)
             print()
-        self.portfolios = pf_dict
+        return pf_dict
 
+    
     @staticmethod
-    def get_universe(*args, **kwargs):
-        dm = DataManager(*args, **kwargs)
-        return dm
+    def check_arguments(pf_name, strategy=False, universe=False):
+        pfd = PortfolioData()
+        return pfd.get(pf_name, strategy=strategy, universe=universe)
 
+    
     @staticmethod
-    def create_portfolio(*args, static=True, **kwargs):
-        if static:
-            return StaticPortfolio(*args, **kwargs)
+    def create_universe(name, *args, **kwargs):
+        """
+        args, kwargs: args & kwargs for DataManager
+        """
+        pfd = PortfolioData()
+        kwa_u = pfd.get_universe(name)
+        return DataManager(*args, **{**kwa_u, **kwargs})
+
+    
+    @staticmethod
+    def create_portfolio(name, *args, **kwargs):
+        """
+        name: portfolio name
+        args, kwargs: args & kwargs for StaticPortfolio or DynamicPortfolio
+        """
+        # get args of portfolios
+        pfd = PortfolioData()
+        
+        # get the instance of DataManager
+        kwa_p = pfd.get(name)
+        dm = PortfolioManager.create_universe(kwa_p['universe'])
+        
+        # get the instance of *Portfolio
+        kwa_s = pfd.get(name, strategy=True, universe=False)
+        static = [v for k,v in kwa_s.items() if k == 'static']
+        static = static[0] if len(static) > 0 else True
+        kwa_s = {k:v for k,v in kwa_s.items() if k != 'static'}
+        kwa_s = {**kwa_s, 'name':name, 'asset_names':dm.get_names()}
+        
+        func = StaticPortfolio if static else DynamicPortfolio
+        return func(dm.df_prices, *args, **kwa_s, **kwargs)
+
+
+    def check_portfolios(self, pf_names=None):
+        pf_names = self.pf_names if pf_names is None else pf_names
+        pf_all = self.pf_data.portfolios.keys()
+        if pf_names is None:
+            pf_names = pf_all
         else:
-            return DynamicPortfolio(*args, **kwargs)
-            
-    def plot_profit(self, pf_list=None, start_date=None, end_date=None, percent=True, 
-                    figsize=(8,4), legend=True, 
-                    #colors = plt.cm.Spectral(np.linspace(0,1,10))
-                    colors = plt.cm.Spectral):
+            pf_names = [pf_names] if isinstance(pf_names, str) else pf_names
+            if len(set(pf_names)-set(pf_all)) > 0:
+                return print('ERROR: check portfolio names')
+        return pf_names
+
+    
+    def plot(self, pf_names=None, start_date=None, end_date=None, percent=True,
+             figsize=(8,4), legend=True, 
+             colors = plt.cm.Spectral):
         # check portfolios
-        pf_list = self.check_portfolios(pf_list)
-        if pf_list is None:
+        pf_names = self.check_portfolios(pf_names)
+        if pf_names is None:
             return None
 
         # individual return
-        dfs = [self.portfolios[x].get_profit_history(percent=percent, msg=False) for x in pf_list]
-        dfs = [v.rename(k) for k,v in zip(pf_list, dfs) if v is not None]
+        dfs = [self.portfolios[x].get_profit_history(percent=percent, msg=False) for x in pf_names]
+        dfs = [v.rename(k) for k,v in zip(pf_names, dfs) if v is not None]
         ax1 = pd.concat(dfs, axis=1).ffill().loc[start_date:end_date].plot(alpha=0.5)
-        ax1.set_prop_cycle(color=colors(np.linspace(0,1,len(pf_list))))
+        ax1.set_prop_cycle(color=colors(np.linspace(0,1,len(pf_names))))
         
         # total profit/loss
-        dfs = [self.portfolios[x].get_profit_history(percent=False, msg=False) for x in pf_list]
+        dfs = [self.portfolios[x].get_profit_history(percent=False, msg=False) for x in pf_names]
         ax2 = ax1.twinx()
         _ = (pd.concat(dfs, axis=1).ffill().sum(axis=1).rename('Total')
                .loc[start_date:end_date]
                .plot(ax=ax2, c='gray', ls='--', title='Portfolio Returns', figsize=figsize))
-        _ = set_matplotlib_twins(ax1, ax2, legend=legend)
+        _ = set_matplotlib_twins(ax2, ax1, legend=legend)
         
-    def valuate(self, pf_list=None, date=None):
-        pf_list = self.check_portfolios(pf_list)
-        if pf_list is None:
+        
+    def valuate(self, pf_names=None, date=None):
+        pf_names = self.check_portfolios(pf_names)
+        if pf_names is None:
             return None
             
         print('Profit/Loss')
         val, cflow = 0, 0
-        for name in pf_list:
+        for name in pf_names:
             pf = self.portfolios[name]
             try:
                 v, c = pf.valuate(date=date, plot=False, print_msg=False)
@@ -4009,15 +4055,5 @@ class PortfolioManager():
             print(f'{name:<5}: {v/c-1:.1%}')
             val += v
             cflow += c
-        print(f'Total: {val/cflow-1:.1%} ({val-cflow:,})')
-
-
-    def check_portfolios(self, pf_list):
-        pf_all = self.portfolios.keys()
-        if pf_list is None:
-            pf_list = pf_all
-        else:
-            pf_list = [pf_list] if isinstance(pf_list, str) else pf_list
-            if len(set(pf_list)-set(pf_all)) > 0:
-                return print('ERROR: check portfolio names')
-        return pf_list
+        if cflow != c:
+            print(f'Total: {val/cflow-1:.1%} ({val-cflow:,})')
