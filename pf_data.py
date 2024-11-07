@@ -21,14 +21,14 @@ UNIVERSES = {k: {**v, 'daily':False} if k in MONTHLY else v for k,v in UNIVERSES
 
 # Portfolio strategy (kwargs of PotfolioManager)
 STRATEGIES = dict(
-    MOM = dict(static=False, method_select='Simple', n_assets=5, lookback='1y', lag='1w'),
-    PER = dict(static=False, method_select='F-ratio', n_assets=20, lookback='2m', align_axis=None, sort_ascending=True),
-    AWTR= dict(method_weigh='Equally', align_axis=None),
-    LIQ = dict(method_weigh='Equally', align_axis=None),
-    IRP = dict(method_weigh='Equally', align_axis=None),
-    HANA= dict(method_weigh='Equally', align_axis=None),
-    FCTR= dict(method_weigh='Equally', align_axis=None),
-    KRX = dict(static=False, method_select='Simple', n_assets=5, lookback='1y', lag='1m')
+    MOM = dict(static=False, method_select='Simple', method_weigh='Equally', sort_ascending=False, n_assets=5, lookback='1y', lag='1w', align_axis=None),
+    PER = dict(static=False, method_select='F-ratio', method_weigh='Equally', sort_ascending=True, n_assets=20, lookback='2m', lag=0, align_axis=None),
+    AWTR= dict(static=True, method_weigh='Equally', align_axis=None), # no method_select arg for static portfolio
+    LIQ = dict(static=True, method_weigh='Equally', align_axis=None),
+    IRP = dict(static=True, method_weigh='Equally', align_axis=None),
+    HANA= dict(static=True, method_weigh='Equally', align_axis=None),
+    FCTR= dict(static=True, method_weigh='Equally', align_axis=None),
+    KRX = dict(static=False,  method_select='Simple', method_weigh='Equally',n_assets=5, lookback='1y', lag='1m', align_axis=None)
 )
 
 # Transaction file
