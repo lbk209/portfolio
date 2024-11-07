@@ -664,7 +664,7 @@ class DataManager():
         if tickers is None:
             asset_names = self._get_tickers(self.universe)
             if (asset_names is None) or len(asset_names) == 0:
-                return print('ERROR: no ticker found')
+                return print('ERROR: Failed to get ticker names')
             else:
                 tickers = list(asset_names.keys())
         else: 
@@ -875,7 +875,7 @@ class DataManager():
         if reset or (asset_names is None):
             asset_names = self._get_tickers(self.universe, tickers=tickers)
             if (asset_names is None) or len(asset_names) == 0:
-                return print('ERROR: no ticker found')
+                return print('ERROR: Failed to get ticker names')
             else:
                 self.asset_names = asset_names
 
@@ -1116,7 +1116,7 @@ class KRXDownloader():
 class StaticPortfolio():
     def __init__(self, df_universe, file=None, path='.', 
                  method_weigh='Equally', lookback=0, lag=0, lookback_w=None, lag_w=None,
-                 days_in_year=246, align_axis=0, assets=None, asset_names=None, name='portfolio',
+                 days_in_year=246, align_axis=None, assets=None, asset_names=None, name='portfolio',
                  cols_record = {'date':'date', 'ast':'asset', 'name':'name', 'prc':'price', 
                                 'trs':'transaction', 'net':'net', 'wgt':'weight', 'wgta':'weight*'},
                  date_format='%Y-%m-%d'
@@ -1351,8 +1351,12 @@ class StaticPortfolio():
             # use purchase prices in the record before possible adjustment of stock prices
             lidx = [df_rec.index.get_level_values(i).unique() for i in range(2)]
             midx = pd.MultiIndex.from_product(lidx).difference(df_rec.index)
-            df_m = (df_prc[lidx[1]].stack().loc[midx]
-                     .rename_axis([col_date, col_ast]).to_frame(col_prc))
+            df_m = (df_prc[lidx[1]]
+                    # fill NaN with zero price to avoid missing assets on some dates when stacking
+                    # it will be removed if no transaction or net 
+                    .fillna(0) 
+                    .stack().loc[midx]
+                    .rename_axis([col_date, col_ast]).to_frame(col_prc))
             if self.asset_names is not None: # add asset names
                 df_m = df_m.join(pd.Series(self.asset_names, name=col_name), on=col_ast)
             df_rec = pd.concat([df_rec, df_m])
@@ -2026,7 +2030,7 @@ class Liquidation():
 
 
 class DynamicPortfolio(StaticPortfolio):
-    def __init__(self, *args, align_axis=1, n_assets=5,
+    def __init__(self, *args, align_axis=None, n_assets=5,
                  method_select='simple', sort_ascending=False, df_additional=None,
                  **kwargs):
         """
@@ -2051,12 +2055,12 @@ class DynamicPortfolio(StaticPortfolio):
             return dict(
                 method_select='f-ratio',
                 sort_ascending=True,
-                align_axis=None
+                #align_axis=None
             )
         elif strategy in ['momentum', 'k-ratio', 'simple']:
             return dict(
                 sort_ascending=False,
-                align_axis=1
+                #align_axis=1
             )
         else:
             return dict()
@@ -4046,7 +4050,7 @@ class PortfolioManager():
         kwa_s = {**kwa_s, 'name':name, 'asset_names':dm.get_names()}
         
         func = StaticPortfolio if static else DynamicPortfolio
-        return func(dm.df_prices, *args, **kwa_s, **kwargs)
+        return func(dm.df_prices, *args, **{**kwa_s, **kwargs})
 
 
     def check_portfolios(self, pf_names=None):
