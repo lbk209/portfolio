@@ -645,7 +645,7 @@ class DataManager():
             return None # error msg printed out by self._upload
         else:
             self.df_prices = df_prices
-            return print('df_prices updated')
+            return print('df_prices loaded')
         
 
     @print_runtime
@@ -735,6 +735,7 @@ class DataManager():
         elif universe.lower() == 'krx':
             func = self._get_tickers_krx
         elif universe.lower() == 'yahoo':
+            tickers = self.df_prices.columns.to_list() if tickers is None else tickers
             func = lambda *a, **k: self._get_tickers_yahoo(tickers, *a, **k)
         else:
             func = lambda **x: None
@@ -1154,7 +1155,6 @@ class PortfolioBuilder():
         self.cols_record = cols_record
         self.date_format = date_format # date str format for record & printing
         
-        self.check_weights = BacktestManager.check_weights
         self.selected = None # data for select, weigh and allocate
         self.df_rec = None # record updated with new transaction
         self.liquidation = Liquidation() # for instance of Liquidation
@@ -1202,7 +1202,7 @@ class PortfolioBuilder():
         # search transaction date from universe
         kwa = dict(date=date, assets=assets)
         date = self._get_data(0, 0, **kwa).index.max()
-        df_data = self._get_data(lookback, lag, **kwa)  
+        df_data = self._get_data(lookback, lag, **kwa)
         dts = get_date_minmax(df_data, self.date_format)
         info_date = f'from {dts[0]} to {dts[1]}'
         
@@ -1238,8 +1238,8 @@ class PortfolioBuilder():
         else: # default all for static
             rank = pd.Series(1, index=df_data.columns)
             n_assets = rank.count()
-            method = 'All'
-
+            method = 'All' if assets is None else 'Selected'
+                
         assets = rank.index
         self.selected = {'date': date, 'assets': assets, 'rank': rank} 
         print(f'{n_assets} assets selected by {method} {info_date}')
@@ -1778,6 +1778,10 @@ class PortfolioBuilder():
         return df_rec.loc[idx]
 
 
+    def check_weights(self, *args, **kwargs):
+        return BacktestManager.check_weights(*args, **kwargs)
+        
+
     def check_additional(self, date=None, df_additional=None, 
                          stats=['mean', 'median', 'std'], 
                          plot=False, figsize=(8,5), title='History of Additional data', legend=True,
@@ -2002,7 +2006,7 @@ class PortfolioBuilder():
         date = df_data.index.max()
         dt1 = date - self._get_date_offset(lag, 'weeks')
         dt0 = dt1 - self._get_date_offset(lookback, 'month')
-        return df_data.loc[dt0:dt1] 
+        return df_data.loc[dt0:dt1].dropna(axis=1)
     
 
 class Liquidation():
@@ -2012,7 +2016,7 @@ class Liquidation():
     def prepare(self, record, assets_to_sell=None, hold=False):
         """
         convert assets_to_sell to dict of tickers to sell price
-        record: StaticPortfolio.record
+        record: PortfolioBuilder.record
         assets_to_sell: str of a ticker; list of tickers; dict of the tickers to its sell price
         hold:     
         - If set to True, all assets in `assets_to_sell` will be held and not liquidated.    
@@ -3340,9 +3344,12 @@ class FinancialRatios():
         
 
     def download(self, tickers, start_date, end_date=None, 
-                 freq='m', close_today=False, save=True,
+                 freq='daily', close_today=False, save=True,
                  # args for TimeTracker.pause
                  interval=50, pause_duration=2, msg=False):
+        """
+        freq: day, month, year
+        """
         col_date = self.cols_index['date']
         col_ticker = self.cols_index['ticker']
         date_format = self.date_format
@@ -3354,7 +3361,7 @@ class FinancialRatios():
         df_ratios = pd.DataFrame()
         try:
             for ticker in tqdm(tickers):
-                df = pyk.get_market_fundamental(start_date, end_date, ticker, freq=freq)
+                df = pyk.get_market_fundamental(start_date, end_date, ticker, freq=freq[0].lower())
                 df = df.assign(**{col_ticker:ticker})
                 df_ratios = pd.concat([df_ratios, df])
                 tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
@@ -3897,7 +3904,7 @@ class BatchCV():
 
 class PortfolioManager():
     """
-    pipeline for StaticPortfolio and DynamicPortfolio from params to performance
+    manage multiple portfolios 
     """
     def __init__(self, pf_names=None):
         """
@@ -3910,13 +3917,13 @@ class PortfolioManager():
     
     def load(self, pf_names=None):
         """
+        loading multiple portfolios (no individual args except for PortfolioData)
         pf_names: list of portfolio names
         """
         pf_dict = dict()
         for name in pf_names:
             print(f'{name}:')
-            # days_in_year only for backtesting
-            pf_dict[name] = PortfolioManager.create_portfolio(name, days_in_year=-1)
+            pf_dict[name] = PortfolioManager.create_portfolio(name)
             print()
         return pf_dict
 
@@ -3967,7 +3974,7 @@ class PortfolioManager():
     def create_portfolio(name, *args, **kwargs):
         """
         name: portfolio name
-        args, kwargs: args & kwargs for StaticPortfolio or DynamicPortfolio
+        args, kwargs: additional args & kwargs for PortfolioBuilder
         """
         # get args of portfolios
         pfd = PortfolioData()
@@ -3978,13 +3985,8 @@ class PortfolioManager():
         
         # get the instance of *Portfolio
         kwa_s = pfd.get(name, strategy=True, universe=False)
-        static = [v for k,v in kwa_s.items() if k == 'static']
-        static = static[0] if len(static) > 0 else True
-        kwa_s = {k:v for k,v in kwa_s.items() if k != 'static'}
         kwa_s = {**kwa_s, 'name':name, 'asset_names':dm.get_names()}
-        
-        func = StaticPortfolio if static else DynamicPortfolio
-        return func(dm.df_prices, *args, **{**kwa_s, **kwargs})
+        return PortfolioBuilder(dm.df_prices, *args, **{**kwa_s, **kwargs})
 
 
     def check_portfolios(self, pf_names=None):
