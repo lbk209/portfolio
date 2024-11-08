@@ -3694,26 +3694,36 @@ class FinancialRatios():
             return False
 
 
-    def util_reshape(self, df_ratios=None, stack=True, swaplevel=True):
+    def util_reshape(self, df_data=None, stack=True, swaplevel=True):
         """
         Converts price data from **DataManager** 
          to f-ratios in **FinancialRatios** format, or vice versa 
-        df: price of f-ratios
+        df_data: price or f-ratios
         """
         cols_index = self.cols_index
         col_ticker = cols_index['ticker']
         col_date = cols_index['date']
-        df_ratios = self._check_var(df_ratios, self.df_ratios)
-        if df_ratios is None:
+
+        df_ratios = self.df_ratios
+        if df_data is None:
+            df_data = df_ratios
+        else:
+            if isinstance(df_data, str) and df_ratios is not None:
+                try:
+                    df_data = df_ratios[df_data]
+                except KeyError as e:
+                    return print(f'ERROR: No {df_data} in ratio')
+                
+        if df_data is None:
             return print('ERROR: load or set ratios first')
             
         try:
             if stack: # convert to DataManager format
-                df = df_ratios.stack()
+                df = df_data.stack()
                 if swaplevel:
                     df = df.swaplevel().rename_axis([col_ticker,col_date]).sort_index()
             else: # convert to FinancialRatios format
-                df = df_ratios.unstack(0)
+                df = df_data.unstack(0)
         except Exception as e:
             return print(f'ERROR: {e}')
 
@@ -3929,35 +3939,24 @@ class PortfolioManager():
 
 
     @staticmethod
-    def check_names(space=None):
+    def review(space=None):
         pfd = PortfolioData()
-        space = 'P' if space is None else space[0].upper()
-        if space == 'U':
-            space = 'Universes'
-            result = pfd.universes.keys()
-        elif space == 'S':
-            space = 'Strategies'
-            result = pfd.strategies.keys()
-        else: # default portfolio names
-            space = 'Portfolios'
-            result = pfd.portfolios.keys()
-        return print(f"{space}: {', '.join(result)}")
-
+        return pfd.review(space)
     
     @staticmethod
-    def check_arguments(pf_name, strategy=False, universe=False):
+    def review_portfolio(pf_name, strategy=False, universe=False):
         pfd = PortfolioData()
-        return pfd.get(pf_name, strategy=strategy, universe=universe)
+        return pfd.review_portfolio(pf_name, strategy=strategy, universe=universe)
 
     @staticmethod
-    def check_universe(name):
+    def review_universe(name):
         pfd = PortfolioData()
-        return pfd.get_universe(name)
+        return pfd.review_universe(name)
 
     @staticmethod
-    def check_strategy(name):
+    def review_strategy(name):
         pfd = PortfolioData()
-        return pfd.get_strategy(name)
+        return pfd.review_strategy(name)
 
     
     @staticmethod
@@ -3966,7 +3965,7 @@ class PortfolioManager():
         args, kwargs: args & kwargs for DataManager
         """
         pfd = PortfolioData()
-        kwa_u = pfd.get_universe(name)
+        kwa_u = pfd.review_universe(name)
         return DataManager(*args, **{**kwa_u, **kwargs})
 
     
@@ -3980,11 +3979,11 @@ class PortfolioManager():
         pfd = PortfolioData()
         
         # get the instance of DataManager
-        kwa_p = pfd.get(name)
+        kwa_p = pfd.review_portfolio(name, strategy=False, universe=False)
         dm = PortfolioManager.create_universe(kwa_p['universe'])
         
         # get the instance of *Portfolio
-        kwa_s = pfd.get(name, strategy=True, universe=False)
+        kwa_s = pfd.review_portfolio(name, strategy=True, universe=False)
         kwa_s = {**kwa_s, 'name':name, 'asset_names':dm.get_names()}
         return PortfolioBuilder(dm.df_prices, *args, **{**kwa_s, **kwargs})
 
