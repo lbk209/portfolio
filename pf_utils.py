@@ -4003,41 +4003,74 @@ class PortfolioManager():
     def plot(self, pf_names=None, start_date=None, end_date=None, percent=True,
              figsize=(8,4), legend=True, 
              colors = plt.cm.Spectral):
+        """
+        start_date: date of beginning of the return plot
+        end_date: date to calc return
+        """
         # check portfolios
         pf_names = self.check_portfolios(pf_names)
         if pf_names is None:
             return None
-
+        else: # cacl portfolio return for title
+            df = self._valuate(pf_names, end_date)
+            r = df.loc['Total'].to_dict()
+            totr = r['Return']
+            title = f"Total Return: {round(totr,-3):,.0f} ({r['Percentage']:.1%})"
+    
         # individual return
         dfs = [self.portfolios[x].get_profit_history(percent=percent, msg=False) for x in pf_names]
         dfs = [v.rename(k) for k,v in zip(pf_names, dfs) if v is not None]
         ax1 = pd.concat(dfs, axis=1).ffill().loc[start_date:end_date].plot(alpha=0.5)
         ax1.set_prop_cycle(color=colors(np.linspace(0,1,len(pf_names))))
+        ax1.set_ylabel('Portfolio Returns (%)')
         
         # total profit/loss
+        color_tot = 'gray'
         dfs = [self.portfolios[x].get_profit_history(percent=False, msg=False) for x in pf_names]
         ax2 = ax1.twinx()
-        _ = (pd.concat(dfs, axis=1).ffill().sum(axis=1).rename('Total')
-               .loc[start_date:end_date]
-               .plot(ax=ax2, c='gray', ls='--', title='Portfolio Returns', figsize=figsize))
+        df_ttl = (pd.concat(dfs, axis=1).ffill().sum(axis=1).rename('Total')
+              .loc[start_date:end_date])
+        _ = df_ttl.plot(ax=ax2, c=color_tot, ls='--', title=title, figsize=figsize)
+        ax2.set_ylabel('Total Return')
         _ = set_matplotlib_twins(ax2, ax1, legend=legend)
+
+        # return marker
+        _ = ax2.plot(df_ttl.index[-1], totr, 
+                     markeredgecolor=color_tot, markersize=10, alpha=0.6,
+                     marker=6 if totr >0 else 7,  
+                     markerfacecolor= 'blue' if totr >0 else 'red')
         
         
     def valuate(self, pf_names=None, date=None):
         pf_names = self.check_portfolios(pf_names)
         if pf_names is None:
             return None
-            
-        print('Profit/Loss')
+        else:
+            return self._valuate(pf_names, date)
+
+
+    def _valuate(self, pf_names, date):
+        """
+        calc gain/loss and rate of return for each portfolio
+        pf_names: list of portfolio names
+        """
+        l_ret, l_pct = list(), list()
         val, cflow = 0, 0
         for name in pf_names:
             pf = self.portfolios[name]
             try:
                 v, c = pf.valuate(date=date, plot=False, print_msg=False)
+                l_ret.append(v - c)
+                l_pct.append(v/c - 1)
+                val += v
+                cflow += c
             except Exception as e:
                 print(f'ERROR:({name}) {e}')
-            print(f'{name:<5}: {v/c-1:.1%}')
-            val += v
-            cflow += c
-        if cflow != c:
-            print(f'Total: {val/cflow-1:.1%} ({val-cflow:,})')
+        index = pf_names.copy()
+        #if cflow != c: # no total if one portfolio given
+        if True: # always add total for convenience
+            index.append('Total')
+            l_ret.append(val-cflow)
+            l_pct.append(val/cflow-1)
+        data = {'Return':l_ret, 'Percentage':l_pct}
+        return pd.DataFrame(data=data, index=index)
