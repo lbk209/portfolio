@@ -645,7 +645,7 @@ class DataManager():
             return None # error msg printed out by self._upload
         else:
             self.df_prices = df_prices
-            return print('df_prices updated')
+            return print('df_prices loaded')
         
 
     @print_runtime
@@ -735,6 +735,7 @@ class DataManager():
         elif universe.lower() == 'krx':
             func = self._get_tickers_krx
         elif universe.lower() == 'yahoo':
+            tickers = self.df_prices.columns.to_list() if tickers is None else tickers
             func = lambda *a, **k: self._get_tickers_yahoo(tickers, *a, **k)
         else:
             func = lambda **x: None
@@ -1113,10 +1114,11 @@ class KRXDownloader():
             
 
 
-class StaticPortfolio():
-    def __init__(self, df_universe, file=None, path='.', 
-                 method_weigh='Equally', lookback=0, lag=0, lookback_w=None, lag_w=None,
-                 days_in_year=246, align_axis=None, assets=None, asset_names=None, name='portfolio',
+class PortfolioBuilder():
+    def __init__(self, df_universe, file=None, path='.', name='portfolio',
+                 method_select='all', sort_ascending=False, n_assets=0, lookback=0, lag=0, assets=None, 
+                 method_weigh='Equally', weights=None, lookback_w=None, lag_w=None, 
+                 df_additional=None, asset_names=None, 
                  cols_record = {'date':'date', 'ast':'asset', 'name':'name', 'prc':'price', 
                                 'trs':'transaction', 'net':'net', 'wgt':'weight', 'wgta':'weight*'},
                  date_format='%Y-%m-%d'
@@ -1125,27 +1127,32 @@ class StaticPortfolio():
         file: file of transaction history. 
               Do not update the asset prices with the actual purchase price, 
                as the new df_universe may be adjusted with updated prices after the purchase.
+        method_select: 'all', 'selected' for static, 'momentum', 'k-ratio', 'f-ratio' for dynamic
+        lookback_w, lag_w: for weigh. reuse those for select if None
+        sort_ascending: set to False for momentum & k-ratio, True for PER of f-ratio
         asset_names: dict of ticker to name
         """
-        bm = BacktestManager(df_universe, days_in_year=days_in_year, align_axis=align_axis)
-        self.df_universe = bm.df_assets
-        self._check_weights = bm._check_weights
-
+        self.df_universe = df_universe
         # set temp name for self._load_transaction
         file = set_filename(file, default='tmp.csv')
         file = self._retrieve_transaction_file(file, path)
         self.file = file
         self.path = path
         
-        self.cols_record = cols_record
+        self.method_select = method_select
+        self.sort_ascending = sort_ascending
+        self.n_assets = n_assets
         self.lookback = lookback # period for select
         self.lag = lag # days
+        self.assets = assets # see select
+        self.method_weigh = method_weigh
+        self.weights = weights
         self.lookback_w = self._check_var(lookback_w, self.lookback) # for weigh
         self.lag_w = self._check_var(lag_w, self.lag)
-        self.method_weigh = method_weigh
+        self.df_additional = df_additional
         self.asset_names = asset_names
-        self.assets = assets # see select
         self.name = name # portfolio name
+        self.cols_record = cols_record
         self.date_format = date_format # date str format for record & printing
         
         self.selected = None # data for select, weigh and allocate
@@ -1169,41 +1176,94 @@ class StaticPortfolio():
                 record = self._update_transaction_dates(record, self.df_universe, self.cols_record['date'])
                 #print('Transaction dates updated for profit/loss on the dates')
         return record
-        
-        
-    def select(self, date=None, assets=None):
+
+
+    def select(self, date=None, method=None, sort_ascending=None, 
+               n_assets=None, lookback=None, lag=None, assets=None,  
+               df_additional=None):
         """
-        define data range for weigh with all equities
         date: transaction date
+        method: all, selected, momentum, k-ratio, f-ratio
+        assets: list of assets in the universe
+        df_additional: ex) df_ratio for f-ratio method
         """
+        method = self._check_var(method, self.method_select)
+        n_assets = self._check_var(n_assets, self.n_assets)
+        lookback = self._check_var(lookback, self.lookback)
+        lag = self._check_var(lag, self.lag)
         assets = self._check_var(assets, self.assets)
+        sort_ascending = self._check_var(sort_ascending, self.sort_ascending)
+        df_additional = self._check_var(df_additional, self.df_additional)
+
+        if (n_assets is not None) and (assets is not None):
+            if n_assets > len(assets):
+                return print('ERROR: n_assets greater than length of assets')
+        
         # search transaction date from universe
         kwa = dict(date=date, assets=assets)
-        date = self._get_data(0, 0, **kwa).index.max() 
-        # get data for select procedure
-        df_data = self._get_data(self.lookback, self.lag, **kwa)
+        date = self._get_data(0, 0, **kwa).index.max()
+        df_data = self._get_data(lookback, lag, **kwa)
         dts = get_date_minmax(df_data, self.date_format)
-        n_assets = df_data.columns.size # all assets in the universe selected
-        print(f'{n_assets} assets from {dts[0]} to {dts[1]} prepared for weight analysis')
-        # date is datetime, data is dataframe
-        self.selected = {'date': date, 'assets': df_data.columns} 
-        return None
+        info_date = f'from {dts[0]} to {dts[1]}'
+        
+        method = method.lower()
+        if method == 'k-ratio':
+            rank = (df_data.pct_change(1).apply(lambda x: calc_kratio(x.dropna()))
+                    .sort_values(ascending=sort_ascending)[:n_assets])
+            method = 'K-ratio'
+        elif method == 'f-ratio':
+            if df_additional is None:
+                return print('ERROR: no df_additional available')
+
+            try:
+                dts = df_data.index.strftime(self.date_format) # cast to str for err msg
+                stat = df_additional.loc[dts].mean()
+            except KeyError as e:
+                return print(f'ERROR: no ratio for {e}')
+                
+            stat = stat.loc[stat > 0]
+            if len(stat) == 0:
+                return print('ERROR: check df_additional')
+            
+            rank = stat.sort_values(ascending=sort_ascending)[:n_assets]
+            if rank.index.difference(df_data.columns).size > 0:
+                print('ERROR: check selected assets if price data given')
+            method = 'Financial Ratio'
+        elif method == 'momentum':
+            #rank = bt.ffn.calc_total_return(df_data).sort_values(ascending=False)[:n_assets]
+            # no difference with calc_total_return as align_axis=1
+            rank = (df_data.apply(lambda x: x.dropna().iloc[-1]/x.dropna().iloc[0]-1)
+                    .sort_values(ascending=sort_ascending)[:n_assets])
+            method = 'Total return'
+        else: # default all for static
+            rank = pd.Series(1, index=df_data.columns)
+            n_assets = rank.count()
+            method = 'All' if assets is None else 'Selected'
+                
+        assets = rank.index
+        self.selected = {'date': date, 'assets': assets, 'rank': rank} 
+        print(f'{n_assets} assets selected by {method} {info_date}')
+        return rank    
 
     
-    def weigh(self, method=None, weights=None):
+    def weigh(self, method=None, weights=None, lookback=None, lag=None):
         """
         method: ERC, InvVol, Equally, Specified
         weights: str, list of str, dict, or None. Used only for 'Specified' method
         """
         selected = self.selected
         method = self._check_var(method, self.method_weigh)
+        weights = self._check_var(weights, self.weights)
+        lookback = self._check_var(lookback, self.lookback_w)
+        lag = self._check_var(lag, self.lag_w)
+        
         if selected is None:
             return print('ERROR')
         else:
             date = selected['date']
             assets = selected['assets']
 
-        df_data = self._get_data(self.lookback_w, self.lag_w, date=date, assets=assets)
+        df_data = self._get_data(lookback, lag, date=date, assets=assets)
         if method.lower() == 'erc':
             weights = bt.ffn.calc_erc_weights(df_data.pct_change(1).dropna())
             method = 'ERC'
@@ -1440,16 +1500,17 @@ class StaticPortfolio():
             self.plot(msg_cr=False, **kw_plot)
         else:
             return (val, cflow)
-    
 
-    def transaction_pipeline(self, date=None, method_weigh=None, weights=None,
-                             capital=10000000, commissions=0, 
+
+    def transaction_pipeline(self, date=None, capital=10000000, commissions=0, 
                              record=None, save=False, **kw_liq):
         """
         kw_liq: kwargs for Liquidation.prepare
-        """
+        """        
         self.liquidation.prepare(self.record, **kw_liq)
-        self.select(date=date)
+        rank = self.select(date=date)
+        if rank is None:
+            return None # rank is not None even for static portfolio (method_select='all')
         
         if not self.check_new_transaction():
             # calc profit at the last transaction
@@ -1457,14 +1518,14 @@ class StaticPortfolio():
             _ = self.valuate(dt, plot=False)
             return self.record
 
-        weights = self.weigh(method_weigh, weights)
+        weights = self.weigh()
         if weights is None:
             return None
-            
+        
         df_net = self.allocate(capital=capital, commissions=commissions)
         if df_net is None:
             return None
-        
+            
         df_rec = self.transaction(df_net, record=record)
         if df_rec is not None: # new transaction updated
             if save:
@@ -1473,7 +1534,7 @@ class StaticPortfolio():
                 print('Set save=True to save transaction record')
         else:
             print('Nothing to save')
-        return df_rec
+        return df_rec    
 
 
     def get_value_history(self):
@@ -1715,6 +1776,56 @@ class StaticPortfolio():
         else:
             pass
         return df_rec.loc[idx]
+
+
+    def check_weights(self, *args, **kwargs):
+        return BacktestManager.check_weights(*args, **kwargs)
+        
+
+    def check_additional(self, date=None, df_additional=None, 
+                         stats=['mean', 'median', 'std'], 
+                         plot=False, figsize=(8,5), title='History of Additional data', legend=True,
+                         market_label='Market', market_color='grey', market_alpha=0.5, market_line='--'):
+        """
+        check df_additional
+        date: a transaction date from record
+        """
+        df_additional = self._check_var(df_additional, self.df_additional)
+        if df_additional is None:
+            return print('ERROR: no df_additional available')
+    
+        df_rec = self._check_result(False)
+        if df_rec is None:
+            print('No record')
+            assets = None
+        else:
+            # Retrieve the date and assets for the transaction closest to the arg date
+            df = df_rec.loc[:date]
+            if len(df) > 0:
+                date = df.index.get_level_values(0).max() 
+                assets = df.loc[date].index.to_list()
+            else:
+                # date is not None since df is df_rec then
+                print(f'No record on {date}')
+                assets = None
+        df_all = df_additional.loc[date:]
+        if len(df_all) == 0:
+            return print('ERROR: update df_additional first')
+    
+        try:
+            df_res = None if assets is None else df_all[assets] 
+        except KeyError as e:
+            return print(f'ERROR: KeyError {e}')
+    
+        if plot:
+            ax1 = (df_all.mean(axis=1)
+                   .plot(figsize=figsize, title=title, label=market_label, 
+                         alpha=market_alpha, c=market_color, linestyle=market_line))
+            if df_res is not None:
+                ax2 = df_res.plot(ax=ax1.twinx())
+                _ = set_matplotlib_twins(ax1, ax2, legend=legend)
+    
+        return df_res
         
         
     def _calc_cashflow_history(self, record):
@@ -1895,7 +2006,7 @@ class StaticPortfolio():
         date = df_data.index.max()
         dt1 = date - self._get_date_offset(lag, 'weeks')
         dt0 = dt1 - self._get_date_offset(lookback, 'month')
-        return df_data.loc[dt0:dt1] 
+        return df_data.loc[dt0:dt1].dropna(axis=1)
     
 
 class Liquidation():
@@ -1905,7 +2016,7 @@ class Liquidation():
     def prepare(self, record, assets_to_sell=None, hold=False):
         """
         convert assets_to_sell to dict of tickers to sell price
-        record: StaticPortfolio.record
+        record: PortfolioBuilder.record
         assets_to_sell: str of a ticker; list of tickers; dict of the tickers to its sell price
         hold:     
         - If set to True, all assets in `assets_to_sell` will be held and not liquidated.    
@@ -2029,179 +2140,6 @@ class Liquidation():
 
 
 
-class DynamicPortfolio(StaticPortfolio):
-    def __init__(self, *args, align_axis=None, n_assets=5,
-                 method_select='simple', sort_ascending=False, df_additional=None,
-                 **kwargs):
-        """
-        method_select: 'simple momentum', 'k-ratio', 'f-ratio'
-        lookback_w, lag_w: for weigh. reuse those for select if None
-        sort_ascending: set to False for momentum & k-ratio, True for PER of f-ratio
-        """
-        super().__init__(*args, align_axis=align_axis, **kwargs)
-        self.method_select = method_select
-        self.sort_ascending = sort_ascending
-        self.df_additional = df_additional
-        self.n_assets = n_assets
-
-
-    @staticmethod
-    def check_init_args(strategy):
-        """
-        strategy: per, pbr, momentum(or simple), k-ratio
-        """
-        strategy = strategy.lower()
-        if strategy in ['per', 'pbr']:
-            return dict(
-                method_select='f-ratio',
-                sort_ascending=True,
-                #align_axis=None
-            )
-        elif strategy in ['momentum', 'k-ratio', 'simple']:
-            return dict(
-                sort_ascending=False,
-                #align_axis=1
-            )
-        else:
-            return dict()
-        
-    
-    def select(self, date=None, n_assets=None, method=None, 
-               sort_ascending=None, df_additional=None):
-        """
-        date: transaction date
-        method: simple, k-ratio, f-ratio
-        df_additional: ex) df_ratio for f-ratio method
-        """
-        method = self._check_var(method, self.method_select)
-        sort_ascending = self._check_var(sort_ascending, self.sort_ascending)
-        df_additional = self._check_var(df_additional, self.df_additional)
-        n_assets = self._check_var(n_assets, self.n_assets)
-
-        # search transaction date from universe
-        date = self._get_data(0, 0, date=date).index.max()
-        df_data = self._get_data(self.lookback, self.lag, date=date)  
-        dts = get_date_minmax(df_data, self.date_format)
-        info_date = f'from {dts[0]} to {dts[1]}'
-        
-        method = method.lower()
-        if method == 'k-ratio':
-            rank = (df_data.pct_change(1).apply(lambda x: calc_kratio(x.dropna()))
-                    .sort_values(ascending=sort_ascending)[:n_assets])
-            method = 'K-ratio'
-        elif method == 'f-ratio':
-            if df_additional is None:
-                return print('ERROR: no df_additional available')
-
-            try:
-                dts = df_data.index.strftime(self.date_format) # cast to str for err msg
-                stat = df_additional.loc[dts].mean()
-            except KeyError as e:
-                return print(f'ERROR: no ratio for {e}')
-                
-            stat = stat.loc[stat > 0]
-            if len(stat) == 0:
-                return print('ERROR: check df_additional')
-            
-            rank = stat.sort_values(ascending=sort_ascending)[:n_assets]
-            if rank.index.difference(df_data.columns).size > 0:
-                print('ERROR: check selected assets if price data given')
-            method = 'Financial Ratio'
-        else: # default simple
-            #rank = bt.ffn.calc_total_return(df_data).sort_values(ascending=False)[:n_assets]
-            # no difference with calc_total_return as align_axis=1
-            rank = (df_data.apply(lambda x: x.dropna().iloc[-1]/x.dropna().iloc[0]-1)
-                    .sort_values(ascending=sort_ascending)[:n_assets])
-            method = 'Total return'
-
-        assets = rank.index
-        self.selected = {'date': date, 'assets': assets, 'rank': rank} 
-        print(f'{n_assets} assets selected by {method} {info_date}')
-        return rank
-
-    
-    def transaction_pipeline(self, date=None, n_assets=None, 
-                             method_select=None, method_weigh=None, weights=None,
-                             sort_ascending=None, df_additional=None,
-                             capital=10000000, commissions=0, 
-                             record=None, save=False, **kw_liq):
-        n_assets = self._check_var(n_assets, self.n_assets)
-        self.liquidation.prepare(self.record, **kw_liq)
-        rank = self.select(date=date, n_assets=n_assets, method=method_select,
-                           sort_ascending=sort_ascending, df_additional=df_additional)
-        if rank is None:
-            return None
-        
-        if not self.check_new_transaction():
-            # calc profit at the last transaction
-            dt = self.selected['date'] # selected defined by self.select
-            _ = self.valuate(dt, plot=False)
-            return self.record
-
-        _ = self.weigh(method_weigh, weights)
-        
-        df_net = self.allocate(capital=capital, commissions=commissions)
-        if df_net is None:
-            return None
-            
-        df_rec = self.transaction(df_net, record=record)
-        if df_rec is not None: # new transaction updated
-            if save:
-                self.save_transaction(df_rec)
-            else:
-                print('Set save=True to save transaction record')
-        else:
-            print('Nothing to save')
-        return df_rec
-
-
-    def check_additional(self, date=None, df_additional=None, 
-                         stats=['mean', 'median', 'std'], 
-                         plot=False, figsize=(8,5), title='History of Additional data', legend=True,
-                         market_label='Market', market_color='grey', market_alpha=0.5, market_line='--'):
-        """
-        check df_additional
-        date: a transaction date from record
-        """
-        df_additional = self._check_var(df_additional, self.df_additional)
-        if df_additional is None:
-            return print('ERROR: no df_additional available')
-    
-        df_rec = self._check_result(False)
-        if df_rec is None:
-            print('No record')
-            assets = None
-        else:
-            # Retrieve the date and assets for the transaction closest to the arg date
-            df = df_rec.loc[:date]
-            if len(df) > 0:
-                date = df.index.get_level_values(0).max() 
-                assets = df.loc[date].index.to_list()
-            else:
-                # date is not None since df is df_rec then
-                print(f'No record on {date}')
-                assets = None
-        df_all = df_additional.loc[date:]
-        if len(df_all) == 0:
-            return print('ERROR: update df_additional first')
-    
-        try:
-            df_res = None if assets is None else df_all[assets] 
-        except KeyError as e:
-            return print(f'ERROR: KeyError {e}')
-    
-        if plot:
-            ax1 = (df_all.mean(axis=1)
-                   .plot(figsize=figsize, title=title, label=market_label, 
-                         alpha=market_alpha, c=market_color, linestyle=market_line))
-            if df_res is not None:
-                ax2 = df_res.plot(ax=ax1.twinx())
-                _ = set_matplotlib_twins(ax1, ax2, legend=legend)
-    
-        return df_res
-
-
-
 class BacktestManager():
     def __init__(self, df_assets, name_prfx='Portfolio',
                  align_axis=0, fill_na=True, metrics=METRICS,  
@@ -2263,8 +2201,8 @@ class BacktestManager():
             var_arg = var_self
         return var_arg
 
-
-    def _check_weights(self, weights, dfs, none_weight_is_error=False):
+    @staticmethod
+    def check_weights(weights, dfs, none_weight_is_error=False):
         """
         return equal weights if weights is str or list
         weights: str, list of str, dict, or None
@@ -2519,7 +2457,7 @@ class BacktestManager():
                   which makes self.portfolios only when running cross-validate
         """
         dfs = self.df_assets
-        weights = self._check_weights(weights, dfs)
+        weights = BacktestManager.check_weights(weights, dfs)
         name = self._check_name(name)
         initial_capital = self._check_var(initial_capital, self.initial_capital)
         commissions = self._check_var(commissions, self.commissions)
@@ -2594,7 +2532,7 @@ class BacktestManager():
                 print(f'WARNING: name set to {name}')
         
         dfs = self.align_period(dfs, axis=self.align_axis, fill_na=self.fill_na, print_msg2=False)
-        weights = self._check_weights(weights, dfs)
+        weights = BacktestManager.check_weights(weights, dfs)
         weigh = {'weigh':'specified', 'weights':weights}
         select = {'select':'all', 'lookback':lookback, 'lag':lag}
         initial_capital = self._check_var(initial_capital, self.initial_capital)
@@ -3406,9 +3344,12 @@ class FinancialRatios():
         
 
     def download(self, tickers, start_date, end_date=None, 
-                 freq='m', close_today=False, save=True,
+                 freq='daily', close_today=False, save=True,
                  # args for TimeTracker.pause
                  interval=50, pause_duration=2, msg=False):
+        """
+        freq: day, month, year
+        """
         col_date = self.cols_index['date']
         col_ticker = self.cols_index['ticker']
         date_format = self.date_format
@@ -3420,7 +3361,7 @@ class FinancialRatios():
         df_ratios = pd.DataFrame()
         try:
             for ticker in tqdm(tickers):
-                df = pyk.get_market_fundamental(start_date, end_date, ticker, freq=freq)
+                df = pyk.get_market_fundamental(start_date, end_date, ticker, freq=freq[0].lower())
                 df = df.assign(**{col_ticker:ticker})
                 df_ratios = pd.concat([df_ratios, df])
                 tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
@@ -3963,7 +3904,7 @@ class BatchCV():
 
 class PortfolioManager():
     """
-    pipeline for StaticPortfolio and DynamicPortfolio from params to performance
+    manage multiple portfolios 
     """
     def __init__(self, pf_names=None):
         """
@@ -3976,13 +3917,13 @@ class PortfolioManager():
     
     def load(self, pf_names=None):
         """
+        loading multiple portfolios (no individual args except for PortfolioData)
         pf_names: list of portfolio names
         """
         pf_dict = dict()
         for name in pf_names:
             print(f'{name}:')
-            # days_in_year only for backtesting
-            pf_dict[name] = PortfolioManager.create_portfolio(name, days_in_year=-1)
+            pf_dict[name] = PortfolioManager.create_portfolio(name)
             print()
         return pf_dict
 
@@ -4033,7 +3974,7 @@ class PortfolioManager():
     def create_portfolio(name, *args, **kwargs):
         """
         name: portfolio name
-        args, kwargs: args & kwargs for StaticPortfolio or DynamicPortfolio
+        args, kwargs: additional args & kwargs for PortfolioBuilder
         """
         # get args of portfolios
         pfd = PortfolioData()
@@ -4044,13 +3985,8 @@ class PortfolioManager():
         
         # get the instance of *Portfolio
         kwa_s = pfd.get(name, strategy=True, universe=False)
-        static = [v for k,v in kwa_s.items() if k == 'static']
-        static = static[0] if len(static) > 0 else True
-        kwa_s = {k:v for k,v in kwa_s.items() if k != 'static'}
         kwa_s = {**kwa_s, 'name':name, 'asset_names':dm.get_names()}
-        
-        func = StaticPortfolio if static else DynamicPortfolio
-        return func(dm.df_prices, *args, **{**kwa_s, **kwargs})
+        return PortfolioBuilder(dm.df_prices, *args, **{**kwa_s, **kwargs})
 
 
     def check_portfolios(self, pf_names=None):

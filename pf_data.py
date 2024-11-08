@@ -7,7 +7,7 @@ UNIVERSES = dict(
     UV_K200 = ['kospi200', 'kospi200_prices', 'price'],
     UV_KRX = ['krx', 'krx_prices', 'price'],
     UV_LIQ = ['krx', 'krx_liq_prices', 'price'],
-    UV_AWTR = ['etf', 'etfs_weather', 'price'],
+    UV_WTR = ['etf', 'etfs_weather', 'price'],
     UV_ETF = ['etf', 'etfs_all', 'price'],
     UV_IRP = ['file', 'funds_irp', 'rate'],
     UV_HANA = ['file', 'funds_kebhana', 'rate'],
@@ -21,21 +21,21 @@ UNIVERSES = {k: {**v, 'daily':False} if k in MONTHLY else v for k,v in UNIVERSES
 
 # Portfolio strategy (kwargs of PotfolioManager)
 STRATEGIES = dict(
-    MOM = dict(static=False, method_select='Simple', method_weigh='Equally', sort_ascending=False, n_assets=5, lookback='1y', lag='1w', align_axis=None),
-    PER = dict(static=False, method_select='F-ratio', method_weigh='Equally', sort_ascending=True, n_assets=20, lookback='2m', lag=0, align_axis=None),
-    AWTR= dict(static=True, method_weigh='Equally', align_axis=None), # no method_select arg for static portfolio
-    LIQ = dict(static=True, method_weigh='Equally', align_axis=None),
-    IRP = dict(static=True, method_weigh='Equally', align_axis=None),
-    HANA= dict(static=True, method_weigh='Equally', align_axis=None),
-    FCTR= dict(static=True, method_weigh='Equally', align_axis=None),
-    KRX = dict(static=False,  method_select='Simple', method_weigh='Equally',n_assets=5, lookback='1y', lag='1m', align_axis=None)
+    MOM = dict(method_select='Momentum', method_weigh='Equally', sort_ascending=False, n_assets=5, lookback='1y', lag='1w'),
+    PER = dict(method_select='F-ratio', method_weigh='Equally', sort_ascending=True, n_assets=20, lookback='2m', lag=0),
+    WTR = dict(method_select='All', method_weigh='Equally'),
+    LIQ = dict(method_select='Selected', method_weigh='Equally'),
+    IRP = dict(method_select='Selected', method_weigh='Equally'),
+    HANA= dict(method_select='Selected', method_weigh='Equally'),
+    FCTR= dict(method_select='Selected', method_weigh='Equally'),
+    KRX = dict(method_select='Momentum', method_weigh='Equally', sort_ascending=False, n_assets=5, lookback='1y', lag='1m')
 )
 
 # Transaction file
 RECORDS = dict(
     MOM = 'pf_k200_momentum',
     PER = 'pf_k200_per',
-    AWTR= 'pf_awtr_static',
+    WTR = 'pf_wtr_static',
     LIQ = 'pf_liq_static',
     IRP = 'pf_irp_static',
     HANA= 'pf_hana_static',
@@ -49,11 +49,11 @@ STRATEGIES = {k: {**STRATEGIES[k], 'file':RECORDS[k], 'path':path_tran} for k,v 
 PORTFOLIOS = [
     ('MOM', 'UV_K200'), 
     ('PER', 'UV_K200'), 
-    ('AWTR', 'UV_AWTR'), 
+    ('WTR', 'UV_WTR'), # modified all weather
     ('LIQ', 'UV_LIQ'), 
     ('IRP', 'UV_IRP'), 
     ('HANA', 'UV_HANA'), 
-    ('FCTR', 'UV_FCTR'),
+    ('FCTR', 'UV_FCTR'), # factor intesting with etf
     ('KRX', 'UV_KRX') # for testing
 ]
 PORTFOLIOS = {x[0]: {'strategy':x[0], 'universe':x[1]} for x in PORTFOLIOS}
