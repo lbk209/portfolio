@@ -4014,21 +4014,31 @@ class PortfolioManager():
         else: # cacl portfolio return for title
             df = self._valuate(pf_names, end_date)
             r = df.loc['Total'].to_dict()
-            title = f"Total Return: {round(r['Return'],-3):,.0f} ({r['Percentage']:.1%})"
-            
+            totr = r['Return']
+            title = f"Total Return: {round(totr,-3):,.0f} ({r['Percentage']:.1%})"
+    
         # individual return
         dfs = [self.portfolios[x].get_profit_history(percent=percent, msg=False) for x in pf_names]
         dfs = [v.rename(k) for k,v in zip(pf_names, dfs) if v is not None]
         ax1 = pd.concat(dfs, axis=1).ffill().loc[start_date:end_date].plot(alpha=0.5)
         ax1.set_prop_cycle(color=colors(np.linspace(0,1,len(pf_names))))
+        ax1.set_ylabel('Portfolio Returns (%)')
         
         # total profit/loss
+        color_tot = 'gray'
         dfs = [self.portfolios[x].get_profit_history(percent=False, msg=False) for x in pf_names]
         ax2 = ax1.twinx()
-        _ = (pd.concat(dfs, axis=1).ffill().sum(axis=1).rename('Total')
-               .loc[start_date:end_date]
-               .plot(ax=ax2, c='gray', ls='--', title=title, figsize=figsize))
+        df_ttl = (pd.concat(dfs, axis=1).ffill().sum(axis=1).rename('Total')
+              .loc[start_date:end_date])
+        _ = df_ttl.plot(ax=ax2, c=color_tot, ls='--', title=title, figsize=figsize)
+        ax2.set_ylabel('Total Return')
         _ = set_matplotlib_twins(ax2, ax1, legend=legend)
+
+        # return marker
+        _ = ax2.plot(df_ttl.index[-1], totr, 
+                     markeredgecolor=color_tot, markersize=10, alpha=0.6,
+                     marker=6 if totr >0 else 7,  
+                     markerfacecolor= 'blue' if totr >0 else 'red')
         
         
     def valuate(self, pf_names=None, date=None):
