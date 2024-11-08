@@ -68,16 +68,33 @@ class PortfolioData():
         self.strategies = strategies
         self.universes = universes
 
-    def get(self, name, strategy=False, universe=False):
+    def review(self, space=None):
         """
+        get list of portfolios, strategies or universes
+        """
+        space = 'P' if space is None else space[0].upper()
+        if space == 'U':
+            args = [self.universes, 'Universe']
+        elif space == 'S':
+            args = [self.strategies, 'Strategy']
+        else: # default portfolio names
+            args = [self.portfolios, 'Portfolio']
+        return self._print_items(*args)
+
+    def review_portfolio(self, name, strategy=False, universe=False):
+        """
+        review param values of a portfolio
         name: portfolio name
         """
+        if self.portfolios is None:
+            return print('ERROR: no portfolios set')
+        
         result = self._get_item(name, self.portfolios)
         if result is None:
             return None
 
-        res_s = self.get_strategy(result['strategy'])
-        res_u = self.get_universe(result['universe'])
+        res_s = self.review_strategy(result['strategy'])
+        res_u = self.review_universe(result['universe'])
         if strategy:
             if universe:
                 result = {'strategy': res_s, 'universe': res_u}
@@ -90,6 +107,30 @@ class PortfolioData():
                 pass
         return result
 
+    def review_strategy(self, name):
+        """
+        name: universe name
+        """
+        if self.strategies is None:
+            return print('ERROR: no strategies set')
+        else:
+            return self._get_item(name, self.strategies)
+
+    def review_universe(self, name):
+        """
+        name: universe name
+        """
+        if self.universes is None:
+            return print('ERROR: no universes set')
+        else:
+            return self._get_item(name, self.universes)
+
+    def _print_items(self, items, space):
+        if items is None:
+            return print(f'ERROR: No {space} set')
+        else:
+            return print(f"{space}: {', '.join(items.keys())}")
+        
     def _get_item(self, name, data):
         """
         name: universe name
@@ -98,15 +139,3 @@ class PortfolioData():
             return data[name]
         except KeyError as e:
             return print(f'ERROR: No {e}')
-
-    def get_strategy(self, name):
-        """
-        name: universe name
-        """
-        return self._get_item(name, self.strategies)
-
-    def get_universe(self, name):
-        """
-        name: universe name
-        """
-        return self._get_item(name, self.universes)
