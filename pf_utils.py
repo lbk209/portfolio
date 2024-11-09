@@ -820,7 +820,10 @@ class DataManager():
             tickers = [tickers]
         df_data = yf.download(tickers, start_date, end_date)
         df_data = df_data[col_price]
-        #df_data.index = df_data.index.tz_convert(None)
+        try:
+            df_data.index = df_data.index.tz_convert(None)
+        except:
+            pass
         return df_data
         
 
