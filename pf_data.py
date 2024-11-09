@@ -21,7 +21,7 @@ UNIVERSES = {k: {**v, 'daily':False} if k in MONTHLY else v for k,v in UNIVERSES
 
 # Portfolio strategy (kwargs of PotfolioManager)
 STRATEGIES = dict(
-    MOM = dict(method_select='Momentum', method_weigh='Equally', sort_ascending=False, n_assets=5, lookback='1y', lag='1w'),
+    MMT = dict(method_select='Momentum', method_weigh='Equally', sort_ascending=False, n_assets=5, lookback='1y', lag='1w'),
     PER = dict(method_select='F-ratio', method_weigh='Equally', sort_ascending=True, n_assets=20, lookback='2m', lag=0),
     WTR = dict(method_select='All', method_weigh='Equally'),
     LIQ = dict(method_select='Selected', method_weigh='Equally'),
@@ -33,7 +33,7 @@ STRATEGIES = dict(
 
 # Transaction file
 RECORDS = dict(
-    MOM = 'pf_k200_momentum',
+    MMT = 'pf_k200_momentum',
     PER = 'pf_k200_per',
     WTR = 'pf_wtr_static',
     LIQ = 'pf_liq_static',
@@ -47,7 +47,7 @@ STRATEGIES = {k: {**STRATEGIES[k], 'file':RECORDS[k], 'path':path_tran} for k,v 
 
 # kwargs of PotfolioManager
 PORTFOLIOS = [
-    ('MOM', 'UV_K200'), 
+    ('MMT', 'UV_K200'), 
     ('PER', 'UV_K200'), 
     ('WTR', 'UV_WTR'), # modified all weather
     ('LIQ', 'UV_LIQ'), 
