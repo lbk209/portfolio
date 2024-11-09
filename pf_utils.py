@@ -678,8 +678,9 @@ class DataManager():
             asset_names = self._get_tickers(self.universe, tickers)
                    
         try:
-            df_prices = self._download(self.universe, tickers, start_date, end_date,
-                                       **kwargs_download)
+            df_prices = DataManager.download_universe(self.universe, 
+                                                      tickers, start_date, end_date,
+                                                      **kwargs_download)
             if not close_today: # market today not closed yet
                 df_prices = df_prices.loc[:datetime.today() - timedelta(days=1)]
             print('... done')
@@ -783,11 +784,12 @@ class DataManager():
         return {x:yft.tickers[x].info[col_name] for x in tickers}
 
 
-    def _download(self, universe, *args, **kwargs):
+    @staticmethod
+    def download_universe(universe, *args, **kwargs):
         """
         args: args for DataReader. ex) ticker, start_date, end_date
         """
-        uv = universe.lower()
+        uv = universe.lower() if isinstance(universe, str) else 'default'
         if uv == 'krx':
             # use pykrx as fdr seems ineffective to download all tickers in krx
             func = DataManager.download_krx
@@ -796,13 +798,27 @@ class DataManager():
         elif uv == 'file':
             return print("ERROR: Downloading not supported for universe 'file'")
         else:
-            func = fdr.DataReader
+            func = DataManager.download_fdr
             
         try:
             return func(*args, **kwargs)
         except Exception as e:
             return print(f'ERROR: failed to download prices as {e}')
 
+    @staticmethod
+    def download_fdr(tickers, start_date, end_date, col_price1='Adj Close', col_price2='Close'):
+        if isinstance(tickers, str):
+            tickers = [tickers]
+        df_data = fdr.DataReader(tickers, start_date, end_date)
+        cols = df_data.columns
+        if col_price1 in cols: # data of signle us stock
+            df_data = df_data[col_price1]
+        elif col_price2 in cols: # data of signle kr stock (kr stock has no adj close)
+            df_data = df_data[col_price2]
+        else:# data of multiple tickers
+            pass
+        return df_data
+        
     @staticmethod
     def download_krx(tickers, start_date, end_date,
                       interval=5, pause_duration=1, msg=False):
@@ -820,7 +836,7 @@ class DataManager():
             tickers = [tickers]
         df_data = yf.download(tickers, start_date, end_date)
         df_data = df_data[col_price]
-        try:
+        try: # df of multiple tickers had index of tz something
             df_data.index = df_data.index.tz_convert(None)
         except:
             pass
@@ -832,7 +848,6 @@ class DataManager():
             func = self._upload_from_rate
         else: # default price
             func = lambda f, p: pd.read_csv(f'{p}/{f}', parse_dates=[0], index_col=[0])
-        
         try:
             df_prices = func(file, path)
             DataManager.print_info(df_prices, str_sfx='uploaded.')
