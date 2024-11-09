@@ -384,15 +384,15 @@ def set_filename(file, ext=None, default=None):
 
 
 def save_dataframe(df, file, path='.', 
-                   msg_succ='file saved.',
-                   msg_fail='ERROR: failed to save as file exists'):
+                   msg_succeed='file saved.',
+                   msg_fail='ERROR: failed to save as the file exists'):
     f = os.path.join(path, file)
     if os.path.exists(f):
         print(msg_fail)
         return False
     else:
         df.to_csv(f)    
-        print(msg_succ)
+        print(msg_succeed)
         return True
         
 
@@ -707,7 +707,7 @@ class DataManager():
             date = date.strftime(date_format)
 
         file = get_filename(file, f'_{date}', r"_\d+(?=\.\w+$)")
-        _ = save_dataframe(df_prices, file, path, msg_succ=f'{file} saved',
+        _ = save_dataframe(df_prices, file, path, msg_succeed=f'{file} saved',
                            msg_fail=f'ERROR: failed to save as {file} exists')
         return None
 
@@ -820,7 +820,7 @@ class DataManager():
             tickers = [tickers]
         df_data = yf.download(tickers, start_date, end_date)
         df_data = df_data[col_price]
-        df_data.index = df_data.index.tz_convert(None)
+        #df_data.index = df_data.index.tz_convert(None)
         return df_data
         
 
@@ -1958,7 +1958,7 @@ class PortfolioBuilder():
 
         file = get_filename(file, dt, r"_\d+(?=\.\w+$)")
         _ = save_dataframe(df_rec, file, path, 
-                           msg_succ=f'All transactions saved to {file}',
+                           msg_succeed=f'All transactions saved to {file}',
                            msg_fail=f'ERROR: failed to save as {file} exists')
         return file
         
@@ -2713,9 +2713,7 @@ class BacktestManager():
         df_cv.index.names = ['set','iteration']
 
         if file is not None:
-            f = f'{path}/{file}'
-            df_cv.to_csv(f)
-            print(f'{f} saved')
+            _ = save_dataframe(df_cv, file, path, msg_succeed=f'{file} saved')
         
         BacktestManager.print_cv(df_cv)
         return df_cv
@@ -3391,7 +3389,7 @@ class FinancialRatios():
 
         date = df_ratios.index.get_level_values(1).max().strftime(date_format)
         file = get_filename(file, f'_{date}', r"_\d+(?=\.\w+$)")
-        _ = save_dataframe(df_ratios, file, path, msg_succ=f'{file} saved',
+        _ = save_dataframe(df_ratios, file, path, msg_succeed=f'{file} saved',
                            msg_fail=f'ERROR: failed to save as {file} exists')
         return None
 
