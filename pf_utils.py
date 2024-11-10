@@ -787,7 +787,10 @@ class DataManager():
     @staticmethod
     def download_universe(universe, *args, **kwargs):
         """
-        args: args for DataReader. ex) ticker, start_date, end_date
+        return df of price history if multiple tickers set, series if a single ticker set
+        universe: krx, yahoo, file, default(fdr)
+                  use yahoo for us stocks instead of fdr which shows some inconsitancy of price data
+        args, kwargs: for DataManager.download_*
         """
         uv = universe.lower() if isinstance(universe, str) else 'default'
         if uv == 'krx':
@@ -2547,7 +2550,7 @@ class BacktestManager():
         else:
             if name is None:
                 name = list(dfs.columns)[0]
-                print(f'WARNING: name set to {name}')
+                #print(f'WARNING: name set to {name}')
         
         dfs = self.align_period(dfs, axis=self.align_axis, fill_na=self.fill_na, print_msg2=False)
         weights = BacktestManager.check_weights(weights, dfs)
@@ -2569,7 +2572,7 @@ class BacktestManager():
         if df is None:
             return None
         else:
-            print(f'Benchmark is {df.name}')
+            #print(f'Benchmark is {df.name}')
             return self.benchmark(df, **kwargs)
 
 
@@ -2763,6 +2766,7 @@ class BacktestManager():
     def catplot(data, path='.', ref_val=None, **kw):
         """
         data: output of get_cat_data or its file
+        ref_val: name kwarg for util_import_data if str, ticker if list/tuple
         kw: kwargs of sns.catplot. 
             ex) {'y':'cagr', 'x':'freq', 'row':'n_assets', 'col':'lookback', 'hue':'lag'}
         """
@@ -2778,8 +2782,16 @@ class BacktestManager():
         else:
             g = sns.catplot(data=data, **kw)
             if ref_val is not None:
+                start_date, end_date = data['start'].min(), data['end'].max()
                 if isinstance(ref_val, str):
-                    ref_val = BacktestManager.benchmark_stats(kw['y'], data=data, name=ref_val)
+                    name, ticker = ref_val, None
+                elif isinstance(ref_val, (list, tuple)):
+                    name, ticker = None, ref_val
+                else:
+                    pass # ERROR?
+                kw = dict(metric=kw['y'], name=name, ticker=ticker, 
+                          start_date=start_date, end_date=end_date)
+                ref_val = BacktestManager.benchmark_stats(**kw)
                 g.refline(y=ref_val)
             return g
 
@@ -2793,13 +2805,7 @@ class BacktestManager():
 
     @staticmethod
     def benchmark_stats(metric='cagr', name='KODEX200', ticker=None,
-                        start_date=None, end_date=None, data=None):
-        """
-        data: output of get_cat_data
-        """
-        if data is not None:
-            start_date, end_date = data['start'].min(), data['end'].max()
-
+                        start_date=None, end_date=None):
         df = BacktestManager.util_import_data(name, ticker, start_date=start_date, end_date=end_date)
         if df is None:
             return None
@@ -3088,27 +3094,41 @@ class BacktestManager():
 
     @staticmethod
     def util_import_data(name='KODEX200', ticker=None, start_date=None, end_date=None,
-                         col='Close', date_format='%Y-%m-%d',
-                         tickers={'KODEX200':'069500', 'KOSPI':'KS11', 'KOSDAQ':'KQ11', 'KOSPI200':'KS200',
-                                  'S&P500':'S&P500', 'DOW':'DJI', 'NASDAQ':'IXIC'}):
+                         universe='default', date_format='%Y-%m-%d',
+                         tickers={'KODEX200':'069500', 'KOSPI':'KS11', 'KOSDAQ':'KQ11', 
+                                  'KOSPI200':'KS200',
+                                  'S&P500':('SPY', 'yahoo'), 'DOW':('^DJI', 'yahoo'), 
+                                  'NASDAQ':('^IXIC', 'yahoo')}):
         """
-        import historical of ticker by using FinanceDataReader.DataReader
+        import historical of a single ticker by using DataManager.download_universe
+        ticker: list/tuple of ticker and universe. str if it's in default universe
+        tickers: predefined to use with name w/o ticker
         """
-        # set name and set ticker if name in tickers
-        if name is None: 
-            name = ticker
-        else:
-            _name = name.upper()
-            if _name in tickers.keys():
-                ticker = tickers[_name]
-        # show available name for benchmark if no ticker given
+        if (name is None) and (ticker is None):
+            return print('ERROR: Set ticker to download')
+            
+        # set tickers to list format
+        cvt = lambda x: [x, universe] if isinstance(x ,str) else x 
+        ticker = cvt(ticker) # list or None
+        tickers = {k.upper():cvt(v) for k,v in tickers.items()}
+    
+        # set ticker
         if ticker is None:
-            names = ', '.join(tickers.keys())
-            return print(f'ERROR: Set ticker or name from {names}')
+            _name = name.upper() # name is not None if ticker is None
+            if _name in tickers.keys():
+                ticker, universe = tickers[_name]
+            else: # show available names for benchmark if no ticker found
+                names = ', '.join(tickers.keys())
+                return print(f'ERROR: Set ticker or name from {names}')
+        else:
+            ticker, universe = ticker
+            name = ticker if name is None else name
+    
         # download
         try:
-            df = fdr.DataReader(ticker, start_date, end_date)
-            return df[col].rename(name)
+            sr = DataManager.download_universe(universe, ticker, start_date, end_date)
+            sr.name = name
+            return sr
         except Exception as e:
             return print(f'ERROR: {e}')
 
