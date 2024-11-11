@@ -1348,6 +1348,7 @@ class PortfolioBuilder():
             if self.check_new_transaction(date, msg):
                 # the arg capital is now cash flows
                 print(f'New cash inflows of {capital:,}' ) if capital>0 else None
+                self.df_rec = None # reset df_rec to calc capital
                 val, _ = self.valuate(date, print_msg=False, plot=False)
                 capital += val # add porfolio value to capital
 
@@ -1415,7 +1416,7 @@ class PortfolioBuilder():
                 
         date = df_net.index.get_level_values(0).max()
         record = self._check_var(record, self.record)
-        if record is None:
+        if record is None: # no transation record saved
             # allocation is same as transaction for the 1st time
             df_rec = df_net.assign(**{col_trs: df_net[col_net]})
         else:
@@ -1462,7 +1463,7 @@ class PortfolioBuilder():
 
         df_rec = df_rec[cols_all]
         df_rec[cols_int] = df_rec[cols_int].astype(int).sort_index(level=[0,1])
-        self.df_rec = df_rec
+        self.df_rec = df_rec # overwrite existing df_rec with new transaction
         # print portfolio value and profit/loss after self.df_rec updated
         _ = self.valuate(plot=False)
         return df_rec
