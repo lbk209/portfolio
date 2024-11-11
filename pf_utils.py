@@ -4002,27 +4002,50 @@ class PortfolioManager():
         args, kwargs: args & kwargs for DataManager
         """
         pfd = PortfolioData()
-        kwa_u = pfd.review_universe(name)
-        return DataManager(*args, **{**kwa_u, **kwargs})
-
+        universe_data = pfd.review_universe(name)
+        universe = name
+        if len(kwargs) > 0:
+            universe_data = {**universe_data, **kwargs}
+            universe = None
+        dm = DataManager(*args, **universe_data)
+        dm.portfolio_data = {'universe': {'data': universe_data, 'name':universe}}
+        return dm
+        
     
     @staticmethod
-    def create_portfolio(name, *args, **kwargs):
+    def create_portfolio(name, *args, df_universe=None, **kwargs):
         """
-        name: portfolio name
+        name: strategy name
         args, kwargs: additional args & kwargs for PortfolioBuilder
         """
-        # get args of portfolios
+        # removal for comparison with strategy_data
+        asset_names = kwargs.pop('asset_names', None)
+        name_pf = kwargs.pop('name', None)
+        
+        # get kwarg sets of portfolios
         pfd = PortfolioData()
+        # get universe
+        if df_universe is None:
+            kwa_p = pfd.review_portfolio(name, strategy=False, universe=False)
+            dm = PortfolioManager.create_universe(kwa_p['universe']) # instance of DataManager
+            asset_names = dm.get_names() if asset_names is None else asset_names # update asset_names
+            df_universe = dm.df_prices
+            portfolio_data = dm.portfolio_data
+        else:
+            portfolio_data = dict()
+            
+        # get kwargs of PortfolioBuilder
+        strategy_data = pfd.review_portfolio(name, strategy=True, universe=False)
+        strategy = name
+        if len(kwargs) > 0:
+            strategy_data = {**strategy_data, **kwargs}
+            strategy = None
+        portfolio_data['strategy'] = {'data': strategy_data, 'name':strategy}
         
-        # get the instance of DataManager
-        kwa_p = pfd.review_portfolio(name, strategy=False, universe=False)
-        dm = PortfolioManager.create_universe(kwa_p['universe'])
-        
-        # get the instance of *Portfolio
-        kwa_s = pfd.review_portfolio(name, strategy=True, universe=False)
-        kwa_s = {**kwa_s, 'name':name, 'asset_names':dm.get_names()}
-        return PortfolioBuilder(dm.df_prices, *args, **{**kwa_s, **kwargs})
+        kws = {**strategy_data, 'name':name, 'asset_names':asset_names}
+        pb = PortfolioBuilder(df_universe, *args, **kws)
+        pb.portfolio_data = portfolio_data
+        return pb
 
 
     def check_portfolios(self, pf_names=None):
