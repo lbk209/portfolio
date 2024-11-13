@@ -1484,7 +1484,7 @@ class PortfolioBuilder():
         return df_rec
 
 
-    def valuate(self, date=None, print_msg=True, plot=True, **kw_plot):
+    def valuate(self, date=None, print_msg=False, plot=True, **kw_plot):
         """
         calc cost, proceeds & portfolio value from self.record or self.df_rec
         date_format: self.date_format
@@ -1501,15 +1501,14 @@ class PortfolioBuilder():
             return None
         
         # update price data by adding assets not in the universe if existing
-        #df_prices = self._update_universe(df_rec, msg=print_msg)
-        df_prices = self._update_universe(df_rec, msg=False)
+        df_prices = self._update_universe(df_rec, msg=print_msg)
     
         # check date by price data
         date = df_prices.loc[:date].index.max() # works even if date None
         date_ft = df_rec.index.get_level_values(0).min()
         if date_ft > date:
             dt = date.strftime(date_format)
-            return print(f'ERROR: No transaction before {dt}')
+            return print(f'ERROR: No transaction before {dt}') if print_msg else None
         
         # get record to date
         df_rec = df_rec.loc[:date]
@@ -1533,7 +1532,7 @@ class PortfolioBuilder():
             print(f'ROI {roi:.2%}, Unrealized G/L {ugl:,.0f} on {dt}')
     
         if plot:
-            self.plot(msg_cr=False, **kw_plot)
+            self.plot(end_date=date, msg_cr=False, **kw_plot)
         else:
             return (cost, prcd, val)
 
@@ -1658,10 +1657,10 @@ class PortfolioBuilder():
     
         # plot cashflow
         if cashflow:
+            # set slice for record with a single transaction
             start, end = get_date_minmax(sr_val)
             ax2 = self.plot_cashflow(df_rec=df_rec, start_date=start, end_date=end, ax=ax2)
-        #return None
-        return (ax1, ax2)
+        return None
 
 
     def plot_cashflow(self, df_rec=None, start_date=None, end_date=None,
@@ -4044,27 +4043,42 @@ class PortfolioManager():
     """
     manage multiple portfolios 
     """
-    def __init__(self, pf_names=None):
+    def __init__(self, pf_names):
         """
         pf_names: list of portfolio names
         """
         self.pf_data = PortfolioData()
-        self.pf_names = self.check_portfolios(pf_names)
-        self.portfolios = self.load(self.pf_names)
+        self.portfolios = dict()
+        self.load(pf_names)
 
     
-    def load(self, pf_names=None):
+    def load(self, pf_names, reload=False):
         """
         loading multiple portfolios (no individual args except for PortfolioData)
         pf_names: list of portfolio names
         """
-        pf_dict = dict()
-        for name in pf_names:
-            print(f'{name}:')
-            pf_dict[name] = PortfolioManager.create_portfolio(name)
-            print()
-        return pf_dict
+        if isinstance(pf_names, str):
+            pf_names = [pf_names]
 
+        pf_names = self.check_portfolios(pf_names, loading=True)
+        if pf_names is None:
+            return None
+            
+        if reload:
+            pf_dict = dict()
+        else:
+            pf_dict = self.portfolios
+            
+        for name in pf_names:
+            if name in pf_dict.keys():
+                print(f'{name} already exists')
+            else:
+                print(f'{name}:')
+                pf_dict[name] = PortfolioManager.create_portfolio(name)
+                print()
+        self.portfolios = pf_dict
+        return None
+        
 
     @staticmethod
     def review(space=None):
@@ -4140,9 +4154,11 @@ class PortfolioManager():
         return pb
 
 
-    def check_portfolios(self, pf_names=None):
-        pf_names = self.pf_names if pf_names is None else pf_names
-        pf_all = self.pf_data.portfolios.keys()
+    def check_portfolios(self, pf_names=None, loading=False):
+        if loading:
+            pf_all = self.pf_data.portfolios.keys()
+        else:
+            pf_all = self.portfolios.keys()
         if pf_names is None:
             pf_names = pf_all
         else:
@@ -4206,26 +4222,18 @@ class PortfolioManager():
         calc gain/loss and roi for each portfolio
         pf_names: list of portfolio names
         """
-        l_roi, l_ugl = list(), list()
-        cost, prcd, val = 0, 0, 0
+        data, index = list(), list()
+        cols = ['Cost', 'Proceeds', 'Value'] # result of PortfolioBuilder.valuate
+        col_cost, col_prcd, col_val = cols
         for name in pf_names:
             pf = self.portfolios[name]
-            try:
-                c, p, v = pf.valuate(date=date, plot=False, print_msg=False)
-                u = v + p - c # unrealized gain/loss
-                l_ugl.append(u)
-                l_roi.append(u/c)
-                cost += c
-                prcd += p
-                val += v
-            except Exception as e:
-                print(f'ERROR:({name}) {e}')
-        index = pf_names.copy()
-        #if cflow != c: # no total if one portfolio given
-        if True: # always add total for convenience
-            index.append('Total')
-            ugl = val + prcd - cost
-            l_ugl.append(ugl)
-            l_roi.append(ugl/cost)
-        data = {'ROI':l_roi, 'G/L':l_ugl}
-        return pd.DataFrame(data=data, index=index)
+            d = pf.valuate(date=date, plot=False, print_msg=False)
+            d = [None]*3 if d is None else d
+            data.append(d)
+            index.append(name)
+                
+        df_res = pd.DataFrame.from_records(data, index=index, columns=cols)
+        df_res.loc['Total'] = df_res.sum()
+        df_res['G/L'] = df_res.apply(lambda x: x[col_val] + x[col_prcd] - x[col_cost], axis=1)
+        df_res['ROI'] = df_res.apply(lambda x: x['G/L'] / x[col_cost], axis=1)
+        return df_res
