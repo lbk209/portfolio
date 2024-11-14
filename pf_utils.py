@@ -481,6 +481,21 @@ def set_matplotlib_twins(ax1, ax2, legend=True, colors=None, loc='upper left'):
     return (ax1, ax2)
 
 
+def format_rounded_string(*ns, string='ROI: {:.1%} (UGL: {:,.0f})', n_round=3):
+    """
+    Formats a customizable string with rounded numeric values.
+    Parameters:
+        *ns (float): Numbers to be inserted into the template string.
+        template (str): String template for formatting, with placeholders for values.
+        n_round (int): Number of digits to round values based on magnitude.
+    Returns:
+        str:
+    """
+    myround = lambda x: x if abs(x) < 10**(n_round+1) else round(x,-n_round)
+    ns = [myround(x) for x in ns]
+    return string.format(*ns)
+
+
 class AssetDict(dict):
     """
     A dictionary subclass that associates keys (ex:asset tickers) with names.
@@ -1364,8 +1379,8 @@ class PortfolioBuilder():
                 # the arg capital is now cash flows
                 print(f'New cash inflows of {capital:,}' ) if capital>0 else None
                 self.df_rec = None # reset df_rec to calc capital
-                _, _, val = self.valuate(date, print_msg=False, plot=False)
-                capital += val # add porfolio value to capital
+                sr = self.valuate(date, print_msg=False)
+                capital += sr['value'] # add porfolio value to capital
 
         # calc quantity of each asset by weights and capital
         df_prc = self.df_universe
@@ -1480,14 +1495,13 @@ class PortfolioBuilder():
         df_rec[cols_int] = df_rec[cols_int].astype(int).sort_index(level=[0,1])
         self.df_rec = df_rec # overwrite existing df_rec with new transaction
         # print portfolio value and profit/loss after self.df_rec updated
-        _ = self.valuate(plot=False)
+        _ = self.valuate(print_msg=True)
         return df_rec
 
 
-    def valuate(self, date=None, print_msg=False, plot=True, **kw_plot):
+    def valuate(self, date=None, print_msg=False):
         """
-        calc cost, proceeds & portfolio value from self.record or self.df_rec
-        date_format: self.date_format
+        calc date, cost, proceeds & portfolio value from self.record or self.df_rec
         """
         cols_record = self.cols_record
         col_prc = cols_record['prc']
@@ -1509,8 +1523,9 @@ class PortfolioBuilder():
         if date_ft > date:
             dt = date.strftime(date_format)
             return print(f'ERROR: No transaction before {dt}') if print_msg else None
-        
+                
         # get record to date
+        date = date.strftime(date_format) # convert date to str as no more comparison
         df_rec = df_rec.loc[:date]
         date_lt = df_rec.index.get_level_values(0).max()
         
@@ -1523,18 +1538,17 @@ class PortfolioBuilder():
         # calc value
         n_assets = df_rec.loc[date_lt, col_net]
         val = n_assets.mul(df_prices.loc[date, n_assets.index]).sum().astype(int)
-    
+            
         # calc roi & unrealized gain/loss
         ugl = val + prcd - cost
         roi = ugl / cost
         if print_msg:
-            dt = date.strftime(date_format)
-            print(f'ROI {roi:.2%}, Unrealized G/L {ugl:,.0f} on {dt}')
-    
-        if plot:
-            self.plot(end_date=date, msg_cr=False, **kw_plot)
-        else:
-            return (cost, prcd, val)
+            s = format_rounded_string(roi, ugl)
+            print(s, f'on {date}')
+             
+        data = [date, cost, prcd, val, ugl, roi]
+        index = ['date', 'cost', 'proceeds', 'value', 'UGL', 'ROI']
+        return pd.Series(data, index=index)
 
 
     def transaction_pipeline(self, date=None, capital=10000000, commissions=0, 
@@ -1550,7 +1564,7 @@ class PortfolioBuilder():
         if not self.check_new_transaction():
             # calc profit at the last transaction
             dt = self.selected['date'] # selected defined by self.select
-            _ = self.valuate(dt, plot=False)
+            _ = self.valuate(dt, print_msg=True)
             return self.record
 
         weights = self.weigh()
@@ -1594,9 +1608,10 @@ class PortfolioBuilder():
             return self._calc_cashflow_history(df_rec)
 
 
-    def get_profit_history(self, roi=True, roi_log=False, msg=True):
+    def get_profit_history(self, result='ROI', roi_log=False, msg=True):
         """
         get history of profit/loss
+        result: 'ROI', 'UGL' or 'all'
         """
         df_rec = self._check_result()
         if df_rec is None:
@@ -1607,7 +1622,7 @@ class PortfolioBuilder():
             return print('ERROR: need more data to plot')
 
         df_cf = self._calc_cashflow_history(df_rec) # cost & proceeds
-        sr_prf = self._calc_profit(sr_val, df_cf, roi, roi_log) # profit/loss
+        sr_prf = self._calc_profit(sr_val, df_cf, result=result, roi_log=roi_log)
         return sr_prf
 
     
@@ -1628,7 +1643,8 @@ class PortfolioBuilder():
             return print('ERROR: need more data to plot')
     
         df_cf = self._calc_cashflow_history(df_rec) # cashflow
-        sr_prf = self._calc_profit(sr_val, df_cf, roi, roi_log) # profit
+        res_prf = 'ROI' if roi else 'UGL'
+        sr_prf = self._calc_profit(sr_val, df_cf, result=res_prf, roi_log=roi_log) # profit
     
         # total: value + proceeds
         sr_tot = (df_cf.join(sr_val, how='right').ffill()
@@ -1639,21 +1655,28 @@ class PortfolioBuilder():
         sr_val = func(sr_val)
         sr_prf = func(sr_prf)
         
-        # transaction dates
-        dates_trs = func(df_rec).index.get_level_values(0).unique()
+       # set title
+        sr = self.valuate(end_date, print_msg=False)
+        title = format_rounded_string(sr['ROI'], sr['UGL'])
             
         # plot historical of portfolio value
         ax1, ax2 = self._plot_get_axes(figsize=figsize, height_ratios=height_ratios)
-        line_tot = {'c':'steelblue', 'ls':'--'}
-        _ = sr_tot.plot(ax=ax1, label='Total', title='Portfolio Growth', figsize=figsize, **line_tot)
+        line_tot = {'c':'darkgray', 'ls':'--'}
+        _ = sr_tot.plot(ax=ax1, label='Total', title=title, figsize=figsize, **line_tot)
         _ = sr_val.plot(ax=ax1, c=line_tot['c'])
-        ax1.vlines(dates_trs, 0, 1, transform=ax1.get_xaxis_transform(), lw=0.5, color='grey')
+        ax1.fill_between(sr_tot.index, sr_tot, ax1.get_ylim()[0], facecolor=line_tot['c'], alpha=0.1)
+        ax1.fill_between(sr_val.index, sr_val, ax1.get_ylim()[0], facecolor=line_tot['c'], alpha=0.2)
+    
+        # plot vline for transaction dates
+        dates_trs = func(df_rec).index.get_level_values(0).unique()
+        ax1.vlines(dates_trs, 0, 1, transform=ax1.get_xaxis_transform(), lw=0.5, color='gray')
+        ax1.set_ylabel('Value')
         
         # plot profit history
-        label = f'ROI (%)' if roi else 'Unrealized G/L'
-        ax1t = sr_prf.plot(ax=ax1.twinx(), label=label, alpha=0.4, color='orange')
+        ax1t = sr_prf.plot(ax=ax1.twinx(), label=res_prf, lw=1, color='orange')
+        ax1t.set_ylabel('Return On Investment (%)' if roi else 'Unrealized Gain/Loss')
         # set env for the twins
-        _ = set_matplotlib_twins(ax1, ax1t, legend=legend, colors=('steelblue', 'orange'), loc=loc)
+        _ = set_matplotlib_twins(ax1, ax1t, legend=legend, loc=loc)
     
         # plot cashflow
         if cashflow:
@@ -1890,7 +1913,7 @@ class PortfolioBuilder():
                 _ = set_matplotlib_twins(ax1, ax2, legend=legend)
     
         return df_res
-        
+
         
     def _calc_cashflow_history(self, record):
         """
@@ -2002,23 +2025,29 @@ class PortfolioBuilder():
         return df_cf.sort_index().ffill().fillna(0).loc[start_date:end_date]
 
 
-    def _calc_profit(self, sr_val, df_cashflow_history, roi=True, roi_log=False, roi_percent=True,
+    def _calc_profit(self, sr_val, df_cashflow_history, result='ROI', 
+                     roi_log=False, roi_percent=True,
                      col_val='value', col_prcd='proceeds', col_cost='cost'):
         """
         calc history of roi or unrealized gain/loss
+        result: ROI, UGL or None
         """
         df = (sr_val.to_frame(col_val)
               .join(df_cashflow_history, how='outer')
               .ffill().fillna(0))
-        if roi:
+        
+        result = result.upper()
+        if result == 'ROI':
             ratio = lambda x: (x[col_val] + x[col_prcd]) / x[col_cost]
             m = 100 if roi_percent else 1
             if roi_log:
                 df = df.apply(lambda x: np.log(ratio(x)), axis=1).mul(m)
             else:
                 df = df.apply(lambda x: ratio(x) - 1, axis=1).mul(m)
-        else: # unrealized gain/loss
+        elif result == 'UGL': # unrealized gain/loss
             df = df.apply(lambda x: x[col_val] + x[col_prcd] - x[col_cost], axis=1)
+        else:
+            pass # return df of col_val, col_prcd and col_cost
         return df
         
 
@@ -4169,10 +4198,11 @@ class PortfolioManager():
 
     
     def plot(self, pf_names=None, start_date=None, end_date=None, roi=True,
-             figsize=(8,4), legend=True, colors = plt.cm.Spectral):
+             figsize=(10,5), legend=True, colors = plt.cm.Spectral):
         """
         start_date: date of beginning of the return plot
         end_date: date to calc return
+        roi: ROI plot if True, UGL plot if False
         """
         # check portfolios
         pf_names = self.check_portfolios(pf_names)
@@ -4180,33 +4210,41 @@ class PortfolioManager():
             return None
         else: # cacl portfolio return for title
             df = self._valuate(pf_names, end_date)
-            r = df.loc['Total'].to_dict()
-            ugl = r['G/L'] # ref by ax2.plot later
-            u = ugl if abs(ugl) < 1e4 else round(ugl,-3)
-            title = f'ROI: {r['ROI']:.2%} (g/l: {u:,.0f})'
-
-        # individual return
-        dfs = [self.portfolios[x].get_profit_history(roi=roi, msg=False) for x in pf_names]
-        dfs = [v.rename(k) for k,v in zip(pf_names, dfs) if v is not None]
-        ax1 = pd.concat(dfs, axis=1).ffill().loc[start_date:end_date].plot(alpha=0.5)
-        ax1.set_prop_cycle(color=colors(np.linspace(0,1,len(pf_names))))
-        ax1.set_ylabel('Return On Investment (%)' if roi else 'Unrealized Gain/Loss')
-        
-        # total grain/loss
+            sr = df['Total']
+            title = format_rounded_string(sr['ROI'], sr['UGL'])
+            title = f'Total {title}'
+    
+        # total value
         line_tot = {'c':'gray', 'ls':'--'}
-        dfs = [self.portfolios[x].get_profit_history(roi=False, msg=False) for x in pf_names]
+        dfs = [v._calc_value_history(v.record, k, msg=False) for k,v in self.portfolios.items() if k in pf_names]
+        sr_ttl = pd.concat(dfs, axis=1).ffill().sum(axis=1).rename('Total Value').loc[start_date:end_date]
+        ax1 = sr_ttl.plot(title=title, figsize=figsize, **line_tot)
+        ax1.set_ylabel('Total Value')
+    
+        # roi or ugl total
         ax2 = ax1.twinx()
-        df_ttl = (pd.concat(dfs, axis=1).ffill().sum(axis=1).rename('Total')
-              .loc[start_date:end_date])
-        _ = df_ttl.plot(ax=ax2, title=title, figsize=figsize, **line_tot)
-        ax2.set_ylabel('Total Gain/Loss')
-        _ = set_matplotlib_twins(ax2, ax1, legend=legend)
-
-        # total gain/loss marker
-        _ = ax2.plot(df_ttl.index[-1], ugl, 
-                     markeredgecolor=line_tot['c'], markersize=10, alpha=0.6,
-                     marker=6 if ugl >0 else 7,  
-                     markerfacecolor= 'blue' if ugl >0 else 'red')
+        list_df = [self.portfolios[x].get_profit_history(result='all', msg=False) for x in pf_names]
+        func = lambda x: pd.concat([df[x] for df in list_df], axis=1).ffill().sum(axis=1).rename(x)
+        dfs = [func(x) for x in ('value', 'proceeds', 'cost')]
+        df_ttl = pd.concat(dfs, axis=1).ffill()
+        if roi:
+            sr_ttl = df_ttl.apply(lambda x: (x['value']+x['proceeds'])/x['cost']-1, axis=1).mul(100).rename('Total ROI')
+        else:
+            sr_ttl = df_ttl.apply(lambda x: x['value']+x['proceeds'] - x['cost'], axis=1).rename('Total UGL')
+        sr_ttl = sr_ttl.loc[start_date:end_date]
+        _ = sr_ttl.plot(ax=ax2, lw=1)
+        
+        # roi or ugl individuals
+        res = 'ROI' if roi else 'UGL'
+        dfs = [self.portfolios[x].get_profit_history(result=res, msg=False) for x in pf_names]
+        dfs = [v.rename(k) for k,v in zip(pf_names, dfs) if v is not None]
+        _ = pd.concat(dfs, axis=1).ffill().loc[start_date:end_date].plot(ax=ax2, alpha=0.5, lw=1)
+        ax2.set_prop_cycle(color=colors(np.linspace(0,1,len(pf_names))))
+        ax2.set_ylabel('Return On Investment (%)' if roi else 'Unrealized Gain/Loss')
+        _ = set_matplotlib_twins(ax1, ax2, legend=legend)
+    
+        ax2.fill_between(sr_ttl.index, sr_ttl, ax2.get_ylim()[0], 
+                         facecolor=ax2.get_lines()[0].get_color(), alpha=0.1)
         
         
     def valuate(self, pf_names=None, date=None):
@@ -4219,21 +4257,24 @@ class PortfolioManager():
 
     def _valuate(self, pf_names, date):
         """
-        calc gain/loss and roi for each portfolio
+        return evaluation summary df the portfolios in pf_names
         pf_names: list of portfolio names
         """
-        data, index = list(), list()
-        cols = ['Cost', 'Proceeds', 'Value'] # result of PortfolioBuilder.valuate
-        col_cost, col_prcd, col_val = cols
+        col_total = 'Total'
+        r_date, r_roi, r_ugl, r_cost = ('date', 'ROI', 'UGL', 'cost')
+        df_res = None
+        no_res = []
         for name in pf_names:
             pf = self.portfolios[name]
-            d = pf.valuate(date=date, plot=False, print_msg=False)
-            d = [None]*3 if d is None else d
-            data.append(d)
-            index.append(name)
-                
-        df_res = pd.DataFrame.from_records(data, index=index, columns=cols)
-        df_res.loc['Total'] = df_res.sum()
-        df_res['G/L'] = df_res.apply(lambda x: x[col_val] + x[col_prcd] - x[col_cost], axis=1)
-        df_res['ROI'] = df_res.apply(lambda x: x['G/L'] / x[col_cost], axis=1)
+            sr = pf.valuate(date=date, print_msg=False)
+            if sr is None:
+                no_res.append(name)
+            else:
+                df_res = sr.to_frame(name) if df_res is None else df_res.join(sr.rename(name)) 
+    
+        df_res[col_total] = [df_res.loc[r_date].max(), *df_res.iloc[1:].sum(axis=1).to_list()]
+        df_ttl = df_res[col_total]
+        df_res.loc[r_roi, col_total] = df_ttl[r_ugl] / df_ttl[r_cost]
+        if no_res is not None:
+            df_res[no_res] = None
         return df_res
