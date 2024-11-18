@@ -1523,9 +1523,11 @@ class PortfolioBuilder():
         if date_ft > date:
             dt = date.strftime(date_format)
             return print(f'ERROR: No transaction before {dt}') if print_msg else None
+        else:
+            # convert dates to str for series as no more comparison
+            date_ft, date = [x.strftime(date_format) for x in (date_ft, date)]
                 
         # get record to date
-        date = date.strftime(date_format) # convert date to str as no more comparison
         df_rec = df_rec.loc[:date]
         date_lt = df_rec.index.get_level_values(0).max()
         
@@ -1546,8 +1548,8 @@ class PortfolioBuilder():
             s = format_rounded_string(roi, ugl)
             print(s, f'on {date}')
              
-        data = [date, cost, prcd, val, ugl, roi]
-        index = ['date', 'cost', 'proceeds', 'value', 'UGL', 'ROI']
+        data = [date_ft, date, cost, prcd, val, ugl, roi]
+        index = ['start', 'date', 'cost', 'proceeds', 'value', 'UGL', 'ROI']
         return pd.Series(data, index=index)
 
 
@@ -4272,7 +4274,7 @@ class PortfolioManager():
         pf_names: list of portfolio names
         """
         col_total = 'Total'
-        r_date, r_roi, r_ugl, r_cost = ('date', 'ROI', 'UGL', 'cost')
+        r_start, r_date, r_roi, r_ugl, r_cost = ('start', 'date', 'ROI', 'UGL', 'cost')
         df_res = None
         no_res = []
         for name in pf_names:
@@ -4282,8 +4284,9 @@ class PortfolioManager():
                 no_res.append(name)
             else:
                 df_res = sr.to_frame(name) if df_res is None else df_res.join(sr.rename(name)) 
-    
-        df_res[col_total] = [df_res.loc[r_date].max(), *df_res.iloc[1:].sum(axis=1).to_list()]
+        # set total
+        df_res[col_total] = [df_res.loc[r_start].min(), df_res.loc[r_date].max(), 
+                             *df_res.iloc[2:].sum(axis=1).to_list()]
         df_ttl = df_res[col_total]
         df_res.loc[r_roi, col_total] = df_ttl[r_ugl] / df_ttl[r_cost]
         if no_res is not None:
