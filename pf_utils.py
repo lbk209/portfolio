@@ -481,7 +481,7 @@ def set_matplotlib_twins(ax1, ax2, legend=True, colors=None, loc='upper left'):
     return (ax1, ax2)
 
 
-def format_rounded_string(*ns, string='ROI: {:.1%} (UGL: {:,.0f})', n_round=3):
+def format_rounded_string(*ns, string='ROI: {:.1%}, UGL: {:,.0f}', n_round=3):
     """
     Formats a customizable string with rounded numeric values.
     Parameters:
@@ -1209,23 +1209,17 @@ class PortfolioBuilder():
         self.selected = None # data for select, weigh and allocate
         self.df_rec = None # record updated with new transaction
         self.liquidation = Liquidation() # for instance of Liquidation
-        # different from the record file if profit_on_transaction_date is True
         self.record = self.import_record()
             
 
-    def import_record(self, record=None, profit_on_transaction_date=False, print_msg=True):
+    def import_record(self, record=None, print_msg=True):
         """
         read record from file and update transaction dates
         """
         if record is None:
             record = self._load_transaction(self.file, self.path, print_msg=print_msg)
-    
         if record is None:
             print('REMINDER: make sure this is 1st transaction as no records provided')
-        else:
-            if profit_on_transaction_date:
-                record = self._update_transaction_dates(record, self.df_universe, self.cols_record['date'])
-                #print('Transaction dates updated for profit/loss on the dates')
         return record
 
 
@@ -1510,7 +1504,7 @@ class PortfolioBuilder():
         date_format = self.date_format
         
         # get latest record
-        df_rec = self._check_result()
+        df_rec = self._check_result(print_msg)
         if df_rec is None:
             return None
         
@@ -1546,7 +1540,7 @@ class PortfolioBuilder():
         roi = ugl / cost
         if print_msg:
             s = format_rounded_string(roi, ugl)
-            print(s, f'on {date}')
+            print(s, f' ({date})')
              
         data = [date_ft, date, cost, prcd, val, ugl, roi]
         index = ['start', 'date', 'cost', 'proceeds', 'value', 'UGL', 'ROI']
@@ -1615,7 +1609,7 @@ class PortfolioBuilder():
         get history of profit/loss
         result: 'ROI', 'UGL' or 'all'
         """
-        df_rec = self._check_result()
+        df_rec = self._check_result(msg)
         if df_rec is None:
             return None
             
@@ -1660,6 +1654,7 @@ class PortfolioBuilder():
        # set title
         sr = self.valuate(end_date, print_msg=False)
         title = format_rounded_string(sr['ROI'], sr['UGL'])
+        title = f"{title} ({sr['date']})"
             
         # plot historical of portfolio value
         ax1, ax2 = self._plot_get_axes(figsize=figsize, height_ratios=height_ratios)
@@ -1854,7 +1849,7 @@ class PortfolioBuilder():
         get 'n_latest' latest or oldest transaction record 
         """
         if df_rec is None:
-            df_rec = self._check_result(msg)
+            df_rec = self._check_result(msg, profit_on_transaction_date=False)
         if df_rec is None:
             return None
 
@@ -2055,7 +2050,7 @@ class PortfolioBuilder():
         return df
         
 
-    def _check_result(self, msg=True):
+    def _check_result(self, msg=True, profit_on_transaction_date=True):
         if self.df_rec is None:
             if self.record is None:
                 return print('ERROR: No transaction record') if msg else None
@@ -2063,6 +2058,12 @@ class PortfolioBuilder():
                 df_res = self.record
         else:
             df_res = self.df_rec
+        
+        if profit_on_transaction_date:
+            df_res = self._update_transaction_dates(df_res, self.df_universe, self.cols_record['date'])
+            if msg:
+                print('Transaction dates updated for profit/loss on the dates')
+        
         return df_res
     
 
@@ -4217,7 +4218,7 @@ class PortfolioManager():
             df = self._valuate(pf_names, end_date)
             sr = df['Total']
             title = format_rounded_string(sr['ROI'], sr['UGL'])
-            title = f'Total {title}'
+            title = f"Total {title} ({sr['date']})"
     
         # total value
         line_ttl = {'c':'gray', 'ls':'--'}
