@@ -13,6 +13,7 @@ import bt
 import warnings
 import seaborn as sns
 import yfinance as yf
+import requests
 
 from datetime import datetime, timedelta
 from datetime import date as datetime_date
@@ -117,7 +118,6 @@ def import_xml_rate(file, path='.', cols=['date', None],
                     tag_val='managePrfRate'):
     """
     file: xml. historical of cumulative rate of return in long format
-    data_check: [(기준일1, 기준가1), (기준일2, 기준가2)]
     """
     tree = ET.parse(f'{path}/{file}')
     root = tree.getroot()
@@ -187,7 +187,6 @@ def convert_rate_to_price(data, n_headers=1, path=None,
             import_rate = lambda *args, **kwargs: df_rate.rename_axis(kwargs['cols'][0]).rename(kwargs['cols'][1])
     
     ticker = data['ticker']
-    name = data['name']
     file = get_file_latest(data['file'], path) # latest file
     data_check = [
         (data['check1_date'], data['check1_price']),
@@ -1162,7 +1161,222 @@ class KRXDownloader():
             return datetime.strptime(date, format_from).strftime(format_to)
         else:
             return date.strftime(date, format_to)
+
+
+
+class FundDownloader():
+    def __init__(self,
+                 url = "https://dis.kofia.or.kr/proframeWeb/XMLSERVICES/",
+                 headers = {
+                    "Content-Type": "application/xml",  # Indicating that we're sending XML data
+                 },
+                 # XML Payload
+                 payload = """<?xml version="1.0" encoding="utf-8"?>
+                            <message>
+                              <proframeHeader>
+                                <pfmAppName>FS-COM</pfmAppName>
+                                <pfmSvcName>COMFundUnityPrfRtSO</pfmSvcName>
+                                <pfmFnName>prfRtAllSrch</pfmFnName>
+                              </proframeHeader>
+                              <systemHeader></systemHeader>
+                              <COMFundUnityInfoInputDTO>
+                                <standardCd>{ticker:}</standardCd>
+                                <vSrchTrmFrom>{start_date:}</vSrchTrmFrom>
+                                <vSrchTrmTo>{end_date:}</vSrchTrmTo>
+                                <vSrchStd>{code_freq:}</vSrchStd>
+                              </COMFundUnityInfoInputDTO>
+                            </message>"""
+                ):
+        self.url = url
+        self.headers = headers
+        self.payload = payload
+        self.data_tickers = None
+        self.tickers = None
+        self.df_prices = None
+        self.failed = [] # tickers failed to download
+
+
+    def load_tickers(self, tickers=None, file=None, path='.', col_index='ticker'):
+        """
+        file: master file of assets with ticker, name, adjusting data, etc
+        """
+        if file is None:
+            if tickers is None:
+                return print('ERROR')
+            else:
+                df_data = None
+                print('WARNING: No meta data for tickers')
+        else:
+            pfile = f'{path}/{file}'
+            df_data = pd.read_csv(pfile, index_col=col_index)
+            if tickers is None:
+                tickers = df_data.index.to_list()
+            else:
+                tickers = [tickers] if isinstance(tickers, str) else tickers
+                n = pd.Index(tickers).difference(df_data.index).size
+                if n > 0:
+                    print(f'ERROR: {n} funds missing in the fund data')
+                    tickers = pd.Index(tickers).intersection(df_data.index).to_list()
+
+        print(f'{len(tickers)} tickers set')
+        self.tickers = tickers
+        self.data_tickers = df_data
+        return None
+        
+
+    def download(self, start_date, end_date, freq='monthly',
+                 interval=5, pause_duration=.1, msg=False):
+        tickers = self.tickers
+        if tickers is None:
+            return print('ERROR: load tickers first')
             
+        url = self.url
+        headers = self.headers
+        payload = self.payload
+        data_tickers = self.data_tickers
+        self.failed = [] # reset for new downloading
+
+        # download rates
+        tracker = TimeTracker(auto_start=True)
+        df_rates = None
+        for x in tqdm(tickers):
+            sr = self._download_rate(x, start_date, end_date, freq=freq, msg=msg)
+            if sr is None:
+                self.failed.append(x)
+            else:
+                df_rates = sr.to_frame() if df_rates is None else pd.concat([df_rates, sr], axis=1)
+            tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
+        tracker.stop()
+
+        if df_rates is None:
+            return print('ERROR')
+        else:
+            n = len(self.failed)
+            print(f'WARNING: {n} tickers failed to download') if n>0 else None
+
+        # convert to price
+        df_prices = None
+        errors = list()
+        for x in df_rates.columns:
+            data = data_tickers.loc[x].to_dict()
+            data = {**data, 'ticker':x}
+            sr_rate = df_rates[x]
+            sr, err = self._convert_rate(data, sr_rate, percentage=True, msg=msg)
+            df_prices = sr.to_frame() if df_prices is None else pd.concat([df_prices, sr], axis=1)
+            errors.append(err)
+
+        print(f'Max error of conversions: {max(errors)*100:.2f} %')
+        self.df_prices = df_prices
+        return errors
+
+
+    def _download_rate(self, ticker, start_date, end_date, freq='m', msg=False):
+        url = self.url
+        headers = self.headers
+
+        if freq.upper()[0] == 'M':
+            code_freq = 2
+        else:
+            code_freq = 1
+        
+        payload = self.payload.format(ticker=ticker, start_date=start_date, end_date=end_date, 
+                                      code_freq=code_freq)
+        xml = FundDownloader.fetch_data(url, headers, payload, msg=False)
+        sr = FundDownloader.parse_xml(xml=xml)
+        sr.name = ticker
+        return sr
+
+
+    @staticmethod
+    def fetch_data(url, headers, payload, msg=False):
+        # Sending the POST request
+        try:
+            response = requests.post(url, headers=headers, data=payload)
+            response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
+            return response.text
+        except requests.exceptions.RequestException as e:
+            return print(f"An error occurred: {e}" if msg else None)
+
+    
+    @staticmethod
+    def parse_xml(file=None, path='.', xml=None, cols=['date', None], 
+                  tag_iter='prfRtList', tag_date='standardDt', 
+                  tag_val='managePrfRate'):
+        """
+        file: xml. historical of cumulative rate of return in long format
+        """
+        if file is None:
+            if xml is None:
+                return print('ERROR')
+            else:
+                root = ET.fromstring(xml)
+        else:
+            tree = ET.parse(f'{path}/{file}')
+            root = tree.getroot()
+        
+        data = list()
+        for x in root.iter(tag_iter):
+            date = x.find(tag_date).text
+            val = x.find(tag_val).text
+            data.append((date,val))
+
+        if len(data) == 0:
+            return print('ERROR: Check values of tag_iter, tag_date and tag_val')
+        
+        sr_val = pd.DataFrame().from_records(data, columns=cols).set_index(cols[0]).astype(float)
+        sr_val.index = pd.to_datetime(sr_val.index)
+        # make sure to get series
+        return sr_val.iloc[:, 0]
+
+
+    def _convert_rate(self, data, sr_rate, percentage=True, msg=True):
+        """
+        data: series or dict
+        """
+        ticker = data['ticker']
+        data_check = [
+            (data['check1_date'], data['check1_price']),
+            (data['check2_date'], data['check2_price']),
+        ]
+        sr_n_err = self.get_price(sr_rate, data_check, percentage=percentage, msg=msg)
+        if sr_n_err is None:
+            return print(f'ERROR: check {ticker}')
+        else:
+            return sr_n_err
+
+
+    def get_price(self, sr_rate, data_check, percentage=True, msg=True):
+        """
+        calc price from rate of return
+        """
+        # date check
+        for dt, _ in data_check:
+            try:
+                dt = pd.to_datetime(dt)
+                rate = sr_rate.loc[dt]
+            except KeyError as e:
+                return print(f'ERROR: KeyError {e}')
+        
+        # convert to price with data_check[0]
+        dt, price = data_check[0]
+        dt = pd.to_datetime(dt)
+        rate = sr_rate.loc[dt]
+        if percentage:
+            rate = rate/100
+            sr_rate = sr_rate/100
+        price_base = price / (rate+1)
+        sr_price = (sr_rate + 1) * price_base 
+    
+        # check price
+        dt, price = data_check[1]
+        e = sr_price.loc[dt]/price - 1
+        print(f'error: {e*100:.2f} %') if msg else None
+        return (sr_price, e)
+
+    
+    def _check_var(self, var_arg, var_self):
+        return var_self if var_arg is None else var_arg
+        
 
 
 class PortfolioBuilder():
