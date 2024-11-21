@@ -1165,74 +1165,152 @@ class KRXDownloader():
 
 
 class FundDownloader():
-    def __init__(self,
+    def __init__(self, file, path='.', col_ticker='ticker', 
+                 cols_check=['check1_date', 'check1_price', 'check2_date', 'check2_price'],
                  url = "https://dis.kofia.or.kr/proframeWeb/XMLSERVICES/",
-                 headers = {
-                    "Content-Type": "application/xml",  # Indicating that we're sending XML data
-                 },
-                 # XML Payload
-                 payload = """<?xml version="1.0" encoding="utf-8"?>
-                            <message>
-                              <proframeHeader>
-                                <pfmAppName>FS-COM</pfmAppName>
-                                <pfmSvcName>COMFundUnityPrfRtSO</pfmSvcName>
-                                <pfmFnName>prfRtAllSrch</pfmFnName>
-                              </proframeHeader>
-                              <systemHeader></systemHeader>
-                              <COMFundUnityInfoInputDTO>
-                                <standardCd>{ticker:}</standardCd>
-                                <vSrchTrmFrom>{start_date:}</vSrchTrmFrom>
-                                <vSrchTrmTo>{end_date:}</vSrchTrmTo>
-                                <vSrchStd>{code_freq:}</vSrchStd>
-                              </COMFundUnityInfoInputDTO>
-                            </message>"""
-                ):
+                 headers = {"Content-Type": "application/xml"}):
+        self.col_ticker = col_ticker
+        self.cols_check = cols_check
         self.url = url
         self.headers = headers
-        self.payload = payload
         self.data_tickers = None
         self.tickers = None
         self.df_prices = None
         self.failed = [] # tickers failed to download
+        _ = self._load_master(file, path, col_ticker, cols_check)
 
 
-    def load_tickers(self, tickers=None, file=None, path='.', col_index='ticker'):
+    def _load_master(self, file, path, index_col, cols_check, msg=True):
         """
+        read the file of meta data of tickers
+        """
+        f = f'{path}/{file}'
+        try:
+            data_tickers = pd.read_csv(f, index_col=index_col)
+        except Exception as e:
+            return print(f'ERROR: failed to load {file}')
+            
+        cols = pd.Index(cols_check).difference(data_tickers.columns)
+        if cols.size > 0:
+            data_tickers[cols] = None
+        print(f'Data for {len(data_tickers)} funds loaded.')
+        # check missing data for conversion
+        _ = self.check_master(data_tickers)
+        self.data_tickers = data_tickers
+
+
+    def check_master(self, data_tickers=None):
+        data_tickers = self._check_var(data_tickers, self.data_tickers)
+        if data_tickers is None:
+            return print('ERROR: no ticker data loaded yet')
+
+        # check ticker duplication
+        idx = data_tickers.index
+        idx = idx[idx.duplicated()].to_list()
+        if len(idx) > 0:
+            print(f'ERROR: tickers duplicated')
+            return idx
+
+        # check conversion data
+        cond = data_tickers[self.cols_check].isna().any(axis=1)
+        n = cond.sum()
+        if n > 0:
+            print(f'{n} tickers missing data for conversion from rate to price.')
+            return data_tickers.loc[cond].index
+
+
+    def set_tickers(self, tickers=None, col_ticker='ticker'):
+        """
+        load master file of tickers and its info such as values for conversion from rate to price
         file: master file of assets with ticker, name, adjusting data, etc
         """
-        if file is None:
-            if tickers is None:
-                return print('ERROR')
-            else:
-                df_data = None
-                print('WARNING: No meta data for tickers')
+        data_tickers = self.data_tickers
+        if data_tickers is None:
+            return print('ERROR')
         else:
-            pfile = f'{path}/{file}'
-            df_data = pd.read_csv(pfile, index_col=col_index)
-            if tickers is None:
-                tickers = df_data.index.to_list()
-            else:
-                tickers = [tickers] if isinstance(tickers, str) else tickers
-                n = pd.Index(tickers).difference(df_data.index).size
-                if n > 0:
-                    print(f'ERROR: {n} funds missing in the fund data')
-                    tickers = pd.Index(tickers).intersection(df_data.index).to_list()
+            tickers_all = data_tickers.index.to_list()
+
+        if tickers is None:
+            tickers = tickers_all
+        else:
+            tickers = [tickers] if isinstance(tickers, str) else tickers
+            n = pd.Index(tickers).difference(tickers_all).size
+            if n > 0:
+                print(f'WARNING: {n} funds missing in the data')
+                tickers = pd.Index(tickers).intersection(tickers_all).to_list()
 
         print(f'{len(tickers)} tickers set')
         self.tickers = tickers
-        self.data_tickers = df_data
         return None
+
+
+    def update_master(self, file=None, path='.', 
+                      interval=5, pause_duration=.1, msg=False):
+        """
+        download data and update ticker data for self.cols_check
+        """
+        data_tickers = self.data_tickers
+        if data_tickers is None:
+            return print('ERROR')
+
+        col_ticker = self.col_ticker
+        cols_check = self.cols_check
+        cols_check_float = ['check1_price', 'check2_price']
+        
+        data, failed = list(), list()
+        tracker = TimeTracker(auto_start=True)
+        for x in tqdm(data_tickers.index):
+            # download settlements history to get dates for price history
+            df = self.download_settlements(x)
+            if df is None:
+                failed.append(x)
+                continue
+            else:
+                cond = (df['type'] == '결산')
+                start = df.loc[cond, 'start'].max()
+                end = df.set_index('start').loc[start, 'end']
+                
+            # download date & price for conversion from rate to price
+            df = self.download_price(x, start, end)
+            if df is None:
+                failed.append(x)
+                continue
+            else:
+                sr = df['price']
+                start = sr.index.min()
+                end = sr.index.max()
+                data.append([x, start, sr[start], end, sr[end]])
+            
+            tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
+        tracker.stop()
+
+        if len(data) > 0:
+            cols = [col_ticker, *cols_check]
+            df = pd.DataFrame().from_records(data, columns=cols).set_index(col_ticker)
+            df[cols_check_float] = df[cols_check_float].astype(float)
+            data_tickers.update(df, join='left', overwrite=True)
+            print('data_tickers updated')
+            self.data_tickers = data_tickers
+            self.save_master(file, path) if file is not None else None
+
+        if len(failed) > 0:
+            print('WARNING: check output of failed')
+            return failed
         
 
     def download(self, start_date, end_date, freq='monthly',
-                 interval=5, pause_duration=.1, msg=False):
+                 url=None, headers=None,
+                 interval=5, pause_duration=.1, msg=False,
+                 file=None, path='.'):
+        """
+        download rate and convert to price using prices in settlement info
+        """
         tickers = self.tickers
         if tickers is None:
             return print('ERROR: load tickers first')
             
-        url = self.url
-        headers = self.headers
-        payload = self.payload
+        url = self._check_var(url, self.url)
+        headers = self._check_var(headers, self.headers)
         data_tickers = self.data_tickers
         self.failed = [] # reset for new downloading
 
@@ -1240,10 +1318,11 @@ class FundDownloader():
         tracker = TimeTracker(auto_start=True)
         df_rates = None
         for x in tqdm(tickers):
-            sr = self._download_rate(x, start_date, end_date, freq=freq, msg=msg)
-            if sr is None:
+            df = self.download_rate(x, start_date, end_date, freq=freq, msg=msg)
+            if df is None:
                 self.failed.append(x)
             else:
+                sr = df['rate'].rename(x)
                 df_rates = sr.to_frame() if df_rates is None else pd.concat([df_rates, sr], axis=1)
             tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
         tracker.stop()
@@ -1256,37 +1335,167 @@ class FundDownloader():
 
         # convert to price
         df_prices = None
-        errors = list()
+        errors, index_errors = list(), list()
         for x in df_rates.columns:
             data = data_tickers.loc[x].to_dict()
-            data = {**data, 'ticker':x}
             sr_rate = df_rates[x]
-            sr, err = self._convert_rate(data, sr_rate, percentage=True, msg=msg)
-            df_prices = sr.to_frame() if df_prices is None else pd.concat([df_prices, sr], axis=1)
-            errors.append(err)
-
-        print(f'Max error of conversions: {max(errors)*100:.2f} %')
-        self.df_prices = df_prices
-        return errors
-
-
-    def _download_rate(self, ticker, start_date, end_date, freq='m', msg=False):
-        url = self.url
-        headers = self.headers
-
-        if freq.upper()[0] == 'M':
-            code_freq = 2
+            sr_n_err = self._convert_rate(data, sr_rate, percentage=True, msg=msg)
+            if sr_n_err is None:
+                print(f'ERROR: check data for {x}')
+            else:
+                sr, err = sr_n_err
+                df_prices = sr.to_frame() if df_prices is None else pd.concat([df_prices, sr], axis=1)
+                index_errors.append(x)
+                errors.append(err)
+                
+        if len(errors) > 0:
+            print(f'Max error of conversions: {max(errors):.2e}')
+            self.df_prices = df_prices.sort_index()
+            self.save(file, path) if file is not None else None
+            return pd.Series(errors, index=index_errors, name='error')
         else:
-            code_freq = 1
+            return None
+
+
+    def save(self, file, path='.'):
+        """
+        save price data
+        """
+        df_prices = self.df_prices
+        if df_prices is None:
+            print('ERROR')
+        else:
+            name, ext = splitext(file)
+            start, end = get_date_minmax(df_prices, date_format='%y%m%d')
+            file = f'{name}_{start}_{end}{ext}'
+            self._save(df_prices, file, path)
+        return None
+
+
+    def save_master(self, file, path='.'):
+        """
+        save master data
+        """
+        data_tickers = self.data_tickers
+        if data_tickers is None:
+            print('ERROR')
+        else:
+            self._save(data_tickers, file, path)
+        return None
+
+
+    def _save(self, df_result, file='fund_prices', path='.'):
+        file = set_filename(file, 'csv')
+        _ = save_dataframe(df_result, file, path, msg_succeed=f'{file} saved',
+                           msg_fail=f'ERROR: failed to save as {file} exists')
+
+
+    def download_rate(self, ticker, start_date, end_date, freq='m', msg=False,
+                       url=None, headers=None, date_format='%Y%m%d',
+                       payload="""<?xml version="1.0" encoding="utf-8"?>
+                                    <message>
+                                      <proframeHeader>
+                                        <pfmAppName>FS-COM</pfmAppName>
+                                        <pfmSvcName>COMFundUnityPrfRtSO</pfmSvcName>
+                                        <pfmFnName>prfRtAllSrch</pfmFnName>
+                                      </proframeHeader>
+                                      <systemHeader></systemHeader>
+                                      <COMFundUnityInfoInputDTO>
+                                        <standardCd>{ticker:}</standardCd>
+                                        <vSrchTrmFrom>{start_date:}</vSrchTrmFrom>
+                                        <vSrchTrmTo>{end_date:}</vSrchTrmTo>
+                                        <vSrchStd>{code_freq:}</vSrchStd>
+                                      </COMFundUnityInfoInputDTO>
+                                    </message>""",
+                       tag_iter='prfRtList', 
+                       tags={'date':'standardDt', 'rate':'managePrfRate'}
+                      ):
+        # convert inputs for request
+        start_date, end_date = self._convert_dates([start_date, end_date], date_format)
+        code_freq = 2 if freq.upper()[0] == 'M' else 1
+        kwargs = dict(ticker=ticker, start_date=start_date, end_date=end_date, code_freq=code_freq)
         
-        payload = self.payload.format(ticker=ticker, start_date=start_date, end_date=end_date, 
-                                      code_freq=code_freq)
+        df = self._download_data(payload, tag_iter, tags, **kwargs)
+        if df is not None:
+            df = df.set_index('date')
+            df.index = pd.to_datetime(df.index)
+            df['rate'] = df['rate'].astype('float')
+        return df
+        
+
+    def download_settlements(self, ticker, msg=False,
+                             url=None, headers=None,
+                             payload = """<?xml version="1.0" encoding="utf-8"?>
+                                            <message>
+                                              <proframeHeader>
+                                                <pfmAppName>FS-COM</pfmAppName>
+                                                <pfmSvcName>COMFundSettleExSO</pfmSvcName>
+                                                <pfmFnName>settleExSrch</pfmFnName>
+                                              </proframeHeader>
+                                              <systemHeader></systemHeader>
+                                                <COMFundUnityInfoInputDTO>
+                                                <standardCd>{ticker:}</standardCd>
+                                            </COMFundUnityInfoInputDTO>
+                                            </message>""",
+                             tag_iter='settleExList', 
+                             tags={'start':'trustAccSrt', 'end':'trustAccend', 'price':'standardCot', 
+                                   'amount':'uOriginalAmt', 'type':'vSettleGbNm'}
+                            ):
+        df = self._download_data(payload, tag_iter, tags, ticker=ticker)
+        if df is not None:
+            df['price'] = df['price'].astype('float')
+            df['amount'] = df['amount'].astype('int')
+            df['start'] = pd.to_datetime(df['start'])
+            df['end'] = pd.to_datetime(df['end'])
+        return df
+
+
+    def download_price(self, ticker, start_date, end_date, freq='m', msg=False,
+                        url=None, headers=None, date_format='%Y%m%d',
+                        payload = """<?xml version="1.0" encoding="utf-8"?>
+                                    <message>
+                                      <proframeHeader>
+                                        <pfmAppName>FS-COM</pfmAppName>
+                                        <pfmSvcName>COMFundPriceModSO</pfmSvcName>
+                                        <pfmFnName>priceModSrch</pfmFnName>
+                                      </proframeHeader>
+                                      <systemHeader></systemHeader>
+                                        <COMFundUnityInfoInputDTO>
+                                        <standardCd>{ticker:}</standardCd>
+                                        <companyCd></companyCd>
+                                        <vSrchTrmFrom>{start_date:}</vSrchTrmFrom>
+                                        <vSrchTrmTo>{end_date:}</vSrchTrmTo>
+                                        <vSrchStd>{code_freq:}</vSrchStd>
+                                    </COMFundUnityInfoInputDTO>
+                                    </message>""",
+                        tag_iter='priceModList', 
+                        tags={'date':'standardDt', 'price':'standardCot', 'amount':'uOriginalAmt'}
+                        ):
+        """
+        Do not use for long-term history of prices as it seems the prices are not adjusted
+        """
+        start_date, end_date = self._convert_dates([start_date, end_date], date_format)
+        code_freq = 2 if freq.upper()[0] == 'M' else 1
+        kwargs = dict(ticker=ticker, start_date=start_date, end_date=end_date, code_freq=code_freq)
+        df = self._download_data(payload, tag_iter, tags, **kwargs)
+        if df is not None:
+            df = df.set_index('date')
+            df.index = pd.to_datetime(df.index)
+            df['price'] = df['price'].astype('float')
+            df['amount'] = df['amount'].astype('int')
+        return df
+
+
+    def _download_data(self, payload, tag_iter, tags, 
+                       url=None, headers=None, **kwargs_payload):
+
+        url = self._check_var(url, self.url)
+        headers = self._check_var(headers, self.headers)
+        payload = payload.format(**kwargs_payload)
         xml = FundDownloader.fetch_data(url, headers, payload, msg=False)
-        sr = FundDownloader.parse_xml(xml=xml)
-        sr.name = ticker
-        return sr
+        return None if xml is None else FundDownloader.parse_xml(xml, tag_iter, tags)
 
-
+    
     @staticmethod
     def fetch_data(url, headers, payload, msg=False):
         # Sending the POST request
@@ -1299,67 +1508,52 @@ class FundDownloader():
 
     
     @staticmethod
-    def parse_xml(file=None, path='.', xml=None, cols=['date', None], 
-                  tag_iter='prfRtList', tag_date='standardDt', 
-                  tag_val='managePrfRate'):
+    def parse_xml(xml, tag_iter, tags):
         """
-        file: xml. historical of cumulative rate of return in long format
+        tags: dict of column name to tag in list or list of tags
         """
-        if file is None:
-            if xml is None:
-                return print('ERROR')
-            else:
-                root = ET.fromstring(xml)
+        if isinstance(tags, dict):
+            cols = list(tags.keys())
+            tags = list(tags.values())
+        elif isinstance(tags, (list, tuple)):
+            cols = tags
         else:
-            tree = ET.parse(f'{path}/{file}')
-            root = tree.getroot()
-        
+            return print('ERROR')
+            
+        root = ET.fromstring(xml)
         data = list()
-        for x in root.iter(tag_iter):
-            date = x.find(tag_date).text
-            val = x.find(tag_val).text
-            data.append((date,val))
-
+        try:
+            for itr in root.iter(tag_iter):
+                d = [itr.find(x).text for x in tags]
+                data.append(d)
+        except Exception as e:
+            return print(f'ERROR: {e}')
+    
         if len(data) == 0:
-            return print('ERROR: Check values of tag_iter, tag_date and tag_val')
+            return print('ERROR')
         
-        sr_val = pd.DataFrame().from_records(data, columns=cols).set_index(cols[0]).astype(float)
-        sr_val.index = pd.to_datetime(sr_val.index)
-        # make sure to get series
-        return sr_val.iloc[:, 0]
+        return pd.DataFrame().from_records(data, columns=cols)
+    
 
-
-    def _convert_rate(self, data, sr_rate, percentage=True, msg=True):
+    def _convert_rate(self, data, sr_rate, percentage=True, msg=False):
         """
+        calc price from rate of return
         data: series or dict
         """
-        ticker = data['ticker']
         data_check = [
             (data['check1_date'], data['check1_price']),
             (data['check2_date'], data['check2_price']),
         ]
-        sr_n_err = self.get_price(sr_rate, data_check, percentage=percentage, msg=msg)
-        if sr_n_err is None:
-            return print(f'ERROR: check {ticker}')
-        else:
-            return sr_n_err
-
-
-    def get_price(self, sr_rate, data_check, percentage=True, msg=True):
-        """
-        calc price from rate of return
-        """
         # date check
         for dt, _ in data_check:
             try:
-                dt = pd.to_datetime(dt)
                 rate = sr_rate.loc[dt]
             except KeyError as e:
-                return print(f'ERROR: KeyError {e}')
+                return print(f'ERROR: KeyError {e}') if msg else None
         
         # convert to price with data_check[0]
         dt, price = data_check[0]
-        dt = pd.to_datetime(dt)
+        #dt = pd.to_datetime(dt)
         rate = sr_rate.loc[dt]
         if percentage:
             rate = rate/100
@@ -1370,12 +1564,25 @@ class FundDownloader():
         # check price
         dt, price = data_check[1]
         e = sr_price.loc[dt]/price - 1
-        print(f'error: {e*100:.2f} %') if msg else None
+        print(f'error: {e:.2f}') if msg else None
+        
         return (sr_price, e)
 
-    
+
     def _check_var(self, var_arg, var_self):
         return var_self if var_arg is None else var_arg
+
+
+    def _convert_dates(self, dates, date_format='%Y%m%d'):
+        """
+        convert dates for inputs of request
+        """
+        if not isinstance(dates, list):
+            dates = [dates]
+        if isinstance(dates[0], str):
+            return pd.to_datetime(dates).strftime(date_format)
+        else: # assuming datetime
+            return pd.Index(dates).strftime(date_format)
         
 
 
