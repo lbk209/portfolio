@@ -368,7 +368,7 @@ def get_filename(file, repl, pattern=r"_\d+(?=\.\w+$)"):
     return file
 
 
-def set_filename(file, ext=None, default=None):
+def set_filename(file, ext=None, default='test'):
     """
     return default for file name if file is None
     set extension if no extension in file
@@ -643,7 +643,8 @@ class DataManager():
                  universe='kospi200', upload_type='price', 
                  daily=True, days_in_year=12):
         """
-        universe: kospi200, etf, krx, file. used only for ticker name
+        universe: kospi200, etf, krx, fund, file. used only for ticker name
+        file: kw for pf_data
         """
         file = set_filename(file, 'csv') 
         self.file_historical = get_file_latest(file, path) # latest file
@@ -756,15 +757,18 @@ class DataManager():
 
 
     def _get_tickers(self, universe='kospi200', tickers=None, **kwargs):
-        if universe.lower() == 'kospi200':
+        uv = universe.lower()
+        if uv == 'kospi200':
             func = self._get_tickers_kospi200
-        elif universe.lower() == 'etf':
+        elif uv == 'etf':
             func = self._get_tickers_etf
-        elif universe.lower() == 'file':
+        elif uv == 'fund':
+            func = self._get_tickers_fund
+        elif uv == 'file':
             func = self._get_tickers_file
-        elif universe.lower() == 'krx':
+        elif uv == 'krx':
             func = self._get_tickers_krx
-        elif universe.lower() == 'yahoo':
+        elif uv == 'yahoo':
             tickers = self.df_prices.columns.to_list() if tickers is None else tickers
             func = lambda *a, **k: self._get_tickers_yahoo(tickers, *a, **k)
         else:
@@ -796,6 +800,15 @@ class DataManager():
             tickers.update(df.set_index(col_asset)[col_name].to_dict())
         return tickers
 
+
+    def _get_tickers_fund(self, file, path=None, col_name='name'):
+        path = self._check_var(path, self.path)
+        fd = FundDownloader(file, path, check_master=False)
+        if len(fd.check_master()) > 0:
+            #fd.update_master(file=file, path=path)
+            fd.update_master() # testing
+        return fd.data_tickers[col_name].to_dict()
+        
 
     def _get_tickers_file(self, col_asset='ticker', col_name='name'):
         file = self.file_historical
@@ -920,11 +933,14 @@ class DataManager():
         return df_prices
 
     
-    def get_names(self, tickers=None, reset=False):
+    def get_names(self, tickers=None, reset=False, **kwargs):
+        """
+        kwargs: additional args for _get_tickers
+        """
         asset_names = self.asset_names
         df_prices = self.df_prices
         if reset or (asset_names is None):
-            asset_names = self._get_tickers(self.universe, tickers=tickers)
+            asset_names = self._get_tickers(self.universe, tickers=tickers, **kwargs)
             if (asset_names is None) or len(asset_names) == 0:
                 return print('ERROR: Failed to get ticker names')
             else:
@@ -1165,22 +1181,24 @@ class KRXDownloader():
 
 
 class FundDownloader():
-    def __init__(self, file, path='.', col_ticker='ticker', 
+    def __init__(self, file, path='.', check_master=True,
+                 col_ticker='ticker', 
                  cols_check=['check1_date', 'check1_price', 'check2_date', 'check2_price'],
                  url = "https://dis.kofia.or.kr/proframeWeb/XMLSERVICES/",
                  headers = {"Content-Type": "application/xml"}):
         self.col_ticker = col_ticker
         self.cols_check = cols_check
+        self.data_tickers = self._load_master(file, path, col_ticker, cols_check)
         self.url = url
         self.headers = headers
-        self.data_tickers = None
         self.tickers = None
         self.df_prices = None
         self.failed = [] # tickers failed to download
-        _ = self._load_master(file, path, col_ticker, cols_check)
+        # check missing data for conversion
+        _ = self.check_master(data_tickers) if check_master else None
 
 
-    def _load_master(self, file, path, index_col, cols_check, msg=True):
+    def _load_master(self, file, path, index_col, cols_check):
         """
         read the file of meta data of tickers
         """
@@ -1194,10 +1212,8 @@ class FundDownloader():
         if cols.size > 0:
             data_tickers[cols] = None
         print(f'Data for {len(data_tickers)} funds loaded.')
-        # check missing data for conversion
-        _ = self.check_master(data_tickers)
-        self.data_tickers = data_tickers
-
+        return data_tickers
+        
 
     def check_master(self, data_tickers=None):
         data_tickers = self._check_var(data_tickers, self.data_tickers)
@@ -1216,32 +1232,7 @@ class FundDownloader():
         n = cond.sum()
         if n > 0:
             print(f'{n} tickers missing data for conversion from rate to price.')
-            return data_tickers.loc[cond].index
-
-
-    def set_tickers(self, tickers=None, col_ticker='ticker'):
-        """
-        load master file of tickers and its info such as values for conversion from rate to price
-        file: master file of assets with ticker, name, adjusting data, etc
-        """
-        data_tickers = self.data_tickers
-        if data_tickers is None:
-            return print('ERROR')
-        else:
-            tickers_all = data_tickers.index.to_list()
-
-        if tickers is None:
-            tickers = tickers_all
-        else:
-            tickers = [tickers] if isinstance(tickers, str) else tickers
-            n = pd.Index(tickers).difference(tickers_all).size
-            if n > 0:
-                print(f'WARNING: {n} funds missing in the data')
-                tickers = pd.Index(tickers).intersection(tickers_all).to_list()
-
-        print(f'{len(tickers)} tickers set')
-        self.tickers = tickers
-        return None
+            return data_tickers.loc[cond].index.to_list()
 
 
     def update_master(self, file=None, path='.', 
@@ -1297,6 +1288,31 @@ class FundDownloader():
             print('WARNING: check output of failed')
             return failed
         
+
+    def set_tickers(self, tickers=None, col_ticker='ticker'):
+        """
+        load master file of tickers and its info such as values for conversion from rate to price
+        file: master file of assets with ticker, name, adjusting data, etc
+        """
+        data_tickers = self.data_tickers
+        if data_tickers is None:
+            return print('ERROR')
+        else:
+            tickers_all = data_tickers.index.to_list()
+
+        if tickers is None:
+            tickers = tickers_all
+        else:
+            tickers = [tickers] if isinstance(tickers, str) else tickers
+            n = pd.Index(tickers).difference(tickers_all).size
+            if n > 0:
+                print(f'WARNING: {n} funds missing in the data')
+                tickers = pd.Index(tickers).intersection(tickers_all).to_list()
+
+        print(f'{len(tickers)} tickers set')
+        self.tickers = tickers
+        return None
+
 
     def download(self, start_date, end_date, freq='monthly',
                  url=None, headers=None,
