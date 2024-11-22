@@ -1,22 +1,20 @@
 path_data = 'data'
 path_tran = 'transaction'
 
-# Universe: equity pool, file, price/rate
-kwargs_dm = ['universe', 'file', 'upload_type'] # kwargs of DataManager
+# Universe: equity pool, price file, daily/monthly, ticker
+kwargs_dm = ['universe', 'file', 'tickers', 'daily'] # kwargs of DataManager
 UNIVERSES = dict(
-    UV_K200 = ['kospi200', 'kospi200_prices', 'price'],
-    UV_KRX = ['krx', 'krx_prices', 'price'],
-    UV_LIQ = ['krx', 'krx_liq_prices', 'price'],
-    UV_WTR = ['etf', 'etfs_weather', 'price'],
-    UV_ETF = ['etf', 'etfs_all', 'price'],
-    UV_IRP = ['file', 'funds_irp', 'rate'],
-    UV_HANA = ['file', 'funds_kebhana', 'rate'],
-    UV_FCTR = ['yahoo', 'etfs_factors', 'price']
+    UV_K200 = ['kospi200', 'kospi200_prices', 'KRX/INDEX/STOCK/1028', True],
+    UV_KRX = ['krx', 'krx_prices', 'KOSPI/KOSDAQ', True],
+    UV_LIQ = ['krx', 'krx_liq_prices', 'KOSPI,KOSDAQ', True],
+    UV_WTR = ['etf', 'etfs_weather', 'ETF/KR', True],
+    UV_ETF = ['etf', 'etfs_all', 'ETF/KR', True],
+    #UV_IRP = ['fund', 'funds_irp_prices', 'funds_info', False],
+    UV_IRP = ['fund', 'funds_irp_prices', 'funds_info_test', False],
+    UV_HANA = ['fund', 'funds_hana_prices', 'funds_info', False],
+    UV_FCTR = ['yahoo', 'etfs_factors', None, True]
 )
 UNIVERSES = {k: {**dict(zip(kwargs_dm, v)), 'path':path_data} for k,v in UNIVERSES.items()}
-
-MONTHLY = ['UV_IRP', 'UV_HANA'] # universes of monthly price
-UNIVERSES = {k: {**v, 'daily':False} if k in MONTHLY else v for k,v in UNIVERSES.items()}
 
 
 # Portfolio strategy (kwargs of PotfolioManager)
