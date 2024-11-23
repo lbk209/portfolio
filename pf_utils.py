@@ -74,136 +74,6 @@ def valuate_bond(face, rate, year, ytm, n_pay=1):
     return vc + face/(1+r_discount)**(year*n_pay)
 
 
-def import_rate1(file, path='.', cols=['date', None]):
-    """
-    file: historical of cumulative rate of return in long format
-    data_check: [(기준일1, 기준가1), (기준일2, 기준가2)]
-    """
-    df_rate = pd.read_csv(f'{path}/{file}', parse_dates=[0], index_col=[0])
-    if df_rate.columns.size > 1:
-        print('WARNING: taking the 1st two columns only.')
-    # make sure to get series
-    df_rate = df_rate.iloc[:, 0]
-    df_rate = df_rate.rename_axis(cols[0])
-    
-    col_data = cols[1]
-    if col_data is None:
-        col_data = file.split('.')[0]
-    df_rate.name = col_data
-
-    return df_rate
-
-
-def import_rate2(file, path='.', cols=['date', None], n_headers=1):
-    """
-    file: historical of cumulative rate of return in wide format
-    data_check: [(기준일1, 기준가1), (기준일2, 기준가2)]
-    """
-    df_rate = pd.read_csv(f'{path}/{file}')
-    df_rate = df_rate.T.iloc[n_headers:, 0].astype(float)
-
-    df_rate.index = pd.to_datetime(df_rate.index)
-    df_rate = df_rate.rename_axis(cols[0])
-    
-    col_data = cols[1]
-    if col_data is None:
-        col_data = file.split('.')[0]
-    df_rate.name = col_data
-
-    return df_rate
-
-
-def import_xml_rate(file, path='.', cols=['date', None], 
-                    tag_iter='prfRtList', tag_date='standardDt', 
-                    tag_val='managePrfRate'):
-    """
-    file: xml. historical of cumulative rate of return in long format
-    """
-    tree = ET.parse(f'{path}/{file}')
-    root = tree.getroot()
-    
-    data = list()
-    for x in root.iter(tag_iter):
-        date = x.find(tag_date).text
-        val = x.find(tag_val).text
-        data.append((date,val))
-    
-    df_val = pd.DataFrame().from_records(data, columns=cols).set_index(cols[0]).astype(float)
-    df_val.index = pd.to_datetime(df_val.index)
-    # make sure to get series
-    df_val = df_val.iloc[:, 0]
-    
-    return df_val
-    
-
-def get_price(df_rate, data_check, rate_is_percent=True, print_msg=True):
-    """
-    calc price from rate of return
-    """
-    # date check
-    for dt, _ in data_check:
-        try:
-            dt = pd.to_datetime(dt)
-            rate = df_rate.loc[dt]
-        except KeyError as e:
-            return print(f'ERROR: KeyError {e}')
-    
-    # convert to price with data_check[0]
-    dt, price = data_check[0]
-    dt = pd.to_datetime(dt)
-    rate = df_rate.loc[dt]
-    if rate_is_percent:
-        rate = rate/100
-        df_rate = df_rate/100
-    price_base = price / (rate+1)
-    df_price = (df_rate + 1) * price_base 
-
-    # check price
-    dt, price = data_check[1]
-    e = df_price.loc[dt]/price - 1
-    if print_msg:
-        print(f'error: {e*100:.2f} %')
-    return (df_price, e)
-
-
-def convert_rate_to_price(data, n_headers=1, path=None, 
-                          rate_is_percent=True, df_rate=None, rate_only=False,
-                          print_msg=False):
-    """
-    data: series or dict
-    df_rate: historical given as dataframe
-    """
-    data_type = data['data_type']
-    if data_type == 1:
-        import_rate = import_rate1
-    elif data_type == 2:
-        import_rate = lambda *args, **kwargs: import_rate2(*args, n_headers=n_headers, **kwargs)
-    elif data_type == 3:
-        import_rate = import_xml_rate
-    else:
-        if df_rate is None:
-            return print(f'ERROR: no data type {data_type} exists')
-        else:
-            import_rate = lambda *args, **kwargs: df_rate.rename_axis(kwargs['cols'][0]).rename(kwargs['cols'][1])
-    
-    ticker = data['ticker']
-    file = get_file_latest(data['file'], path) # latest file
-    data_check = [
-        (data['check1_date'], data['check1_price']),
-        (data['check2_date'], data['check2_price']),
-    ]
-    
-    df = import_rate(file, path=path, cols=['date', ticker])
-    if rate_only:
-       return df
-        
-    df_n_err = get_price(df, data_check, rate_is_percent=rate_is_percent, print_msg=print_msg)
-    if df_n_err is None:
-        return print(f'ERROR: check {ticker}')
-    else:
-        return df_n_err
-
-
 def get_date_range(dfs, symbol_name=None, return_intersection=False):
     """
     get datetime range of each ticker (columns) or datetime index of intersection
@@ -816,7 +686,7 @@ class DataManager():
         """
         self.fickers: file name for tickers
         """
-        file = self.tickers
+        file = self.tickers # file of tickers
         path = self._check_var(path, self.path)
         fd = FundDownloader(file, path, check_master=False, msg=False)
         if fd.check_master() is not None:
@@ -829,7 +699,7 @@ class DataManager():
         """
         tickers: file for names of tickers
         """
-        file = tickers
+        file = self.tickers # file of tickers
         path = self._check_var(path, self.path)
         df = pd.read_csv(f'{path}/{file}')
         security_names = df.set_index(col_ticker)[col_name].to_dict()
