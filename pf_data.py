@@ -1,34 +1,30 @@
 path_data = 'data'
 path_tran = 'transaction'
 
-# Universe: equity pool, file, price/rate
-kwargs_dm = ['universe', 'file', 'upload_type'] # kwargs of DataManager
+# Universe: equity pool, price file, daily/monthly, ticker
+kwargs_dm = ['universe', 'file', 'tickers', 'daily'] # kwargs of DataManager
 UNIVERSES = dict(
-    UV_K200 = ['kospi200', 'kospi200_prices', 'price'],
-    UV_KRX = ['krx', 'krx_prices', 'price'],
-    UV_LIQ = ['krx', 'krx_liq_prices', 'price'],
-    UV_WTR = ['etf', 'etfs_weather', 'price'],
-    UV_ETF = ['etf', 'etfs_all', 'price'],
-    UV_IRP = ['file', 'funds_irp', 'rate'],
-    UV_HANA = ['file', 'funds_kebhana', 'rate'],
-    UV_FCTR = ['yahoo', 'etfs_factors', 'price']
+    UV_K200 = ['kospi200', 'kospi200_prices', 'KRX/INDEX/STOCK/1028', True],
+    UV_KRX = ['krx', 'krx_prices', 'KOSPI/KOSDAQ', True],
+    UV_LIQ = ['krx', 'krx_liq_prices', 'KOSPI,KOSDAQ', True],
+    UV_WTR = ['etf', 'etfs_weather', 'ETF/KR', True],
+    UV_ETF = ['etf', 'etfs_all', 'ETF/KR', True],
+    UV_FUND = ['fund', 'funds_prices', 'funds_info', False],
+    UV_FCTR = ['yahoo', 'etfs_factors', None, True]
 )
 UNIVERSES = {k: {**dict(zip(kwargs_dm, v)), 'path':path_data} for k,v in UNIVERSES.items()}
-
-MONTHLY = ['UV_IRP', 'UV_HANA'] # universes of monthly price
-UNIVERSES = {k: {**v, 'daily':False} if k in MONTHLY else v for k,v in UNIVERSES.items()}
 
 
 # Portfolio strategy (kwargs of PotfolioManager)
 STRATEGIES = dict(
-    MMT = dict(method_select='Momentum', method_weigh='Equally', sort_ascending=False, n_assets=5, lookback='1y', lag='1w'),
-    PER = dict(method_select='F-ratio', method_weigh='Equally', sort_ascending=True, n_assets=20, lookback='2m', lag=0),
+    MMT = dict(method_select='Momentum', method_weigh='Equally', sort_ascending=False, n_tickers=5, lookback='1y', lag='1w'),
+    PER = dict(method_select='F-ratio', method_weigh='Equally', sort_ascending=True, n_tickers=20, lookback='2m', lag=0),
     WTR = dict(method_select='All', method_weigh='Equally'),
     LIQ = dict(method_select='Selected', method_weigh='Equally'),
     IRP = dict(method_select='Selected', method_weigh='Equally'),
     HANA= dict(method_select='Selected', method_weigh='Equally'),
     FCTR= dict(method_select='Selected', method_weigh='Equally'),
-    KRX = dict(method_select='Momentum', method_weigh='Equally', sort_ascending=False, n_assets=5, lookback='1y', lag='1m')
+    KRX = dict(method_select='Momentum', method_weigh='Equally', sort_ascending=False, n_tickers=5, lookback='1y', lag='1m')
 )
 
 # Transaction file
@@ -51,8 +47,8 @@ PORTFOLIOS = [
     ('PER', 'UV_K200'), 
     ('WTR', 'UV_WTR'), # modified all weather
     ('LIQ', 'UV_LIQ'), 
-    ('IRP', 'UV_IRP'), 
-    ('HANA', 'UV_HANA'), 
+    ('IRP', 'UV_FUND'), 
+    ('HANA', 'UV_FUND'), 
     ('FCTR', 'UV_FCTR'), # factor intesting with etf
     ('KRX', 'UV_KRX') # for testing
 ]

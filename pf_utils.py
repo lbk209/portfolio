@@ -74,136 +74,6 @@ def valuate_bond(face, rate, year, ytm, n_pay=1):
     return vc + face/(1+r_discount)**(year*n_pay)
 
 
-def import_rate1(file, path='.', cols=['date', None]):
-    """
-    file: historical of cumulative rate of return in long format
-    data_check: [(기준일1, 기준가1), (기준일2, 기준가2)]
-    """
-    df_rate = pd.read_csv(f'{path}/{file}', parse_dates=[0], index_col=[0])
-    if df_rate.columns.size > 1:
-        print('WARNING: taking the 1st two columns only.')
-    # make sure to get series
-    df_rate = df_rate.iloc[:, 0]
-    df_rate = df_rate.rename_axis(cols[0])
-    
-    col_data = cols[1]
-    if col_data is None:
-        col_data = file.split('.')[0]
-    df_rate.name = col_data
-
-    return df_rate
-
-
-def import_rate2(file, path='.', cols=['date', None], n_headers=1):
-    """
-    file: historical of cumulative rate of return in wide format
-    data_check: [(기준일1, 기준가1), (기준일2, 기준가2)]
-    """
-    df_rate = pd.read_csv(f'{path}/{file}')
-    df_rate = df_rate.T.iloc[n_headers:, 0].astype(float)
-
-    df_rate.index = pd.to_datetime(df_rate.index)
-    df_rate = df_rate.rename_axis(cols[0])
-    
-    col_data = cols[1]
-    if col_data is None:
-        col_data = file.split('.')[0]
-    df_rate.name = col_data
-
-    return df_rate
-
-
-def import_xml_rate(file, path='.', cols=['date', None], 
-                    tag_iter='prfRtList', tag_date='standardDt', 
-                    tag_val='managePrfRate'):
-    """
-    file: xml. historical of cumulative rate of return in long format
-    """
-    tree = ET.parse(f'{path}/{file}')
-    root = tree.getroot()
-    
-    data = list()
-    for x in root.iter(tag_iter):
-        date = x.find(tag_date).text
-        val = x.find(tag_val).text
-        data.append((date,val))
-    
-    df_val = pd.DataFrame().from_records(data, columns=cols).set_index(cols[0]).astype(float)
-    df_val.index = pd.to_datetime(df_val.index)
-    # make sure to get series
-    df_val = df_val.iloc[:, 0]
-    
-    return df_val
-    
-
-def get_price(df_rate, data_check, rate_is_percent=True, print_msg=True):
-    """
-    calc price from rate of return
-    """
-    # date check
-    for dt, _ in data_check:
-        try:
-            dt = pd.to_datetime(dt)
-            rate = df_rate.loc[dt]
-        except KeyError as e:
-            return print(f'ERROR: KeyError {e}')
-    
-    # convert to price with data_check[0]
-    dt, price = data_check[0]
-    dt = pd.to_datetime(dt)
-    rate = df_rate.loc[dt]
-    if rate_is_percent:
-        rate = rate/100
-        df_rate = df_rate/100
-    price_base = price / (rate+1)
-    df_price = (df_rate + 1) * price_base 
-
-    # check price
-    dt, price = data_check[1]
-    e = df_price.loc[dt]/price - 1
-    if print_msg:
-        print(f'error: {e*100:.2f} %')
-    return (df_price, e)
-
-
-def convert_rate_to_price(data, n_headers=1, path=None, 
-                          rate_is_percent=True, df_rate=None, rate_only=False,
-                          print_msg=False):
-    """
-    data: series or dict
-    df_rate: historical given as dataframe
-    """
-    data_type = data['data_type']
-    if data_type == 1:
-        import_rate = import_rate1
-    elif data_type == 2:
-        import_rate = lambda *args, **kwargs: import_rate2(*args, n_headers=n_headers, **kwargs)
-    elif data_type == 3:
-        import_rate = import_xml_rate
-    else:
-        if df_rate is None:
-            return print(f'ERROR: no data type {data_type} exists')
-        else:
-            import_rate = lambda *args, **kwargs: df_rate.rename_axis(kwargs['cols'][0]).rename(kwargs['cols'][1])
-    
-    ticker = data['ticker']
-    file = get_file_latest(data['file'], path) # latest file
-    data_check = [
-        (data['check1_date'], data['check1_price']),
-        (data['check2_date'], data['check2_price']),
-    ]
-    
-    df = import_rate(file, path=path, cols=['date', ticker])
-    if rate_only:
-       return df
-        
-    df_n_err = get_price(df, data_check, rate_is_percent=rate_is_percent, print_msg=print_msg)
-    if df_n_err is None:
-        return print(f'ERROR: check {ticker}')
-    else:
-        return df_n_err
-
-
 def get_date_range(dfs, symbol_name=None, return_intersection=False):
     """
     get datetime range of each ticker (columns) or datetime index of intersection
@@ -252,12 +122,12 @@ def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10, msg=True):
         #days_in_freq = round(days_in_year/12)
         factor = 12
 
-    # calc mean days for each asset
+    # calc mean days for each ticker
     df_days = (df.assign(gb=df.index.strftime(grp_format)).set_index('gb')
                  .apply(lambda x: x.dropna().groupby('gb').count()[1:-1])
                  #.fillna(0) # comment as it distorts mean
                  .mul(factor).mean().round()
-                 .fillna(0) # for the case no asset has enough days for the calc
+                 .fillna(0) # for the case no ticker has enough days for the calc
               )
 
     cond = (df_days != days_in_year)
@@ -270,36 +140,36 @@ def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10, msg=True):
             _ = [print(f'{k}: {int(v)}') for k,v in df.to_dict().items()]
         else:
             p = n / len(df_days) * 100
-            #print(f'WARNING: the number of days in a year with {n} assets ({p:.0f}%) is not {days_in_year} in setting:')
-            print(f'WARNING: the number of days in a year with {n} assets ({p:.0f}%) is {df.mean():.0f} in avg.')
+            #print(f'WARNING: the number of days in a year with {n} tickers ({p:.0f}%) is not {days_in_year} in setting:')
+            print(f'WARNING: the number of days in a year with {n} tickers ({p:.0f}%) is {df.mean():.0f} in avg.')
     
     return df_days
 
 
-def align_period(df_assets, axis=0, date_format='%Y-%m-%d',
+def align_period(df_prices, axis=0, date_format='%Y-%m-%d',
                  fill_na=True, print_msg1=True, print_msg2=True, n_indent=2):
     """
     axis: Determines the operation for handling missing data.
         0 : Drop rows (time index) with missing prices.
-        1 : Drop columns (assets) with a count of non-missing prices less than the maximum found.
+        1 : Drop columns (tickers) with a count of non-missing prices less than the maximum found.
     fill_na: set False to drop nan fields
     """
     msg1 = None
     if axis == 0:
-        df_aligned = get_date_range(df_assets, return_intersection=True)
-        if len(df_aligned) < len(df_assets):
+        df_aligned = get_date_range(df_prices, return_intersection=True)
+        if len(df_aligned) < len(df_prices):
             dts = get_date_minmax(df_aligned, date_format)
             msg1 = f"period reset: {' ~ '.join(dts)}"
     elif axis == 1:
-        c_all = df_assets.columns
-        df_cnt = df_assets.apply(lambda x: x.dropna().count())
+        c_all = df_prices.columns
+        df_cnt = df_prices.apply(lambda x: x.dropna().count())
         cond = (df_cnt < df_cnt.max())
         c_drop = c_all[cond]
-        df_aligned = df_assets[c_all.difference(c_drop)]
+        df_aligned = df_prices[c_all.difference(c_drop)]
         n_c = len(c_drop)
         if n_c > 0:
             n_all = len(c_all)
-            msg1 = f'{n_c} assets removed for shorter periods ({n_c/n_all*100:.1f}%)'
+            msg1 = f'{n_c} tickers removed for shorter periods ({n_c/n_all*100:.1f}%)'
     else:
         pass
 
@@ -368,7 +238,7 @@ def get_filename(file, repl, pattern=r"_\d+(?=\.\w+$)"):
     return file
 
 
-def set_filename(file, ext=None, default=None):
+def set_filename(file, ext=None, default='test'):
     """
     return default for file name if file is None
     set extension if no extension in file
@@ -495,9 +365,9 @@ def format_rounded_string(*ns, string='ROI: {:.1%}, UGL: {:,.0f}', n_round=3):
     return string.format(*ns)
 
 
-class AssetDict(dict):
+class SecurityDict(dict):
     """
-    A dictionary subclass that associates keys (ex:asset tickers) with names.
+    A dictionary subclass that associates keys (ex:security tickers) with names.
     Attributes:
         names (dict): Optional dictionary mapping tickers to names.
     """
@@ -640,23 +510,27 @@ class TimeTracker:
 
 class DataManager():
     def __init__(self, file=None, path='.', 
-                 universe='kospi200', upload_type='price', 
+                 universe='kospi200', tickers='KRX/INDEX/STOCK/1028', 
                  daily=True, days_in_year=12):
         """
-        universe: kospi200, etf, krx, file. used only for ticker name
+        universe: kospi200, etf, krx, fund, etc. only for getting tickers. see pf_data for more
+        file: price history. set as kw for pf_data
+        tickers: ticker for getting pool of tickers. can be a file name for tickers as well.
+        daily: set to False if price is monthly
+        days_in_year: only for convert_to_daily
         """
         file = set_filename(file, 'csv') 
         self.file_historical = get_file_latest(file, path) # latest file
         self.path = path
         self.universe = universe
-        self.asset_names = None 
-        self.upload_type = upload_type
+        self.tickers = tickers
+        self.security_names = None 
         self.df_prices = None
-        self.days_in_year = days_in_year # only for convert_to_daily
-        self.upload(self.file_historical)
-        self.convert_to_daily(True, days_in_year) if not daily else None
-        # asset_names set in downloading except for 'file' universe
-        _ = self.get_names() if universe == 'file' else None
+        self.days_in_year = days_in_year
+        self.upload(self.file_historical) # update self.df_prices
+        if (not daily) and self.df_prices is not None:
+            self.convert_to_daily(True, days_in_year)
+
     
     def upload(self, file=None, path=None):
         """
@@ -667,8 +541,7 @@ class DataManager():
         if file is None:
             return print('ERROR: no file to load.')
         else:
-            df_prices = self._upload(file, path, upload_type=self.upload_type,
-                                    msg_exception='WARNING: uploading failed as ')
+            df_prices = self._upload(file, path, msg_exception='WARNING: uploading failed as ')
 
         if df_prices is None:
             return None # error msg printed out by self._upload
@@ -690,26 +563,15 @@ class DataManager():
         start_date, end_date = DataManager.get_start_end_dates(start_date, end_date, 
                                                                close_today, n_years, date_format)
         print('Downloading ...')
-        if tickers is None:
-            asset_names = self._get_tickers(self.universe)
-            if (asset_names is None) or len(asset_names) == 0:
-                return print('ERROR: Failed to get ticker names')
-            else:
-                tickers = list(asset_names.keys())
-        else: 
-            if isinstance(tickers, str) and (tickers.lower() == 'selected'):
-                if self.df_prices is None:
-                    return print('ERROR: No selected tickers as no file exists')
-                else:
-                    tickers = self.df_prices.columns.to_list()
-            elif not isinstance(tickers, list):
-                return print('ERROR: check tickers set')
-            asset_names = self._get_tickers(self.universe, tickers)
+        
+        security_names = self._get_tickers(tickers)
+        if security_names is None:
+            return None # see _get_tickers for error msg
+        else:
+            tickers = list(security_names.keys())
                    
         try:
-            df_prices = DataManager.download_universe(self.universe, 
-                                                      tickers, start_date, end_date,
-                                                      **kwargs_download)
+            df_prices = self.download_universe(tickers, start_date, end_date, **kwargs_download)
             if not close_today: # market today not closed yet
                 df_prices = df_prices.loc[:datetime.today() - timedelta(days=1)]
             print('... done')
@@ -718,7 +580,7 @@ class DataManager():
             return print(f'ERROR: {e}')
             
         self.df_prices = df_prices
-        self.asset_names = asset_names     
+        self.security_names = security_names     
         if save:
             self.save(date=df_prices.index.max())
         return print('df_prices updated')
@@ -752,56 +614,96 @@ class DataManager():
         n = df_prices.columns.size
         s1  = str_pfx + " " if str_pfx else ""
         s2  = " " + str_sfx if str_sfx else ""
-        return print(f'{s1}{n} assets from {dt0} to {dt1}{s2}')
+        return print(f'{s1}{n} securities from {dt0} to {dt1}{s2}')
 
 
-    def _get_tickers(self, universe='kospi200', tickers=None, **kwargs):
-        if universe.lower() == 'kospi200':
+    def _get_tickers(self, tickers=None, **kwargs):
+        """
+        tickers: None, 'selected' for all in price history, 
+                 list of tickers selected from universe
+        """
+        if isinstance(tickers, str) and (tickers.lower() == 'selected'):
+            if self.df_prices is None:
+                return print('ERROR: No selected tickers as no price exists')
+            else:
+                tickers = self.df_prices.columns.to_list()
+
+        uv = self.universe.lower()
+        if uv == 'kospi200':
             func = self._get_tickers_kospi200
-        elif universe.lower() == 'etf':
+        elif uv == 'etf':
             func = self._get_tickers_etf
-        elif universe.lower() == 'file':
+        elif uv == 'fund':
+            func = self._get_tickers_fund
+        elif uv == 'file':
             func = self._get_tickers_file
-        elif universe.lower() == 'krx':
+        elif uv == 'krx':
             func = self._get_tickers_krx
-        elif universe.lower() == 'yahoo':
-            tickers = self.df_prices.columns.to_list() if tickers is None else tickers
-            func = lambda *a, **k: self._get_tickers_yahoo(tickers, *a, **k)
+        elif uv == 'yahoo':
+            func = self._get_tickers_yahoo
         else:
             func = lambda **x: None
-
+     
         try:
-            return func(**kwargs)
+            security_names = func(tickers, **kwargs)
+            failed = 'ERROR: Failed to get ticker names' if len(security_names) == 0 else None
         except Exception as e:
-            return print(f'ERROR: failed to download tickers as {e}')
+            failed = f'ERROR: failed to download tickers as {e}'
+
+        if failed:
+            return print(failed)
+        else:
+            return security_names
             
 
-    def _get_tickers_kospi200(self, ticker='KRX/INDEX/STOCK/1028', 
-                              col_asset='Code', col_name='Name'):
-        tickers = fdr.SnapDataReader(ticker)
-        return tickers.set_index(col_asset)[col_name].to_dict()
-
+    def _get_tickers_kospi200(self, tickers=None, col_ticker='Code', col_name='Name'):
+        df = fdr.SnapDataReader(self.tickers)
+        security_names = df.set_index(col_ticker)[col_name].to_dict()
+        return self._check_tickers(security_names, tickers)
+        
     
-    def _get_tickers_etf(self, ticker='ETF/KR', 
-                         col_asset='Symbol', col_name='Name'):
-        tickers = fdr.StockListing(ticker) # 한국 ETF 전종목
-        return tickers.set_index(col_asset)[col_name].to_dict()
+    def _get_tickers_etf(self, tickers=None, col_ticker='Symbol', col_name='Name'):
+        """
+        한국 ETF 전종목
+        """
+        df = fdr.StockListing(self.tickers) 
+        security_names = df.set_index(col_ticker)[col_name].to_dict()
+        return self._check_tickers(security_names, tickers)
+        
 
-
-    def _get_tickers_krx(self, ticker=['KOSPI', 'KOSDAQ'], 
-                         col_asset='Code', col_name='Name'):
-        tickers = dict()
-        for x in ticker:
+    def _get_tickers_krx(self, tickers=None, col_ticker='Code', col_name='Name'):
+        """
+        self.tickers: KOSPI,KOSDAQ
+        """
+        security_names = dict()
+        for x in self.tickers.split(',').replace(' ', ''):
             df = fdr.StockListing(x)
-            tickers.update(df.set_index(col_asset)[col_name].to_dict())
-        return tickers
+            security_names.update(df.set_index(col_ticker)[col_name].to_dict())
+        return self._check_tickers(security_names, tickers)
 
 
-    def _get_tickers_file(self, col_asset='ticker', col_name='name'):
-        file = self.file_historical
-        path = self.path
-        tickers = pd.read_csv(f'{path}/{file}')
-        return tickers.set_index(col_asset)[col_name].to_dict()
+    def _get_tickers_fund(self, tickers=None, path=None, col_name='name'):
+        """
+        self.fickers: file name for tickers
+        """
+        file = self.tickers # file of tickers
+        path = self._check_var(path, self.path)
+        fd = FundDownloader(file, path, check_master=False, msg=False)
+        if fd.check_master() is not None:
+            fd.update_master(save=True)
+        security_names = fd.data_tickers[col_name].to_dict()
+        return self._check_tickers(security_names, tickers)
+        
+
+    def _get_tickers_file(self, tickers=None, path=None, col_ticker='ticker', col_name='name'):
+        """
+        tickers: file for names of tickers
+        """
+        file = self.tickers # file of tickers
+        path = self._check_var(path, self.path)
+        df = pd.read_csv(f'{path}/{file}')
+        security_names = df.set_index(col_ticker)[col_name].to_dict()
+        return self._check_tickers(security_names, tickers)
 
 
     def _get_tickers_yahoo(self, tickers, col_name='longName'):
@@ -810,21 +712,31 @@ class DataManager():
         if isinstance(tickers, str):
             tickers = [tickers]
         yft = yf.Tickers(' '.join(tickers))
-        return {x:yft.tickers[x].info[col_name] for x in tickers}
+        security_names = {x:yft.tickers[x].info[col_name] for x in tickers}
+        return self._check_tickers(security_names, tickers)
+        
 
+    def _check_tickers(self, security_names, tickers):
+        if tickers is not None:
+            security_names = {k:v for k,v in security_names.items() if k in tickers}
+            if len(tickers) != len(security_names):
+                print('WARNING: Some tickers not exist in the universe')
+        return security_names
+        
 
-    @staticmethod
-    def download_universe(universe, *args, **kwargs):
+    def download_universe(self, *args, **kwargs):
         """
         return df of price history if multiple tickers set, series if a single ticker set
-        universe: krx, yahoo, file, default(fdr)
-                  use yahoo for us stocks instead of fdr which shows some inconsitancy of price data
         args, kwargs: for DataManager.download_*
         """
-        uv = universe.lower() if isinstance(universe, str) else 'default'
+        uv = self.universe.lower()
         if uv == 'krx':
             # use pykrx as fdr seems ineffective to download all tickers in krx
             func = DataManager.download_krx
+        elif uv == 'fund':
+            file = self.tickers # master file in fund
+            path = self.path
+            func = lambda *a, **k: DataManager.download_fund(*a, file=file, path=path, **k)
         elif uv == 'yahoo':
             func = DataManager.download_yahoo
         elif uv == 'file':
@@ -863,6 +775,18 @@ class DataManager():
         return krx.df_data
 
     @staticmethod
+    def download_fund(tickers, start_date, end_date,
+                      interval=5, pause_duration=1, msg=False,
+                      file=None, path='.'):
+        """
+        file: master file of fund data
+        """
+        fd = FundDownloader(file, path, check_master=True, msg=False)
+        fd.set_tickers()
+        ers = fd.download(start_date, end_date, file=None, msg=msg)
+        return fd.df_prices
+
+    @staticmethod
     def download_yahoo(tickers, start_date, end_date, col_price='Adj Close'):
         if isinstance(tickers, str):
             tickers = [tickers]
@@ -875,112 +799,69 @@ class DataManager():
         return df_data
         
 
-    def _upload(self, file, path, upload_type='price', msg_exception=''):
-        if upload_type.lower() == 'rate':
-            func = self._upload_from_rate
-        else: # default price
-            func = lambda f, p: pd.read_csv(f'{p}/{f}', parse_dates=[0], index_col=[0])
+    def _upload(self, file, path, msg_exception=''):
         try:
-            df_prices = func(file, path)
+            df_prices = pd.read_csv(f'{path}/{file}', parse_dates=[0], index_col=[0])
             DataManager.print_info(df_prices, str_sfx='uploaded.')
             return df_prices
         except Exception as e:
             return print(f'{msg_exception}{e}')
 
-
-    def _upload_from_rate(self, file, path, print_msg_threshold=5):
-        """
-        file: master file of assets with ticker, file, adjusting data, etc
-        """
-        pfile = f'{path}/{file}'
-        df_info = pd.read_csv(pfile)
-
-        n_df_info = len(df_info)
-        if n_df_info > print_msg_threshold:
-            print_ind = False
-        else:
-            print_ind = True
-        df_prices = None
-        errors = list()
-        
-        print(f'Estimating price from "{pfile}" ...')
-        for _, data in df_info.iterrows():
-            # Using the combined class with the context manager
-            with IndentOutput(indent=2).indented_output():
-                df, err = convert_rate_to_price(data, path=path, print_msg=print_ind)
-            if df_prices is None:
-                df_prices = df.to_frame()
-            else:
-                df_prices = df_prices.join(df, how='outer')
-            errors.append(err)
-
-        if not print_ind:
-            print(f'Max error of {n_df_info} conversions: {max(errors)*100:.2f} %')
-        #print('Done.')
-        return df_prices
-
     
-    def get_names(self, tickers=None, reset=False):
-        asset_names = self.asset_names
-        df_prices = self.df_prices
-        if reset or (asset_names is None):
-            asset_names = self._get_tickers(self.universe, tickers=tickers)
-            if (asset_names is None) or len(asset_names) == 0:
-                return print('ERROR: Failed to get ticker names')
+    def get_names(self, tickers=None, reset=False, **kwargs):
+        """
+        kwargs: additional args for _get_tickers
+        """
+        security_names = self.security_names
+        if reset or (security_names is None):
+            security_names = self._get_tickers(tickers=tickers, **kwargs)
+            if security_names is None:
+                return None
             else:
-                self.asset_names = asset_names
-
-        try:
-            if tickers is None:
-                if df_prices is None:
-                    res = asset_names
-                else:
-                    res = {k: asset_names[k] for k in df_prices.columns}
-            else:
-                res = {k: asset_names[k] for k in tickers}
-            return AssetDict(res, names=asset_names)
-        except KeyError as e:
-            return print(f'ERROR from get_names: {e}')
+                self.security_names = security_names
+        else:
+            security_names = self._check_tickers(security_names, tickers)
+        return SecurityDict(security_names, names=security_names)
 
 
     def get_date_range(self, df_prices=None, return_intersection=False):
         df_prices = self._check_var(df_prices, self.df_prices)
-        asset_names = self.asset_names
+        security_names = self.security_names
         if df_prices is None:
-            return print('ERROR')
+            return print('ERROR from get_date_range')
         else:
-            return get_date_range(df_prices, asset_names, 
+            return get_date_range(df_prices, security_names, 
                                   return_intersection=return_intersection)
 
 
     def check_days_in_year(self, days_in_year=251, freq='M', n_thr=10):
         df_prices = self.df_prices
         if df_prices is None:
-            return print('ERROR')
+            return print('ERROR from check_days_in_year')
         else:
             return check_days_in_year(df_prices, days_in_year=days_in_year, freq=freq, n_thr=n_thr)
 
 
-    def _convert_assets_to_daily(self, confirm=False, assets=None):
+    def _convert_price_to_daily(self, confirm=False, tickers=None):
         df_prices = self.df_prices
         if df_prices is None:
-            return print('ERROR')
+            return print('ERROR from _convert_price_to_daily')
             
         if confirm:
-            if assets is None:
-                assets = df_prices.columns
-            # convert assets to daily
-            df = df_prices[assets].apply(lambda x: convert_to_daily(x.dropna()))
+            if tickers is None:
+                tickers = df_prices.columns
+            # convert tickers to daily
+            df = df_prices[tickers].apply(lambda x: convert_to_daily(x.dropna()))
             # update self.df_prices with the converted by unstack, concat and unstack 
             # to makes sure outer join of datetime index 
-            self.df_prices = (pd.concat([df_prices.drop(assets, axis=1).unstack(), df.unstack()])
+            self.df_prices = (pd.concat([df_prices.drop(tickers, axis=1).unstack(), df.unstack()])
                               .unstack(0).ffill())
             days_in_year = 365
-            print(f'REMINDER: {len(assets)} equities converted to daily (days in year: {days_in_year})')
+            print(f'REMINDER: {len(tickers)} equities converted to daily (days in year: {days_in_year})')
             print('Daily metrics in Performance statistics must be meaningless')
             return None
         else:
-            return print('WARNING: set confirm to True to convert df_assets to daily')
+            return print('WARNING: set confirm to True to convert df_prices to daily')
 
 
     def convert_to_daily(self, confirm=False, days_in_year=None):
@@ -990,7 +871,7 @@ class DataManager():
             return None
         else:
             cols = df.loc[df==days_in_year].index
-        return self._convert_assets_to_daily(confirm, cols)
+        return self._convert_price_to_daily(confirm, cols)
 
 
     def performance(self, metrics=None, sort_by=None):
@@ -1009,8 +890,8 @@ class DataManager():
             metrics = [y for x in metrics for y in df_stat.columns if x in y]
             df_stat = df_stat[metrics]
         
-        if self.asset_names is not None:
-            df_stat = pd.Series(self.asset_names).to_frame('name').join(df_stat, how='right')
+        if self.security_names is not None:
+            df_stat = pd.Series(self.security_names).to_frame('name').join(df_stat, how='right')
         
         if sort_by is not None:
             sort_by = [x for x in metrics if sort_by in x]
@@ -1165,42 +1046,55 @@ class KRXDownloader():
 
 
 class FundDownloader():
-    def __init__(self, file, path='.', col_ticker='ticker', 
+    def __init__(self, file, path='.', file_historical=None, check_master=True, msg=True,
+                 col_ticker='ticker', 
                  cols_check=['check1_date', 'check1_price', 'check2_date', 'check2_price'],
                  url = "https://dis.kofia.or.kr/proframeWeb/XMLSERVICES/",
                  headers = {"Content-Type": "application/xml"}):
+        # master file of securities with ticker, name, adjusting data, etc
+        self.file_master = get_file_latest(file, path)
+        # price file name
+        file_historical = None if file_historical is None else get_file_latest(file_historical, path)
+        self.file_historical = file_historical
+        self.path = path
         self.col_ticker = col_ticker
         self.cols_check = cols_check
+        self.data_tickers = self._load_master(msg)
         self.url = url
         self.headers = headers
-        self.data_tickers = None
         self.tickers = None
         self.df_prices = None
         self.failed = [] # tickers failed to download
-        _ = self._load_master(file, path, col_ticker, cols_check)
+        # check missing data for conversion
+        _ = self.check_master() if check_master else None
 
 
-    def _load_master(self, file, path, index_col, cols_check, msg=True):
+    def _load_master(self, msg=True):
         """
-        read the file of meta data of tickers
+        load master file of tickers and its info such as values for conversion from rate to price
         """
+        file = self.file_master
+        path = self.path
+        col_ticker = self.col_ticker
+        cols_check = self.cols_check
         f = f'{path}/{file}'
         try:
-            data_tickers = pd.read_csv(f, index_col=index_col)
+            data_tickers = pd.read_csv(f, index_col=col_ticker)
         except Exception as e:
-            return print(f'ERROR: failed to load {file}')
+            return print(f'ERROR: failed to load {file} as {e}')
             
         cols = pd.Index(cols_check).difference(data_tickers.columns)
         if cols.size > 0:
             data_tickers[cols] = None
-        print(f'Data for {len(data_tickers)} funds loaded.')
-        # check missing data for conversion
-        _ = self.check_master(data_tickers)
-        self.data_tickers = data_tickers
+        print(f'Data for {len(data_tickers)} funds loaded.') if msg else None
+        return data_tickers
+        
 
-
-    def check_master(self, data_tickers=None):
-        data_tickers = self._check_var(data_tickers, self.data_tickers)
+    def check_master(self):
+        """
+        check if missing data in data_tickers
+        """
+        data_tickers = self.data_tickers
         if data_tickers is None:
             return print('ERROR: no ticker data loaded yet')
 
@@ -1216,35 +1110,12 @@ class FundDownloader():
         n = cond.sum()
         if n > 0:
             print(f'{n} tickers missing data for conversion from rate to price.')
-            return data_tickers.loc[cond].index
-
-
-    def set_tickers(self, tickers=None, col_ticker='ticker'):
-        """
-        load master file of tickers and its info such as values for conversion from rate to price
-        file: master file of assets with ticker, name, adjusting data, etc
-        """
-        data_tickers = self.data_tickers
-        if data_tickers is None:
-            return print('ERROR')
+            return data_tickers.loc[cond].index.to_list()
         else:
-            tickers_all = data_tickers.index.to_list()
-
-        if tickers is None:
-            tickers = tickers_all
-        else:
-            tickers = [tickers] if isinstance(tickers, str) else tickers
-            n = pd.Index(tickers).difference(tickers_all).size
-            if n > 0:
-                print(f'WARNING: {n} funds missing in the data')
-                tickers = pd.Index(tickers).intersection(tickers_all).to_list()
-
-        print(f'{len(tickers)} tickers set')
-        self.tickers = tickers
-        return None
+            return None
 
 
-    def update_master(self, file=None, path='.', 
+    def update_master(self, save=True, 
                       interval=5, pause_duration=.1, msg=False):
         """
         download data and update ticker data for self.cols_check
@@ -1291,12 +1162,36 @@ class FundDownloader():
             data_tickers.update(df, join='left', overwrite=True)
             print('data_tickers updated')
             self.data_tickers = data_tickers
-            self.save_master(file, path) if file is not None else None
+            self.save_master() if save else None # file renamed in the func not to overwrite
 
         if len(failed) > 0:
             print('WARNING: check output of failed')
             return failed
         
+
+    def set_tickers(self, tickers=None, col_ticker='ticker'):
+        """
+        set tickers to download prices
+        """
+        data_tickers = self.data_tickers
+        if data_tickers is None:
+            return print('ERROR')
+        else:
+            tickers_all = data_tickers.index.to_list()
+
+        if tickers is None:
+            tickers = tickers_all
+        else:
+            tickers = [tickers] if isinstance(tickers, str) else tickers
+            n = pd.Index(tickers).difference(tickers_all).size
+            if n > 0:
+                print(f'WARNING: {n} funds missing in the data')
+                tickers = pd.Index(tickers).intersection(tickers_all).to_list()
+
+        print(f'{len(tickers)} tickers set')
+        self.tickers = tickers
+        return None
+
 
     def download(self, start_date, end_date, freq='monthly',
                  url=None, headers=None,
@@ -1357,25 +1252,26 @@ class FundDownloader():
             return None
 
 
-    def save(self, file, path='.'):
+    def save(self, file=None, path=None):
         """
         save price data
         """
+        file = self._check_var(file, self.file_historical)
+        path = self._check_var(path, self.path)
         df_prices = self.df_prices
         if df_prices is None:
             print('ERROR')
         else:
-            name, ext = splitext(file)
-            start, end = get_date_minmax(df_prices, date_format='%y%m%d')
-            file = f'{name}_{start}_{end}{ext}'
             self._save(df_prices, file, path)
         return None
 
 
-    def save_master(self, file, path='.'):
+    def save_master(self, file=None, path=None):
         """
         save master data
         """
+        file = self._check_var(file, self.file_master)
+        path = self._check_var(path, self.path)
         data_tickers = self.data_tickers
         if data_tickers is None:
             print('ERROR')
@@ -1384,10 +1280,15 @@ class FundDownloader():
         return None
 
 
-    def _save(self, df_result, file='fund_prices', path='.'):
-        file = set_filename(file, 'csv')
+    def _save(self, df_result, file, path, date=None, date_format='%y%m%d'):
+        if date is None:
+            date = datetime.now()
+        if not isinstance(date, str):
+            date = date.strftime(date_format)
+        file = get_filename(file, f'_{date}', r"_\d+(?=\.\w+$)")
         _ = save_dataframe(df_result, file, path, msg_succeed=f'{file} saved',
                            msg_fail=f'ERROR: failed to save as {file} exists')
+        return None
 
 
     def download_rate(self, ticker, start_date, end_date, freq='m', msg=False,
@@ -1588,21 +1489,21 @@ class FundDownloader():
 
 class PortfolioBuilder():
     def __init__(self, df_universe, file=None, path='.', name='portfolio',
-                 method_select='all', sort_ascending=False, n_assets=0, lookback=0, lag=0, assets=None, 
+                 method_select='all', sort_ascending=False, n_tickers=0, lookback=0, lag=0, tickers=None, 
                  method_weigh='Equally', weights=None, lookback_w=None, lag_w=None, 
-                 df_additional=None, asset_names=None, 
-                 cols_record = {'date':'date', 'ast':'asset', 'name':'name', 'prc':'price', 
+                 df_additional=None, security_names=None, 
+                 cols_record = {'date':'date', 'tkr':'ticker', 'name':'name', 'prc':'price', 
                                 'trs':'transaction', 'net':'net', 'wgt':'weight', 'wgta':'weight*'},
                  date_format='%Y-%m-%d'
                 ):
         """
         file: file of transaction history. 
-              Do not update the asset prices with the actual purchase price, 
+              Do not update the ticker prices with the actual purchase price, 
                as the new df_universe may be adjusted with updated prices after the purchase.
         method_select: 'all', 'selected' for static, 'momentum', 'k-ratio', 'f-ratio' for dynamic
         lookback_w, lag_w: for weigh. reuse those for select if None
         sort_ascending: set to False for momentum & k-ratio, True for PER of f-ratio
-        asset_names: dict of ticker to name
+        security_names: dict of ticker to name
         """
         self.df_universe = df_universe
         # set temp name for self._load_transaction
@@ -1613,16 +1514,16 @@ class PortfolioBuilder():
         
         self.method_select = method_select
         self.sort_ascending = sort_ascending
-        self.n_assets = n_assets
+        self.n_tickers = n_tickers
         self.lookback = lookback # period for select
         self.lag = lag # days
-        self.assets = assets # see select
+        self.tickers = tickers # see select
         self.method_weigh = method_weigh
         self.weights = weights
         self.lookback_w = self._check_var(lookback_w, self.lookback) # for weigh
         self.lag_w = self._check_var(lag_w, self.lag)
         self.df_additional = df_additional
-        self.asset_names = asset_names
+        self.security_names = security_names
         self.name = name # portfolio name
         self.cols_record = cols_record
         self.date_format = date_format # date str format for record & printing
@@ -1645,28 +1546,28 @@ class PortfolioBuilder():
 
 
     def select(self, date=None, method=None, sort_ascending=None, 
-               n_assets=None, lookback=None, lag=None, assets=None,  
+               n_tickers=None, lookback=None, lag=None, tickers=None,  
                df_additional=None):
         """
         date: transaction date
         method: all, selected, momentum, k-ratio, f-ratio
-        assets: list of assets in the universe
+        tickers: list of tickers in the universe
         df_additional: ex) df_ratio for f-ratio method
         """
         method = self._check_var(method, self.method_select)
-        n_assets = self._check_var(n_assets, self.n_assets)
+        n_tickers = self._check_var(n_tickers, self.n_tickers)
         lookback = self._check_var(lookback, self.lookback)
         lag = self._check_var(lag, self.lag)
-        assets = self._check_var(assets, self.assets)
+        tickers = self._check_var(tickers, self.tickers)
         sort_ascending = self._check_var(sort_ascending, self.sort_ascending)
         df_additional = self._check_var(df_additional, self.df_additional)
 
-        if (n_assets is not None) and (assets is not None):
-            if n_assets > len(assets):
-                return print('ERROR: n_assets greater than length of assets')
+        if (n_tickers is not None) and (tickers is not None):
+            if n_tickers > len(tickers):
+                return print('ERROR: n_tickers greater than length of tickers')
         
         # search transaction date from universe
-        kwa = dict(date=date, assets=assets)
+        kwa = dict(date=date, tickers=tickers)
         date = self._get_data(0, 0, **kwa).index.max()
         df_data = self._get_data(lookback, lag, **kwa)
         dts = get_date_minmax(df_data, self.date_format)
@@ -1675,7 +1576,7 @@ class PortfolioBuilder():
         method = method.lower()
         if method == 'k-ratio':
             rank = (df_data.pct_change(1).apply(lambda x: calc_kratio(x.dropna()))
-                    .sort_values(ascending=sort_ascending)[:n_assets])
+                    .sort_values(ascending=sort_ascending)[:n_tickers])
             method = 'K-ratio'
         elif method == 'f-ratio':
             if df_additional is None:
@@ -1691,24 +1592,24 @@ class PortfolioBuilder():
             if len(stat) == 0:
                 return print('ERROR: check df_additional')
             
-            rank = stat.sort_values(ascending=sort_ascending)[:n_assets]
+            rank = stat.sort_values(ascending=sort_ascending)[:n_tickers]
             if rank.index.difference(df_data.columns).size > 0:
-                print('ERROR: check selected assets if price data given')
+                print('ERROR: check selected tickers if price data given')
             method = 'Financial Ratio'
         elif method == 'momentum':
-            #rank = bt.ffn.calc_total_return(df_data).sort_values(ascending=False)[:n_assets]
+            #rank = bt.ffn.calc_total_return(df_data).sort_values(ascending=False)[:n_tickers]
             # no difference with calc_total_return as align_axis=1
             rank = (df_data.apply(lambda x: x.dropna().iloc[-1]/x.dropna().iloc[0]-1)
-                    .sort_values(ascending=sort_ascending)[:n_assets])
+                    .sort_values(ascending=sort_ascending)[:n_tickers])
             method = 'Total return'
         else: # default all for static
             rank = pd.Series(1, index=df_data.columns)
-            n_assets = rank.count()
-            method = 'All' if assets is None else 'Selected'
+            n_tickers = rank.count()
+            method = 'All' if tickers is None else 'Selected'
                 
-        assets = rank.index
-        self.selected = {'date': date, 'assets': assets, 'rank': rank} 
-        print(f'{n_assets} assets selected by {method} {info_date}')
+        tickers = rank.index
+        self.selected = {'date': date, 'tickers': tickers, 'rank': rank} 
+        print(f'{n_tickers} tickers selected by {method} {info_date}')
         return rank    
 
     
@@ -1727,9 +1628,9 @@ class PortfolioBuilder():
             return print('ERROR')
         else:
             date = selected['date']
-            assets = selected['assets']
+            tickers = selected['tickers']
 
-        df_data = self._get_data(lookback, lag, date=date, assets=assets)
+        df_data = self._get_data(lookback, lag, date=date, tickers=tickers)
         if method.lower() == 'erc':
             weights = bt.ffn.calc_erc_weights(df_data.pct_change(1).dropna())
             method = 'ERC'
@@ -1740,29 +1641,29 @@ class PortfolioBuilder():
             w = self._check_weights(weights, df_data, none_weight_is_error=True)
             if w is None:
                 return self.liquidation.check_weights(weights)
-            weights = {x:0 for x in assets}
+            weights = {x:0 for x in tickers}
             weights.update(w)
             weights = pd.Series(weights)
             method = 'Specified'
         else: # default equal. no need to set arg weights
-            weights = {x:1/len(assets) for x in assets}
+            weights = {x:1/len(tickers) for x in tickers}
             weights = pd.Series(weights)
             method = 'Equal weights'
 
         self.selected['weights'] = weights # weights is series
-        print(f'Weights of assets determined by {method}.')
+        print(f'Weights of tickers determined by {method}.')
         return weights
         
 
     def allocate(self, capital=10000000, commissions=0):
         """
-        calc number of each asset with price and weights
-        capital: rebalance assets without cash flows if set to 0
+        calc number of each security with price and weights
+        capital: rebalance tickers without cash flows if set to 0
         commissions: percentage
         """
         cols_record = self.cols_record
         col_date = cols_record['date']
-        col_ast = cols_record['ast']
+        col_tkr = cols_record['tkr']
         col_prc = cols_record['prc']
         col_net = cols_record['net']
         col_wgt = cols_record['wgt']
@@ -1771,7 +1672,7 @@ class PortfolioBuilder():
         # transaction being included in transaction step
         cols_all = [col_name, col_prc, col_net, col_wgt, col_wgta]
         
-        asset_names = self.asset_names
+        security_names = self.security_names
         selected = self.selected
         if selected is None:
             return print('ERROR')
@@ -1779,15 +1680,15 @@ class PortfolioBuilder():
         try:
             date = selected['date']
             weights = selected['weights']
-            assets = selected['assets']
+            tickers = selected['tickers']
         except KeyError as e:
             return print('ERROR')
 
-        # sum capital and asset value
+        # sum capital and security value
         record = self.record
         if record is None:
             if capital == 0:
-                return print('ERROR: Neither capital nor assets to rebalance exists')
+                return print('ERROR: Neither capital nor tickers to rebalance exists')
         else:
             msg = 'WARNING: No rebalance as no new transaction'
             if self.check_new_transaction(date, msg):
@@ -1797,20 +1698,20 @@ class PortfolioBuilder():
                 sr = self.valuate(date, print_msg=False)
                 capital += sr['value'] # add porfolio value to capital
 
-        # calc quantity of each asset by weights and capital
+        # calc quantity of each security by weights and capital
         df_prc = self.df_universe
-        wi = pd.Series(weights, name=col_wgt).rename_axis(col_ast) # ideal weights
-        wvi = wi * capital / (1+commissions/100) # weighted asset value
-        df_net = wvi / df_prc.loc[date, assets] # stock quantity float
+        wi = pd.Series(weights, name=col_wgt).rename_axis(col_tkr) # ideal weights
+        wvi = wi * capital / (1+commissions/100) # weighted security value
+        df_net = wvi / df_prc.loc[date, tickers] # stock quantity float
         df_net = df_net.apply(np.floor).astype(int).to_frame(col_net) # stock quant int
         df_net = df_net.assign(**{col_date: date})
         df_net = df_prc.loc[date].to_frame(col_prc).join(df_net, how='right')
-        # index is multiindex of date and asset
+        # index is multiindex of date and security
         df_net = df_net.set_index(col_date, append=True).swaplevel()
 
-        # calc error between ideal and actual weights of assets 
-        wva = df_net[col_prc].mul(df_net[col_net]).rename(col_wgta) # actual value of each asset
-        mae = (wva.loc[wva != 0] # drop assets of zero weight for mae
+        # calc error between ideal and actual weights of tickers 
+        wva = df_net[col_prc].mul(df_net[col_net]).rename(col_wgta) # actual value of each security
+        mae = (wva.loc[wva != 0] # drop tickers of zero weight for mae
                   .to_frame().join(wvi)
                   .apply(lambda x: x[col_wgta]/x[col_wgt] - 1, axis=1).abs().mean() * 100)
         print(f'Mean absolute error of weights: {mae:.0f} %')
@@ -1819,11 +1720,11 @@ class PortfolioBuilder():
         wa = self.calc_weight_actual(df_net)
         df_net = df_net.join(wi.apply(lambda x: f'{x:.03f}')).join(wa)
 
-        # add asset names
-        if asset_names is None:
+        # add security names
+        if security_names is None:
             df_net[col_name] = None
         else:
-            df_net = df_net.join(pd.Series(asset_names, name=col_name), on=col_ast)
+            df_net = df_net.join(pd.Series(security_names, name=col_name), on=col_tkr)
             
         return df_net[cols_all]
 
@@ -1834,7 +1735,7 @@ class PortfolioBuilder():
         col_prc = cols_record['prc']
         col_net = cols_record['net']
         col_wgta = cols_record['wgta']
-        wva = df_rec[col_prc].mul(df_rec[col_net]).rename(col_wgta) # actual value of each asset
+        wva = df_rec[col_prc].mul(df_rec[col_net]).rename(col_wgta) # actual value of each security
         wa = wva / wva.groupby(col_date).sum()
         return wa.apply(lambda x: f'{x:.04f}')
 
@@ -1847,7 +1748,7 @@ class PortfolioBuilder():
         """
         cols_record = self.cols_record
         col_date = cols_record['date']
-        col_ast = cols_record['ast']
+        col_tkr = cols_record['tkr']
         col_name = cols_record['name']
         col_prc = cols_record['prc']
         col_trs = cols_record['trs']
@@ -1855,7 +1756,7 @@ class PortfolioBuilder():
         col_wgt = cols_record['wgt']
         col_wgta = cols_record['wgta']
         cols_val = [col_trs, col_net] # valid record only if not None nor zero
-        cols_idx = [col_date, col_ast]
+        cols_idx = [col_date, col_tkr]
         cols_all = [x for x in cols_record.values() if x not in cols_idx]
         cols_int = [col_prc, col_trs, col_net]
                 
@@ -1868,39 +1769,39 @@ class PortfolioBuilder():
             if self.check_new_transaction(date):
                 # add new to record after removing additional info except for cols_all in record
                 df_rec = pd.concat([record[cols_all], df_net])
-                # update universe by adding assets not in the universe but in the past transactions
+                # update universe by adding tickers not in the universe but in the past transactions
                 df_prc = self._update_universe(df_rec, msg=True)
                 df_prc = self.liquidation.set_price(df_prc)
             else:
                 return None
             
-            # fill missing prices (ex: old price of new assets, new price of old assets)
+            # fill missing prices (ex: old price of new tickers, new price of old tickers)
             # use purchase prices in the record before possible adjustment of stock prices
             lidx = [df_rec.index.get_level_values(i).unique() for i in range(2)]
             midx = pd.MultiIndex.from_product(lidx).difference(df_rec.index)
             df_m = (df_prc[lidx[1]]
-                    # fill NaN with zero price to avoid missing assets on some dates when stacking
+                    # fill NaN with zero price to avoid missing tickers on some dates when stacking
                     # it will be removed if no transaction or net 
                     .fillna(0) 
                     .stack().loc[midx]
-                    .rename_axis([col_date, col_ast]).to_frame(col_prc))
-            if self.asset_names is not None: # add asset names
-                df_m = df_m.join(pd.Series(self.asset_names, name=col_name), on=col_ast)
+                    .rename_axis([col_date, col_tkr]).to_frame(col_prc))
+            if self.security_names is not None: # add security names
+                df_m = df_m.join(pd.Series(self.security_names, name=col_name), on=col_tkr)
             df_rec = pd.concat([df_rec, df_m])
             
-            # the net amount of the assets not in hold on the date is 0
+            # the net amount of the tickers not in hold on the date is 0
             cond = df_rec[col_net].isna()
             cond = cond & (df_rec.index.get_level_values(0) == date)
             df_rec.loc[cond, [col_net, col_wgta]] = 0  
             
-            # update transaction on the date by using the assets on the date 
+            # update transaction on the date by using the tickers on the date 
             # and all the transaction before the date
             df_trs = (df_rec.loc[date, col_net]
-                      .sub(df_rec.groupby(col_ast)[col_trs].sum())
+                      .sub(df_rec.groupby(col_tkr)[col_trs].sum())
                       .to_frame(col_trs).assign(**{col_date:date})
                       .set_index(col_date, append=True).swaplevel())
             df_rec.update(df_trs)
-            # drop new assets before the date
+            # drop new tickers before the date
             df_rec = df_rec.dropna(subset=cols_val) 
             # drop rows with neither transaction nor net 
             cond = (df_rec.transaction == 0) & (df_rec.net == 0)
@@ -1929,7 +1830,7 @@ class PortfolioBuilder():
         if df_rec is None:
             return None
         
-        # update price data by adding assets not in the universe if existing
+        # update price data by adding tickers not in the universe if existing
         df_prices = self._update_universe(df_rec, msg=print_msg)
     
         # check date by price data
@@ -1953,8 +1854,8 @@ class PortfolioBuilder():
         prcd = df[col_prc].mul(df[col_trs]).mul(-1).sum()
         
         # calc value
-        n_assets = df_rec.loc[date_lt, col_net]
-        val = n_assets.mul(df_prices.loc[date, n_assets.index]).sum().astype(int)
+        n_tickers = df_rec.loc[date_lt, col_net]
+        val = n_tickers.mul(df_prices.loc[date, n_tickers.index]).sum().astype(int)
             
         # calc roi & unrealized gain/loss
         ugl = val + prcd - cost
@@ -2171,7 +2072,7 @@ class PortfolioBuilder():
         return None
         
 
-    def update_record(self, asset_names=None, save=True, update_var=True):
+    def update_record(self, security_names=None, save=True, update_var=True):
         """
         update and save record: ticker names of None and actual weight
         save: overwrite record file if True
@@ -2186,13 +2087,13 @@ class PortfolioBuilder():
         cond = record.name.isna()
         if cond.sum() > 0:
             # check if ticker name provided
-            asset_names = self._check_var(asset_names, self.asset_names)
-            if asset_names is None:
-                print('WARNING: Set asset_names to update names of None')
+            security_names = self._check_var(security_names, self.security_names)
+            if security_names is None:
+                print('WARNING: Set security_names to update names of None')
             else:
                 try:
                     col_name = self.cols_record['name']
-                    record.loc[cond, col_name] = record.loc[cond].apply(lambda x: asset_names[x.name[1]], axis=1)
+                    record.loc[cond, col_name] = record.loc[cond].apply(lambda x: security_names[x.name[1]], axis=1)
                     print('Ticker names of None updated')
                 except KeyError as e:
                     print(f'ERROR: KeyError {e} to update names')
@@ -2303,24 +2204,24 @@ class PortfolioBuilder():
         df_rec = self._check_result(False)
         if df_rec is None:
             print('No record')
-            assets = None
+            tickers = None
         else:
-            # Retrieve the date and assets for the transaction closest to the arg date
+            # Retrieve the date and tickers for the transaction closest to the arg date
             df = df_rec.loc[:date]
             if len(df) > 0:
                 date = df.index.get_level_values(0).max().strftime(self.date_format)
-                assets = df.loc[date].index.to_list()
+                tickers = df.loc[date].index.to_list()
             else:
                 # date is not None since df is df_rec then
                 print(f'No record on {date}')
-                assets = None
+                tickers = None
         df_all = df_additional.loc[date:]
         if len(df_all) == 0:
             print(f'WARNING: No data after {date}')
             df_all = df_additional
     
         try:
-            df_res = None if assets is None else df_all[assets] 
+            df_res = None if tickers is None else df_all[tickers] 
         except KeyError as e:
             return print(f'ERROR: KeyError {e}')
     
@@ -2358,17 +2259,17 @@ class PortfolioBuilder():
         df_prices = self.df_universe
         cols_record = self.cols_record
         col_prc = cols_record['prc']
-        col_ast = cols_record['ast']
-        # assets not in the universe
+        col_tkr = cols_record['tkr']
+        # tickers not in the universe
         out = df_rec.index.get_level_values(1).unique().difference(df_prices.columns)
         if out.size > 0:
             idx = pd.IndexSlice
-            df_out = df_rec.sort_index().loc[idx[:, out], col_prc].unstack(col_ast)
+            df_out = df_rec.sort_index().loc[idx[:, out], col_prc].unstack(col_tkr)
             df_new = pd.concat([df_prices, df_out], axis=1)
             df_new[out] = df_new[out].ffill().bfill()
             if msg:
                 s = ', '.join(out.to_list())
-                print(f'Assets {s} added to universe')
+                print(f'Tickers {s} added to universe')
             return df_new
         else:
             return df_prices
@@ -2387,12 +2288,12 @@ class PortfolioBuilder():
         
         # loop for transaction dates in descending order
         for start in dates_trs.sort_values(ascending=False):
-            n_assets = df_rec.loc[start, col_net]
-            df_i = df_universe.loc[start:end, n_assets.index]
+            n_tickers = df_rec.loc[start, col_net]
+            df_i = df_universe.loc[start:end, n_tickers.index]
             if len(df_i) == 0: # no price data from transaction date start
                 continue
-            # calc combined asset value history from prv transaction (start) to current (end) 
-            sr_i = df_i.apply(lambda x: x*n_assets.loc[x.name]).sum(axis=1) # x.name: index name
+            # calc combined security value history from prv transaction (start) to current (end) 
+            sr_i = df_i.apply(lambda x: x*n_tickers.loc[x.name]).sum(axis=1) # x.name: index name
             # concat histories        
             sr_ttl = pd.concat([sr_ttl, sr_i])
             end = start - pd.DateOffset(days=1)
@@ -2489,16 +2390,16 @@ class PortfolioBuilder():
     
 
     def _load_transaction(self, file, path, print_msg=True):
-        col_ast = self.cols_record['ast']
+        col_tkr = self.cols_record['tkr']
         f = os.path.join(path, file)
         if os.path.exists(f):
-            df_rec = pd.read_csv(f, parse_dates=[0], index_col=[0,1], dtype={col_ast:str})
+            df_rec = pd.read_csv(f, parse_dates=[0], index_col=[0,1], dtype={col_tkr:str})
         else:
             return None
-        # check if ticker of asset is 6 digits
+        # fill ticker less than 6 digits with zeros
         df_rec = (df_rec.reset_index(level=1)
-                        .assign(asset=lambda x: x.asset.str.zfill(6))
-                        .set_index(col_ast, append=True))
+                        .assign(ticker=lambda x: x.ticker.str.zfill(6))
+                        .set_index(col_tkr, append=True))
         
         if print_msg:
             dt = df_rec.index.get_level_values(0).max().strftime(self.date_format)
@@ -2548,15 +2449,15 @@ class PortfolioBuilder():
         return BacktestManager.get_date_offset(*args, **kwargs)
 
 
-    def _get_data(self, lookback, lag, date=None, assets=None):
+    def _get_data(self, lookback, lag, date=None, tickers=None):
         """
         get data for select or weigh
         """
         df_data = self.df_universe
         if date is not None:
             df_data = df_data.loc[:date]
-        if assets is not None:
-            df_data = df_data[assets]
+        if tickers is not None:
+            df_data = df_data[tickers]
             
         # setting liquidation
         df_data = self.liquidation.set_price(df_data, select=True)
@@ -2569,34 +2470,34 @@ class PortfolioBuilder():
 
 class Liquidation():
     def __init__(self):
-        self.assets_to_sell = None
+        self.securities_to_sell = None
         
-    def prepare(self, record, assets_to_sell=None, hold=False):
+    def prepare(self, record, securities_to_sell=None, hold=False):
         """
-        convert assets_to_sell to dict of tickers to sell price
+        convert securities_to_sell to dict of tickers to sell price
         record: PortfolioBuilder.record
-        assets_to_sell: str of a ticker; list of tickers; dict of the tickers to its sell price
+        securities_to_sell: str of a ticker; list of tickers; dict of the tickers to its sell price
         hold:     
-        - If set to True, all assets in `assets_to_sell` will be held and not liquidated.    
-        - If set to False, you can selectively hold certain assets by setting their sell price to zero. 
-          In this case, only the specified assets in `assets_to_sell` will be held, while others may still be liquidated.
+        - If set to True, all securities in `securities_to_sell` will be held and not liquidated.    
+        - If set to False, you can selectively hold certain securities by setting their sell price to zero. 
+          In this case, only the specified securities in `securities_to_sell` will be held, while others may still be liquidated.
         """
-        # set self.assets_to_sell first to data check
-        self.assets_to_sell = assets_to_sell
-        if assets_to_sell is None:
+        # set self.securities_to_sell first to data check
+        self.securities_to_sell = securities_to_sell
+        if securities_to_sell is None:
             return print('Liquidation set to None')
         
         if record is None:
             return print('ERROR: no record to liquidate')
     
-        if isinstance(assets_to_sell, str):
-            liq = [assets_to_sell]
-        elif isinstance(assets_to_sell, dict):
-            liq = [x for x, _ in assets_to_sell.items()]
-        elif isinstance(assets_to_sell, list):
-            liq = assets_to_sell
+        if isinstance(securities_to_sell, str):
+            liq = [securities_to_sell]
+        elif isinstance(securities_to_sell, dict):
+            liq = [x for x, _ in securities_to_sell.items()]
+        elif isinstance(securities_to_sell, list):
+            liq = securities_to_sell
         else:
-            return print('ERROR: check arg assets_to_sell')
+            return print('ERROR: check arg securities_to_sell')
             
         # check if tickers to sell exist in record
         date_lt = record.index.get_level_values(0).max()
@@ -2604,12 +2505,12 @@ class Liquidation():
         if pd.Index(liq).difference(record_lt.index).size > 0:
             return print('ERROR: some tickers not in record')
     
-        if not isinstance(assets_to_sell, dict):
+        if not isinstance(securities_to_sell, dict):
             price = 0 if hold else None
-            # liq is list regardless of type of assets_to_sell
-            assets_to_sell = {x:price for x in liq}
+            # liq is list regardless of type of securities_to_sell
+            securities_to_sell = {x:price for x in liq}
     
-        self.assets_to_sell = assets_to_sell
+        self.securities_to_sell = securities_to_sell
         return print('Liquidation prepared')
 
     
@@ -2620,7 +2521,7 @@ class Liquidation():
         select: exclude tickers to liquidate in record from universe.
                 set to True for self.select
         """
-        liq_dict = self.assets_to_sell
+        liq_dict = self.securities_to_sell
         if liq_dict is None:
             return df_prices
         else:
@@ -2647,7 +2548,7 @@ class Liquidation():
         """
         check if weights has tickers to liquidate
         """
-        liq_dict = self.assets_to_sell
+        liq_dict = self.securities_to_sell
         if liq_dict is None:
             return None
 
@@ -2662,16 +2563,16 @@ class Liquidation():
             
         w = [x for x in liq_dict.keys() if x in w_list]
         if len(w) > 0:
-            return print('ERROR: assets to liquidate in weights')
+            return print('ERROR: securities to liquidate in weights')
         else:
             return None
 
     
     def recover_record(self, df_rec, cols_rec):
         """
-        reset net and transaction of assets in hold
+        reset net and transaction of securities in hold
         """
-        liq_dict = self.assets_to_sell
+        liq_dict = self.securities_to_sell
         if liq_dict is None:
             return df_rec
         else:
@@ -2699,51 +2600,51 @@ class Liquidation():
 
 
 class BacktestManager():
-    def __init__(self, df_assets, name_prfx='Portfolio',
+    def __init__(self, df_prices, name_prfx='Portfolio',
                  align_axis=0, fill_na=True, metrics=METRICS,  
                  initial_capital=1000000, commissions=None, 
-                 days_in_year=252, asset_names=None):
+                 days_in_year=252, security_names=None):
         """
-        align_axis: how to set time periods intersection with assets
-        fill_na: fill forward na in df_assets if True, drop na if False 
+        align_axis: how to set time periods intersection with tickers
+        fill_na: fill forward na in df_prices if True, drop na if False 
         """
-        # df of assets (assets in columns) which of each has its own periods.
-        # the periods will be aligned for assets in a portfolio. see self.build
-        if isinstance(df_assets, pd.Series):
-            return print('ERROR: df_assets must be Dataframe')
+        # df of tickers (tickers in columns) which of each has its own periods.
+        # the periods will be aligned for tickers in a portfolio. see self.build
+        if isinstance(df_prices, pd.Series):
+            return print('ERROR: df_prices must be Dataframe')
         
-        df_assets = self.align_period(df_assets, axis=align_axis, fill_na=fill_na, print_msg2=False)
-        self.df_assets = df_assets
-        self.portfolios = AssetDict(names=asset_names) # dict of bt.backtest.Backtest
-        self.cv_strategies = AssetDict(names=asset_names) # dict of args of strategies to cross-validate
+        df_prices = self.align_period(df_prices, axis=align_axis, fill_na=fill_na, print_msg2=False)
+        self.df_prices = df_prices
+        self.portfolios = SecurityDict(names=security_names) # dict of bt.backtest.Backtest
+        self.cv_strategies = SecurityDict(names=security_names) # dict of args of strategies to cross-validate
         self.cv_result = None # dict of cv result
         self.metrics = metrics
         self.name_prfx = name_prfx
         self.n_names = 0 # see self._check_name
         self.initial_capital = initial_capital
-        # commissions of all assets across portfolios
+        # commissions of all tickers across portfolios
         self.commissions = commissions  # unit %
         self.run_results = None # output of bt.run
         self.days_in_year = days_in_year # only for self._get_algo_freq
         # saving to apply the same rule in benchmark data
         self.align_axis = align_axis
         self.fill_na = fill_na
-        self.asset_names = asset_names
+        self.security_names = security_names
         self.print_algos_msg = True # control msg print in self._get_algo_*
 
-        # run after set self.df_assets
-        DataManager.print_info(df_assets, str_sfx='uploaded.')
+        # run after set self.df_prices
+        DataManager.print_info(df_prices, str_sfx='uploaded.')
         if days_in_year > 0:
             print('running self.util_check_days_in_year to check days in a year')
-            _ = self.util_check_days_in_year(df_assets, days_in_year, freq='M', n_thr=1)
+            _ = self.util_check_days_in_year(df_prices, days_in_year, freq='M', n_thr=1)
         
 
-    def align_period(self, df_assets, axis=0, date_format='%Y-%m-%d',
+    def align_period(self, df_prices, axis=0, date_format='%Y-%m-%d',
                      fill_na=True, print_msg1=True, print_msg2=True, n_indent=2):
         if axis is None:
-            return df_assets
+            return df_prices
         else:
-            return align_period(df_assets, axis=axis, date_format=date_format, fill_na=fill_na, 
+            return align_period(df_prices, axis=axis, date_format=date_format, fill_na=fill_na, 
                                 print_msg1=print_msg1, print_msg2=print_msg2, n_indent=n_indent)
 
 
@@ -2815,7 +2716,7 @@ class BacktestManager():
         return bt.Backtest(strategy, dfs, commissions=c, **kwargs)
 
 
-    def _get_algo_select(self, select='all', n_assets=0, lookback=0, lag=0, 
+    def _get_algo_select(self, select='all', n_tickers=0, lookback=0, lag=0, 
                          id_scale=1, threshold=None, df_ratio=None, ratio_descending=None,
                          tickers=None):
         """
@@ -2832,30 +2733,30 @@ class BacktestManager():
             select = 'Specified'
               
         if cond(select, 'Momentum'):
-            algo_select = SelectMomentum(n=n_assets, lookback=lb, lag=lg, threshold=threshold)
+            algo_select = SelectMomentum(n=n_tickers, lookback=lb, lag=lg, threshold=threshold)
             # SelectAll() or similar should be called before SelectMomentum(), 
             # as StatTotalReturn uses values of temp[‘selected’]
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'f-ratio'):
-            algo_select = AlgoSelectFinRatio(df_ratio, n_assets, 
+            algo_select = AlgoSelectFinRatio(df_ratio, n_tickers, 
                                              lookback_days=lb,
                                              sort_descending=ratio_descending)
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'k-ratio'):
-            algo_select = AlgoSelectKRatio(n=n_assets, lookback=lb, lag=lg)
+            algo_select = AlgoSelectKRatio(n=n_tickers, lookback=lb, lag=lg)
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'ID'):
             id_scale = id_scale if id_scale > 1 else 2
-            n_pool = round(n_assets * id_scale)
+            n_pool = round(n_tickers * id_scale)
             algo_select1 = bt.algos.SelectMomentum(n=n_pool, lookback=lb, lag=lg)
-            algo_select2 = AlgoSelectIDiscrete(n=n_assets, lookback=lb, lag=lg)
+            algo_select2 = AlgoSelectIDiscrete(n=n_tickers, lookback=lb, lag=lg)
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select1, algo_select2)
         elif cond(select, 'IDRank'):
-            algo_select = AlgoSelectIDRank(n=n_assets, lookback=lb, lag=lg, scale=id_scale)
+            algo_select = AlgoSelectIDRank(n=n_tickers, lookback=lb, lag=lg, scale=id_scale)
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'randomly'):
             algo_after = AlgoRunAfter(lookback=lb, lag=lg)
-            algo_select = bt.algos.SelectRandomly(n=n_assets)
+            algo_select = bt.algos.SelectRandomly(n=n_tickers)
             algo_select = bt.AlgoStack(algo_after, bt.algos.SelectAll(), algo_select)
         elif cond(select, 'specified'):
             algo_after = AlgoRunAfter(lookback=lb, lag=lg)
@@ -2999,7 +2900,7 @@ class BacktestManager():
 
     def build(self, name=None, 
               freq='M', offset=0,
-              select='all', n_assets=0, lookback=0, lag=0,
+              select='all', n_tickers=0, lookback=0, lag=0,
               lookback_w=None, lag_w=None,
               id_scale=1, threshold=None,
               df_ratio=None, ratio_descending=None, # args for select 'f-ratio'
@@ -3009,19 +2910,19 @@ class BacktestManager():
         make backtest of a strategy
         lookback, lag: for select
         lookback_w, lag_w: for weigh. reuse those for select if None
-        commissions: %; same for all assets
+        commissions: %; same for all tickers
         algos: set List of Algos to build backtest directly
         build_cv: set to True to prepare cross-validate,
                   which makes self.portfolios only when running cross-validate
         """
-        dfs = self.df_assets
+        dfs = self.df_prices
         weights = BacktestManager.check_weights(weights, dfs)
         name = self._check_name(name)
         initial_capital = self._check_var(initial_capital, self.initial_capital)
         commissions = self._check_var(commissions, self.commissions)
 
         # build args for self._get_algo_* from build args
-        select = {'select':select, 'n_assets':n_assets, 'lookback':lookback, 'lag':lag, 
+        select = {'select':select, 'n_tickers':n_tickers, 'lookback':lookback, 'lag':lag, 
                   'id_scale':id_scale, 'threshold':threshold,
                   'df_ratio':df_ratio, 'ratio_descending':ratio_descending}
         freq = {'freq':freq} # offset being saved when running backtest
@@ -3046,7 +2947,7 @@ class BacktestManager():
 
     def buy_n_hold(self, name=None, weigh='specified', weights=None, **kwargs):
         """
-        weights: dict of ticker to weight. str if one asset portfolio
+        weights: dict of ticker to weight. str if one security portfolio
         kwargs: set initial_capital or commissions
         """
         return self.build(name=name, freq='once', select='all', weigh=weigh,
@@ -3057,22 +2958,22 @@ class BacktestManager():
                   initial_capital=None, commissions=None,
                   lookback=0, lag=0):
         """
-        dfs: str or list of str if dfs in self.df_assets or historical of tickers
+        dfs: str or list of str if dfs in self.df_prices or historical of tickers
         no cv possible with benchmark
         lookback & lag to set start date same as momentum stragegy with lookback & lag
         """
-        df_assets = self.df_assets
+        df_prices = self.df_prices
         
         if isinstance(dfs, str):
             dfs = [dfs]
 
-        if isinstance(dfs, list): # dfs is list of columns in self.df_assets
-            if pd.Index(dfs).isin(df_assets.columns).sum() != len(dfs):
+        if isinstance(dfs, list): # dfs is list of columns in self.df_prices
+            if pd.Index(dfs).isin(df_prices.columns).sum() != len(dfs):
                 return print('ERROR: check arg dfs')
             else:
-                dfs = df_assets[dfs]
+                dfs = df_prices[dfs]
         else:
-            dfs = dfs.loc[df_assets.index.min():df_assets.index.max()]
+            dfs = dfs.loc[df_prices.index.min():df_prices.index.max()]
 
         if isinstance(dfs, pd.Series):
             if dfs.name is None:
@@ -3104,7 +3005,7 @@ class BacktestManager():
 
 
     def benchmark_ticker(self, name='KODEX200', ticker=None, **kwargs):
-        start, end = get_date_minmax(self.df_assets, date_format='%Y-%m-%d')
+        start, end = get_date_minmax(self.df_prices, date_format='%Y-%m-%d')
         df = BacktestManager.util_import_data(name, ticker, start_date=start, end_date=end)
         if df is None:
             return None
@@ -3121,8 +3022,8 @@ class BacktestManager():
         reset_portfolios: reset portfolios and cv_strategies
         """
         if reset_portfolios:
-            self.portfolios = AssetDict(names=self.asset_names)
-            self.cv_strategies = AssetDict(names=self.asset_names)
+            self.portfolios = SecurityDict(names=self.security_names)
+            self.cv_strategies = SecurityDict(names=self.security_names)
             
         _ = [self.build(**{**kwa, **kwargs, 'build_cv':build_cv}) for kwa in kwa_list]
         return print(f'{len(kwa_list)} jobs prepared for cross-validation') if build_cv else None
@@ -3305,7 +3206,7 @@ class BacktestManager():
         data: output of get_cat_data or its file
         ref_val: name kwarg for util_import_data if str, ticker if list/tuple
         kw: kwargs of sns.catplot. 
-            ex) {'y':'cagr', 'x':'freq', 'row':'n_assets', 'col':'lookback', 'hue':'lag'}
+            ex) {'y':'cagr', 'x':'freq', 'row':'n_tickers', 'col':'lookback', 'hue':'lag'}
         """
         if isinstance(data, str): # data is file
             try:
@@ -3671,7 +3572,7 @@ class BacktestManager():
 
     
     def util_check_days_in_year(self, df=None, days_in_year=None, freq='M', n_thr=10):
-        df = self._check_var(df, self.df_assets)
+        df = self._check_var(df, self.df_prices)
         days_in_year = self._check_var(days_in_year, self.days_in_year)
         return check_days_in_year(df, days_in_year=days_in_year, freq=freq, n_thr=n_thr)
             
@@ -3679,8 +3580,8 @@ class BacktestManager():
 
 class BayesianEstimator():
     def __init__(self, df_prices, days_in_year=252, metrics=METRICS):
-        # df of assets (assets in columns) which of each might have its own periods.
-        # the periods of all assets will be aligned in every calculation.
+        # df of tickers (tickers in columns) which of each might have its own periods.
+        # the periods of all tickers will be aligned in every calculation.
         df_prices = df_prices.to_frame() if isinstance(df_prices, pd.Series) else df_prices
         if df_prices.index.name is None:
             df_prices.index.name = 'date' # set index name to run check_days_in_year
@@ -3775,7 +3676,7 @@ class BayesianEstimator():
         factor_year = days_in_year/periods if annualize else 1
 
         df_prices = self.df_prices
-        assets = list(df_prices.columns)
+        tickers = list(df_prices.columns)
         
         if align_period:
             df_prices = self.align_period(df_prices, axis=0, fill_na=True)
@@ -3785,35 +3686,35 @@ class BayesianEstimator():
             std_low = std_prior / multiplier_std
             std_high = std_prior * multiplier_std
         else:
-            ret_list = [df_prices[x].pct_change(periods).dropna() * factor_year for x in assets]
+            ret_list = [df_prices[x].pct_change(periods).dropna() * factor_year for x in tickers]
             mean_prior = [x.mean() for x in ret_list]
             std_prior = [x.std() for x in ret_list]
             std_low = [x / multiplier_std for x in std_prior]
             std_high = [x * multiplier_std for x in std_prior]
             returns = dict()
         
-        num_assets = len(assets) # flag for comparisson of two assets
-        coords={'asset': assets}
+        num_tickers = len(tickers) # flag for comparisson of two tickers
+        coords={'ticker': tickers}
 
         with pm.Model(coords=coords) as model:
             # nu: degree of freedom (normality parameter)
             nu = pm.Exponential('nu_minus_two', 1 / rate_nu, testval=4) + 2.
-            mean = pm.Normal('mean', mu=mean_prior, sigma=std_prior, dims='asset')
-            std = pm.Uniform('vol', lower=std_low, upper=std_high, dims='asset')
+            mean = pm.Normal('mean', mu=mean_prior, sigma=std_prior, dims='ticker')
+            std = pm.Uniform('vol', lower=std_low, upper=std_high, dims='ticker')
             
             if align_period:
                 returns = pm.StudentT(f'{freq}_returns', nu=nu, mu=mean, sigma=std, observed=df_ret)
             else:
                 func = lambda x: dict(mu=mean[x], sigma=std[x], observed=ret_list[x])
-                returns = {i: pm.StudentT(f'{freq}_returns[{x}]', nu=nu, **func(i)) for i, x in enumerate(assets)}
+                returns = {i: pm.StudentT(f'{freq}_returns[{x}]', nu=nu, **func(i)) for i, x in enumerate(tickers)}
 
             fy2 = 1 if debug_annualize else factor_year
-            pm.Deterministic(f'{freq}_mean', mean * fy2, dims='asset')
-            pm.Deterministic(f'{freq}_vol', std * (fy2 ** .5), dims='asset')
+            pm.Deterministic(f'{freq}_mean', mean * fy2, dims='ticker')
+            pm.Deterministic(f'{freq}_vol', std * (fy2 ** .5), dims='ticker')
             std_sr = std * pt.sqrt(nu / (nu - 2)) if normality_sharpe else std
-            sharpe = pm.Deterministic(f'{freq}_sharpe', ((mean-rf) / std_sr) * (fy2 ** .5), dims='asset')
+            sharpe = pm.Deterministic(f'{freq}_sharpe', ((mean-rf) / std_sr) * (fy2 ** .5), dims='ticker')
             
-            if num_assets == 2:
+            if num_tickers == 2:
                 #mean_diff = pm.Deterministic('mean diff', mean[0] - mean[1])
                 #pm.Deterministic('effect size', mean_diff / (std[0] ** 2 + std[1] ** 2) ** .5 / 2)
                 sharpe_diff = pm.Deterministic('sharpe diff', sharpe[0] - sharpe[1])
@@ -4580,7 +4481,7 @@ class PortfolioManager():
         df_additional: explicit set to exlcude from kwargs
         """
         # removal for comparison with strategy_data
-        asset_names = kwargs.pop('asset_names', None)
+        security_names = kwargs.pop('security_names', None)
         name_pf = kwargs.pop('name', None)
         
         # get kwarg sets of portfolios
@@ -4589,7 +4490,7 @@ class PortfolioManager():
         if df_universe is None:
             kwa_p = pfd.review_portfolio(name, strategy=False, universe=False)
             dm = PortfolioManager.create_universe(kwa_p['universe']) # instance of DataManager
-            asset_names = dm.get_names() if asset_names is None else asset_names # update asset_names
+            security_names = dm.get_names() if security_names is None else security_names # update security_names
             df_universe = dm.df_prices
             portfolio_data = dm.portfolio_data
         else:
@@ -4603,7 +4504,7 @@ class PortfolioManager():
             strategy = None
         portfolio_data['strategy'] = {'data': strategy_data, 'name':strategy}
         
-        kws = {**strategy_data, 'name':name, 'asset_names':asset_names}
+        kws = {**strategy_data, 'name':name, 'security_names':security_names}
         pb = PortfolioBuilder(df_universe, *args, df_additional=df_additional, **kws)
         pb.portfolio_data = portfolio_data
         return pb
