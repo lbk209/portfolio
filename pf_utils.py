@@ -701,8 +701,7 @@ class DataManager():
             tickers = list(security_names.keys())
                    
         try:
-            df_prices = DataManager.download_universe(self.universe, tickers, start_date, end_date,
-                                                      **kwargs_download)
+            df_prices = self.download_universe(tickers, start_date, end_date, **kwargs_download)
             if not close_today: # market today not closed yet
                 df_prices = df_prices.loc[:datetime.today() - timedelta(days=1)]
             print('... done')
@@ -819,8 +818,8 @@ class DataManager():
         """
         file = self.tickers
         path = self._check_var(path, self.path)
-        fd = FundDownloader(file, path, check_master=False)
-        if len(fd.check_master()) > 0:
+        fd = FundDownloader(file, path, check_master=False, msg=False)
+        if fd.check_master() is not None:
             fd.update_master(save=True)
         security_names = fd.data_tickers[col_name].to_dict()
         return self._check_tickers(security_names, tickers)
@@ -855,20 +854,19 @@ class DataManager():
         return security_names
         
 
-    @staticmethod
-    def download_universe(universe, *args, **kwargs):
+    def download_universe(self, *args, **kwargs):
         """
         return df of price history if multiple tickers set, series if a single ticker set
-        universe: krx, yahoo, file, default(fdr)
-                  use yahoo for us stocks instead of fdr which shows some inconsitancy of price data
         args, kwargs: for DataManager.download_*
         """
-        uv = universe.lower() if isinstance(universe, str) else 'default'
+        uv = self.universe.lower()
         if uv == 'krx':
             # use pykrx as fdr seems ineffective to download all tickers in krx
             func = DataManager.download_krx
         elif uv == 'fund':
-            func = DataManager.download_fund
+            file = self.tickers # master file in fund
+            path = self.path
+            func = lambda *a, **k: DataManager.download_fund(*a, file=file, path=path, **k)
         elif uv == 'yahoo':
             func = DataManager.download_yahoo
         elif uv == 'file':
@@ -908,14 +906,15 @@ class DataManager():
 
     @staticmethod
     def download_fund(tickers, start_date, end_date,
-                      interval=5, pause_duration=1, msg=False):
+                      interval=5, pause_duration=1, msg=False,
+                      file=None, path='.'):
         """
-        tickers: list of tickers
+        file: master file of fund data
         """
-        krx = KRXDownloader(start_date, end_date)
-        krx.get_tickers(tickers=tickers)
-        krx.download(interval=interval, pause_duration=pause_duration, msg=msg)
-        return krx.df_data
+        fd = FundDownloader(file, path, check_master=True, msg=False)
+        fd.set_tickers()
+        ers = fd.download(start_date, end_date, file=None, msg=msg)
+        return fd.df_prices
 
     @staticmethod
     def download_yahoo(tickers, start_date, end_date, col_price='Adj Close'):
@@ -950,6 +949,8 @@ class DataManager():
                 return None
             else:
                 self.security_names = security_names
+        else:
+            security_names = self._check_tickers(security_names, tickers)
         return SecurityDict(security_names, names=security_names)
 
 
@@ -1175,31 +1176,32 @@ class KRXDownloader():
 
 
 class FundDownloader():
-    def __init__(self, file, path='.', file_historical=None, check_master=True, 
+    def __init__(self, file, path='.', file_historical=None, check_master=True, msg=True,
                  col_ticker='ticker', 
                  cols_check=['check1_date', 'check1_price', 'check2_date', 'check2_price'],
                  url = "https://dis.kofia.or.kr/proframeWeb/XMLSERVICES/",
                  headers = {"Content-Type": "application/xml"}):
-        self.file_master = get_file_latest(file, path) # master file name for tickers
+        # master file of securities with ticker, name, adjusting data, etc
+        self.file_master = get_file_latest(file, path)
         # price file name
         file_historical = None if file_historical is None else get_file_latest(file_historical, path)
         self.file_historical = file_historical
         self.path = path
         self.col_ticker = col_ticker
         self.cols_check = cols_check
-        self.data_tickers = self._load_master()
+        self.data_tickers = self._load_master(msg)
         self.url = url
         self.headers = headers
         self.tickers = None
         self.df_prices = None
         self.failed = [] # tickers failed to download
         # check missing data for conversion
-        _ = self.check_master(data_tickers) if check_master else None
+        _ = self.check_master() if check_master else None
 
 
-    def _load_master(self):
+    def _load_master(self, msg=True):
         """
-        read the file of meta data of tickers
+        load master file of tickers and its info such as values for conversion from rate to price
         """
         file = self.file_master
         path = self.path
@@ -1214,12 +1216,15 @@ class FundDownloader():
         cols = pd.Index(cols_check).difference(data_tickers.columns)
         if cols.size > 0:
             data_tickers[cols] = None
-        print(f'Data for {len(data_tickers)} funds loaded.')
+        print(f'Data for {len(data_tickers)} funds loaded.') if msg else None
         return data_tickers
         
 
-    def check_master(self, data_tickers=None):
-        data_tickers = self._check_var(data_tickers, self.data_tickers)
+    def check_master(self):
+        """
+        check if missing data in data_tickers
+        """
+        data_tickers = self.data_tickers
         if data_tickers is None:
             return print('ERROR: no ticker data loaded yet')
 
@@ -1236,6 +1241,8 @@ class FundDownloader():
         if n > 0:
             print(f'{n} tickers missing data for conversion from rate to price.')
             return data_tickers.loc[cond].index.to_list()
+        else:
+            return None
 
 
     def update_master(self, save=True, 
@@ -1294,8 +1301,7 @@ class FundDownloader():
 
     def set_tickers(self, tickers=None, col_ticker='ticker'):
         """
-        load master file of tickers and its info such as values for conversion from rate to price
-        file: master file of securities with ticker, name, adjusting data, etc
+        set tickers to download prices
         """
         data_tickers = self.data_tickers
         if data_tickers is None:
