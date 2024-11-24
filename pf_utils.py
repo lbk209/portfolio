@@ -573,7 +573,7 @@ class DataManager():
             tickers = list(security_names.keys())
                    
         try:
-            df_prices = self.download_universe(tickers, start_date, end_date, **kwargs_download)
+            df_prices = self._download_universe(tickers, start_date, end_date, **kwargs_download)
             if not close_today: # market today not closed yet
                 df_prices = df_prices.loc[:datetime.today() - timedelta(days=1)]
             print('... done')
@@ -728,19 +728,33 @@ class DataManager():
         return security_names
         
 
-    def download_universe(self, *args, **kwargs):
+    def _download_universe(self, *args, **kwargs):
         """
         return df of price history if multiple tickers set, series if a single ticker set
         args, kwargs: for DataManager.download_*
         """
-        uv = self.universe.lower()
+        universe = self.universe
+        file = self.tickers
+        path = self.path
+        return DataManager.download_universe(universe, *args, file=file, path=path, **kwargs)
+
+    @staticmethod
+    def download_universe(universe, *args, file=None, path=None, **kwargs):
+        """
+        return df of price history if multiple tickers set, series if a single ticker set
+        universe: krx, yahoo, file, default(fdr)
+                  use yahoo for us stocks instead of fdr which shows some inconsitancy of price data
+        args, kwargs: for DataManager.download_*
+        file, path: for universe fund
+        """
+        uv = universe.lower() if isinstance(universe, str) else 'default'
         if uv == 'krx':
             # use pykrx as fdr seems ineffective to download all tickers in krx
             func = DataManager.download_krx
         elif uv == 'fund':
-            file = self.tickers # master file in fund
-            path = self.path
             func = lambda *a, **k: DataManager.download_fund(*a, file=file, path=path, **k)
+        elif uv == 'fund':
+            func = DataManager.download_fund
         elif uv == 'yahoo':
             func = DataManager.download_yahoo
         elif uv == 'file':
@@ -751,7 +765,7 @@ class DataManager():
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            return print(f'ERROR: failed to download prices as {e}')
+            return print(f'ERROR: Failed to download prices as {e}')
 
     @staticmethod
     def download_fdr(tickers, start_date, end_date, col_price1='Adj Close', col_price2='Close'):
