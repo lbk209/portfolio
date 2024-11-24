@@ -10,6 +10,7 @@ UNIVERSES = dict(
     UV_WTR = ['etf', 'etfs_weather', 'ETF/KR', True],
     UV_ETF = ['etf', 'etfs_all', 'ETF/KR', True],
     UV_FUND = ['fund', 'funds_prices', 'funds_info', False],
+    #UV_FUND = ['fund', 'test_funds_prices', 'test_funds_info', False], # for testing
     UV_FCTR = ['yahoo', 'etfs_factors', None, True]
 )
 UNIVERSES = {k: {**dict(zip(kwargs_dm, v)), 'path':path_data} for k,v in UNIVERSES.items()}

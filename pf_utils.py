@@ -526,13 +526,13 @@ class DataManager():
         self.tickers = tickers
         self.security_names = None 
         self.df_prices = None
+        self.daily = daily
         self.days_in_year = days_in_year
-        self.upload(self.file_historical) # update self.df_prices
-        if (not daily) and self.df_prices is not None:
-            self.convert_to_daily(True, days_in_year)
+        # update self.df_prices
+        self.upload(self.file_historical, get_names=True, convert_to_daily=not daily)
 
     
-    def upload(self, file=None, path=None):
+    def upload(self, file=None, path=None, get_names=False, convert_to_daily=False):
         """
         load df_prices from saved file
         """
@@ -545,9 +545,11 @@ class DataManager():
 
         if df_prices is None:
             return None # error msg printed out by self._upload
-        else:
-            self.df_prices = df_prices
-            return print('df_prices loaded')
+        
+        self.df_prices = df_prices
+        self.get_names(reset=True) if get_names else None
+        self.convert_to_daily(True, self.days_in_year) if convert_to_daily and not self.daily else None
+        return print('df_prices loaded')
         
 
     @print_runtime
@@ -581,8 +583,9 @@ class DataManager():
             
         self.df_prices = df_prices
         self.security_names = security_names     
-        if save:
-            self.save(date=df_prices.index.max())
+        self.save(date=df_prices.index.max()) if save else None
+        # convert to daily after saving original monthly
+        self.convert_to_daily(True, self.days_in_year) if not self.daily else None
         return print('df_prices updated')
 
     
@@ -648,7 +651,7 @@ class DataManager():
             security_names = func(tickers, **kwargs)
             failed = 'ERROR: Failed to get ticker names' if len(security_names) == 0 else None
         except Exception as e:
-            failed = f'ERROR: failed to download tickers as {e}'
+            failed = f'ERROR: Failed to get ticker names as {e}'
 
         if failed:
             return print(failed)
@@ -676,7 +679,7 @@ class DataManager():
         self.tickers: KOSPI,KOSDAQ
         """
         security_names = dict()
-        for x in self.tickers.split(',').replace(' ', ''):
+        for x in [x.replace(' ', '') for x in self.tickers.split(',')]:
             df = fdr.StockListing(x)
             security_names.update(df.set_index(col_ticker)[col_name].to_dict())
         return self._check_tickers(security_names, tickers)
@@ -708,7 +711,8 @@ class DataManager():
 
     def _get_tickers_yahoo(self, tickers, col_name='longName'):
         if tickers is None:
-            return print('ERROR: set tickers for names')
+            print('ERROR: Set tickers for names')
+            return dict()
         if isinstance(tickers, str):
             tickers = [tickers]
         yft = yf.Tickers(' '.join(tickers))
