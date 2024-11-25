@@ -2619,19 +2619,13 @@ class Liquidation():
 
 class BacktestManager():
     def __init__(self, df_prices, name_prfx='Portfolio',
-                 align_axis=0, fill_na=True, metrics=METRICS,  
-                 initial_capital=1000000, commissions=None, 
+                 metrics=METRICS, initial_capital=1000000, commissions=None, 
                  days_in_year=252, security_names=None):
-        """
-        align_axis: how to set time periods intersection with tickers
-        fill_na: fill forward na in df_prices if True, drop na if False 
-        """
         # df of tickers (tickers in columns) which of each has its own periods.
         # the periods will be aligned for tickers in a portfolio. see self.build
         if isinstance(df_prices, pd.Series):
             return print('ERROR: df_prices must be Dataframe')
         
-        df_prices = self.align_period(df_prices, axis=align_axis, fill_na=fill_na, print_msg2=False)
         self.df_prices = df_prices
         self.portfolios = SecurityDict(names=security_names) # dict of bt.backtest.Backtest
         self.cv_strategies = SecurityDict(names=security_names) # dict of args of strategies to cross-validate
@@ -2644,9 +2638,6 @@ class BacktestManager():
         self.commissions = commissions  # unit %
         self.run_results = None # output of bt.run
         self.days_in_year = days_in_year # only for self._get_algo_freq
-        # saving to apply the same rule in benchmark data
-        self.align_axis = align_axis
-        self.fill_na = fill_na
         self.security_names = security_names
         self.print_algos_msg = True # control msg print in self._get_algo_*
 
@@ -2658,7 +2649,7 @@ class BacktestManager():
         
 
     def align_period(self, df_prices, axis=0, date_format='%Y-%m-%d',
-                     fill_na=True, print_msg1=True, print_msg2=True, n_indent=2):
+                     fill_na=True, print_msg1=False, print_msg2=False, n_indent=2):
         if axis is None:
             return df_prices
         else:
@@ -2735,10 +2726,9 @@ class BacktestManager():
 
 
     def _get_algo_select(self, select='all', n_tickers=0, lookback=0, lag=0, 
-                         id_scale=1, threshold=None, df_ratio=None, ratio_descending=None,
-                         tickers=None):
+                         id_scale=1, threshold=None, df_ratio=None, ratio_descending=None):
         """
-        select: all, momentum, kratio, randomly, specified, list of tickers
+        select: all, momentum, kratio, randomly, list of tickers
         ratio_descending, df_ratio: args for AlgoSelectFinRatio
         tickers: list of tickers to select in SelectThese algo
         """
@@ -2934,6 +2924,14 @@ class BacktestManager():
                   which makes self.portfolios only when running cross-validate
         """
         dfs = self.df_prices
+        if isinstance(select, list):
+            try:
+                dfs = self.align_period(dfs[select], axis=0)
+            except KeyError as e:
+                return print('ERROR: KeyError {e}')
+        elif select.lower() == 'all':
+            dfs = self.align_period(dfs, axis=0)
+        
         weights = BacktestManager.check_weights(weights, dfs)
         name = self._check_name(name)
         initial_capital = self._check_var(initial_capital, self.initial_capital)
@@ -2980,18 +2978,15 @@ class BacktestManager():
         no cv possible with benchmark
         lookback & lag to set start date same as momentum stragegy with lookback & lag
         """
+        print('REMINDER: Make sure all strtategies built to align backtest periods')
         df_prices = self.df_prices
         
-        if isinstance(dfs, str):
-            dfs = [dfs]
-
+        dfs = [dfs] if isinstance(dfs, str) else dfs
         if isinstance(dfs, list): # dfs is list of columns in self.df_prices
             if pd.Index(dfs).isin(df_prices.columns).sum() != len(dfs):
                 return print('ERROR: check arg dfs')
             else:
                 dfs = df_prices[dfs]
-        else:
-            dfs = dfs.loc[df_prices.index.min():df_prices.index.max()]
 
         if isinstance(dfs, pd.Series):
             if dfs.name is None:
@@ -3007,8 +3002,16 @@ class BacktestManager():
             if name is None:
                 name = list(dfs.columns)[0]
                 #print(f'WARNING: name set to {name}')
+
+        # check time period of benchmark
+        if len(self.portfolios) > 0:
+            df = [get_date_minmax(v.data) for k,v in self.portfolios.items()]
+            df = pd.DataFrame(df, columns=['start', 'end'])
+            start, end = df['start'].min(), df['end'].max()
+        else:
+            start, end = df_prices.index.min(), df_prices.index.max()
+        dfs = dfs.loc[start:end]
         
-        dfs = self.align_period(dfs, axis=self.align_axis, fill_na=self.fill_na, print_msg2=False)
         weights = BacktestManager.check_weights(weights, dfs)
         weigh = {'weigh':'specified', 'weights':weights}
         select = {'select':'all', 'lookback':lookback, 'lag':lag}
