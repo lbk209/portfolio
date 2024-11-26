@@ -2713,20 +2713,23 @@ class BacktestManager():
         algos: List of Algos
         """
         if algos is None:
-            algos = [
-                self._get_algo_freq(**freq), 
+            algos = bt.AlgoStack(
                 self._get_algo_select(**select), 
                 self._get_algo_weigh(**weigh),
-                bt.algos.Rebalance()
-            ]
+                bt.algos.Rebalance(),
+                bt.algos.PrintInfo('{name}:{now}')
+            )
+            algos = self._get_algo_freq(algos, **freq)
+                
         strategy = bt.Strategy(name, algos)
         if commissions is not None:
             c = lambda q, p: abs(q) * p * commissions
         return bt.Backtest(strategy, dfs, commissions=c, **kwargs)
 
 
-    def _get_algo_freq(self, freq='M', offset=0, days_in_year=252):
+    def _get_algo_freq(self, algos, freq='M', offset=0, days_in_year=252):
         """
+        algos: algos to stack with freq
         freq: W, M, Q, Y, or num of months considering days_in_year
         offset (int): Applies to the first run. If 0, this algo will run the first time it is called.
         """
@@ -2755,13 +2758,17 @@ class BacktestManager():
             n = 0
             if freq.lower() != 'once':
                 print('WARNING:RunOnce selected') if self.print_algos_msg else None
-            
+
+        algos_once = bt.algos.RunOnce()
+        algos_once = bt.AlgoStack(algos_once, algos)
         if n > 0:
             # RunEveryNPeriods counts number of index in data (not actual days)
-            algo_freq = bt.algos.RunEveryNPeriods(n, offset=offset)
-         else:
-            algo_freq = bt.algos.RunOnce()
-        return algo_freq
+            algos_freq = bt.algos.RunEveryNPeriods(n, offset=offset)
+            algos_freq = bt.AlgoStack(algos_freq, algos)
+            algos_all = bt.AlgoStack(bt.algos.Or([algos_once, algos_freq]))
+        else:
+            algos_all = algos_once
+        return [algos_all]
 
 
     def _get_algo_select(self, select='all', n_tickers=0, lookback=0, lag=0, 
@@ -2775,12 +2782,15 @@ class BacktestManager():
         lb = self._get_date_offset(lookback)
         lg = self._get_date_offset(lag, 'weeks')
 
+        print(f'testing: lookback & lag in select (days): {lb}, {lg}')
+
         if isinstance(select, list): # set for SelectThese
             tickers = select
             select = 'Specified'
               
         if cond(select, 'Momentum'):
-            algo_select = SelectMomentum(n=n_tickers, lookback=lb, lag=lg, threshold=threshold)
+            #algo_select = SelectMomentum(n=n_tickers, lookback=lb, lag=lg, threshold=threshold)
+            algo_select = bt.algos.SelectMomentum(n=n_tickers, lookback=lb, lag=lg)
             # SelectAll() or similar should be called before SelectMomentum(), 
             # as StatTotalReturn uses values of temp[‘selected’]
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
