@@ -2714,8 +2714,8 @@ class BacktestManager():
         """
         if algos is None:
             algos = [
-                self._get_algo_select(**select), 
                 self._get_algo_freq(**freq), 
+                self._get_algo_select(**select), 
                 self._get_algo_weigh(**weigh),
                 bt.algos.Rebalance()
             ]
@@ -2723,6 +2723,45 @@ class BacktestManager():
         if commissions is not None:
             c = lambda q, p: abs(q) * p * commissions
         return bt.Backtest(strategy, dfs, commissions=c, **kwargs)
+
+
+    def _get_algo_freq(self, freq='M', offset=0, days_in_year=252):
+        """
+        freq: W, M, Q, Y, or num of months considering days_in_year
+        offset (int): Applies to the first run. If 0, this algo will run the first time it is called.
+        """
+        if isinstance(freq, str) and (freq.lower() == 'once'):
+            n_t = (0, 'once')
+        else:
+            n_t = BacktestManager.split_int_n_temporal(freq, 'M') # default month
+    
+        if n_t is None:
+            return
+        else:
+            n, temporal = n_t        
+
+        cond = lambda x, y: False if x is None else x[0].lower() == y[0].lower()
+        if cond(temporal, 'W'):
+            n *= round(days_in_year / WEEKS_IN_YEAR)
+        elif cond(temporal, 'M'):
+            n *= round(days_in_year / 12)
+        elif cond(temporal, 'Q'):
+            n *= round(days_in_year / 4)
+        elif cond(temporal, 'Y'):
+            n *= days_in_year
+        elif cond(temporal, 'D'):
+            return print(f'ERROR: days freq not supported')
+        else:  # default run once
+            n = 0
+            if freq.lower() != 'once':
+                print('WARNING:RunOnce selected') if self.print_algos_msg else None
+            
+        if n > 0:
+            # RunEveryNPeriods counts number of index in data (not actual days)
+            algo_freq = bt.algos.RunEveryNPeriods(n, offset=offset)
+         else:
+            algo_freq = bt.algos.RunOnce()
+        return algo_freq
 
 
     def _get_algo_select(self, select='all', n_tickers=0, lookback=0, lag=0, 
@@ -2778,45 +2817,6 @@ class BacktestManager():
  
         return algo_select
         
-
-    def _get_algo_freq(self, freq='M', offset=0, days_in_year=252):
-        """
-        freq: W, M, Q, Y, or num of months considering days_in_year
-        offset (int): Applies to the first run. If 0, this algo will run the first time it is called.
-        """
-        if isinstance(freq, str) and (freq.lower() == 'once'):
-            n_t = (0, 'once')
-        else:
-            n_t = BacktestManager.split_int_n_temporal(freq, 'M') # default month
-    
-        if n_t is None:
-            return
-        else:
-            n, temporal = n_t        
-
-        cond = lambda x, y: False if x is None else x[0].lower() == y[0].lower()
-        if cond(temporal, 'W'):
-            n *= round(days_in_year / WEEKS_IN_YEAR)
-        elif cond(temporal, 'M'):
-            n *= round(days_in_year / 12)
-        elif cond(temporal, 'Q'):
-            n *= round(days_in_year / 4)
-        elif cond(temporal, 'Y'):
-            n *= days_in_year
-        elif cond(temporal, 'D'):
-            return print(f'ERROR: days freq not supported')
-        else:  # default run once
-            n = 0
-            if freq.lower() != 'once':
-                print('WARNING:RunOnce selected') if self.print_algos_msg else None
-            
-        if n > 0:
-            # RunEveryNPeriods counts number of index in data (not actual days)
-            algo_freq = bt.algos.RunEveryNPeriods(n, offset=offset)
-        else:
-            algo_freq = bt.algos.RunOnce()
-        return algo_freq
-
 
     def _get_algo_weigh(self, weigh='equally', 
                          weights=None, lookback=0, lag=0, rf=0, bounds=(0.0, 1.0)):
@@ -2931,7 +2931,7 @@ class BacktestManager():
                 return print('ERROR: KeyError {e}')
         elif select.lower() == 'all':
             dfs = self.align_period(dfs, axis=0)
-        
+                
         weights = BacktestManager.check_weights(weights, dfs)
         name = self._check_name(name)
         initial_capital = self._check_var(initial_capital, self.initial_capital)
