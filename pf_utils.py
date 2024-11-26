@@ -2759,7 +2759,7 @@ class BacktestManager():
         if n > 0:
             # RunEveryNPeriods counts number of index in data (not actual days)
             algo_freq = bt.algos.RunEveryNPeriods(n, offset=offset)
-         else:
+        else:
             algo_freq = bt.algos.RunOnce()
         return algo_freq
 
