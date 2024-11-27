@@ -2916,6 +2916,7 @@ class BacktestManager():
               initial_capital=None, commissions=None, algos=None, build_cv=False):
         """
         make backtest of a strategy
+        offset: int, for freq
         lookback, lag: for select
         lookback_w, lag_w: for weigh. reuse those for select if None
         commissions: %; same for all tickers
@@ -2941,7 +2942,8 @@ class BacktestManager():
         select = {'select':select, 'n_tickers':n_tickers, 'lookback':lookback, 'lag':lag, 
                   'id_scale':id_scale, 'threshold':threshold,
                   'df_ratio':df_ratio, 'ratio_descending':ratio_descending}
-        freq = {'freq':freq} # offset being saved when running backtest
+        # offset updated in following for single run or _cross_validate_strategy for cv
+        freq = {'freq':freq} 
         weigh = {'weigh':weigh, 'weights':weights, 'rf':rf, 'bounds':bounds,
                  'lookback':self._check_var(lookback_w, lookback), 
                  'lag':self._check_var(lag_w, lag)}
