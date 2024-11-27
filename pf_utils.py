@@ -3017,24 +3017,16 @@ class BacktestManager():
                           weights=weights, **kwargs)
 
 
-    def benchmark(self, dfs, name=None, weights=None, 
+    def _benchmark(self, dfs, name=None, weights=None, 
                   initial_capital=None, commissions=None,
                   lookback=0, lag=0):
         """
-        dfs: str or list of str if dfs in self.df_prices or historical of tickers
+        dfs: historical of tickers
         no cv possible with benchmark
         lookback & lag to set start date same as momentum stragegy with lookback & lag
         """
         print('REMINDER: Make sure all strtategies built to align backtest periods')
-        df_prices = self.df_prices
         
-        dfs = [dfs] if isinstance(dfs, str) else dfs
-        if isinstance(dfs, list): # dfs is list of columns in self.df_prices
-            if pd.Index(dfs).isin(df_prices.columns).sum() != len(dfs):
-                return print('ERROR: check arg dfs')
-            else:
-                dfs = df_prices[dfs]
-
         if isinstance(dfs, pd.Series):
             if dfs.name is None:
                 if name is None:
@@ -3045,7 +3037,7 @@ class BacktestManager():
                 if name is None:
                     name = dfs.name
                 dfs = dfs.to_frame()
-        else:
+        else: # dfs assumed dataframe
             if name is None:
                 name = list(dfs.columns)[0]
                 #print(f'WARNING: name set to {name}')
@@ -3056,7 +3048,7 @@ class BacktestManager():
             df = pd.DataFrame(df, columns=['start', 'end'])
             start, end = df['start'].min(), df['end'].max()
         else:
-            start, end = df_prices.index.min(), df_prices.index.max()
+            start, end = dfs.index.min(), dfs.index.max()
         dfs = dfs.loc[start:end]
 
         return self.build(name=name, build_cv=False, freq='once', 
@@ -3066,14 +3058,26 @@ class BacktestManager():
                           df_prices=dfs)
 
 
-    def benchmark_ticker(self, name='KODEX200', ticker=None, **kwargs):
-        start, end = get_date_minmax(self.df_prices, date_format='%Y-%m-%d')
-        df = BacktestManager.util_import_data(name, ticker, start_date=start, end_date=end)
-        if df is None:
-            return None
+    def benchmark(self, name='KODEX200', ticker=None, **kwargs):
+        if isinstance(name, (pd.Series, pd.DataFrame)):
+            dfs = name
         else:
-            #print(f'Benchmark is {df.name}')
-            return self.benchmark(df, **kwargs)
+            df_prices = self.df_prices
+            cols = df_prices.columns
+            if isinstance(name, str):
+                if name in cols:
+                    dfs = df_prices[name]
+                else: # download
+                    start, end = get_date_minmax(df_prices, date_format='%Y-%m-%d')
+                    dfs = BacktestManager.util_import_data(name, ticker, start_date=start, end_date=end)
+                    if dfs is None:
+                        return print('ERROR')
+            else: # name is list
+                if pd.Index(name).isin(cols).sum() == len(names):
+                    dfs = df_prices[name]
+                else:
+                    return print('ERROR')
+        return self._benchmark(dfs, **kwargs)
 
 
     def build_batch(self, *kwa_list, reset_portfolios=False, build_cv=False, **kwargs):
@@ -3268,6 +3272,7 @@ class BacktestManager():
         """
         data: output of get_cat_data or its file
         ref_val: name kwarg for util_import_data if str, ticker if list/tuple
+            ex) s&p500, ('LRGF', 'yahoo'), (005930, None)
         kw: kwargs of sns.catplot. 
             ex) {'y':'cagr', 'x':'freq', 'row':'n_tickers', 'col':'lookback', 'hue':'lag'}
         """
