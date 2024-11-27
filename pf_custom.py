@@ -40,6 +40,39 @@ def calc_information_discreteness(ret):
     return get_sign(tret) * (sign_cnt[-1] - sign_cnt[1])/sum(sign_cnt) 
 
 
+def redistribute_weights(weights, threshold=0.1):
+    """
+    Discards elements below the threshold and redistributes their weights 
+    to the remaining elements proportionally based on their original weights.
+
+    Args:
+        weights (Series or dict): A series or dictionary describing the weights.
+        threshold (float): Minimum threshold for keeping elements.
+
+    Returns:
+        Series: Adjusted weights after discarding and redistributing.
+    """
+    if isinstance(weights, dict):
+        weights = pd.Series(weights)
+
+    if np.round(weights.sum(), 1) != 1.0:
+        raise ValueError("Expecting weights (that sum to 1) - sum is %s" % weights.sum())
+
+    # Separate weights below the threshold
+    above_threshold = weights[weights >= threshold]
+    below_threshold = weights[weights < threshold]
+
+    if above_threshold.empty:
+        raise ValueError("No weights above the threshold. All weights have been discarded.")
+
+    # Redistribute the sum of discarded weights to remaining weights proportionally
+    discarded_sum = below_threshold.sum()
+    redistributed_weights = above_threshold + (above_threshold / above_threshold.sum()) * discarded_sum
+
+    # Normalize weights to ensure they sum to 1
+    return np.round(redistributed_weights / redistributed_weights.sum(), 4)
+
+
 class AlgoSelectKRatio(AlgoStack):
     """
     Sets temp['selected'] based on a k-ratio momentum filter.
@@ -233,10 +266,10 @@ class AlgoRunAfter(Algo):
 
     def __call__(self, target):
         t0 = target.now - self.lag - self.lookback
-        if t0 in target.universe.index:
-            return True
-        else:
+        if t0 < target.universe.index[0]:
             return False
+        else:
+            return True
 
 
 class SelectN(Algo):
@@ -297,3 +330,27 @@ class SelectMomentum(AlgoStack):
             SelectN(n=n, sort_descending=sort_descending, all_or_none=all_or_none, threshold=threshold),
         )
 
+
+class RedistributeWeights(Algo):
+    """
+    Modifies temp['weights'] based on weight threshold.
+    discards elements below the threshold, and redistributes the sum of discarded weights 
+    to the remaining elements proportionally based on their original weights.
+    """
+
+    def __init__(self, threshold=0.1):
+        super(RedistributeWeights, self).__init__()
+        self.threshold = threshold
+
+    def __call__(self, target):
+        if "weights" not in target.temp:
+            return True
+
+        tw = target.temp["weights"]
+        if len(tw) == 0:
+            return True
+
+        tw = redistribute_weights(tw, self.threshold)
+        target.temp["weights"] = tw
+
+        return True

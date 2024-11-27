@@ -365,6 +365,31 @@ def format_rounded_string(*ns, string='ROI: {:.1%}, UGL: {:,.0f}', n_round=3):
     return string.format(*ns)
 
 
+def sum_dateoffsets(offset1, offset2):
+    """
+    Sums two pandas DateOffset objects by combining their kwargs.
+    
+    Parameters:
+        offset1 (pd.DateOffset): The first DateOffset.
+        offset2 (pd.DateOffset): The second DateOffset.
+        
+    Returns:
+        pd.DateOffset: The resulting DateOffset.
+    """
+    # Extract kwargs from both offsets
+    kwargs1 = offset1.kwds
+    kwargs2 = offset2.kwds
+    
+    # Sum the respective kwargs
+    combined_kwargs = {
+        key: kwargs1.get(key, 0) + kwargs2.get(key, 0)
+        for key in set(kwargs1) | set(kwargs2)
+    }
+    
+    # Return a new DateOffset with the combined kwargs
+    return pd.DateOffset(**combined_kwargs)
+    
+
 class SecurityDict(dict):
     """
     A dictionary subclass that associates keys (ex:security tickers) with names.
@@ -2760,7 +2785,7 @@ class BacktestManager():
             # RunEveryNPeriods counts number of index in data (not actual days)
             algo_freq = bt.algos.RunEveryNPeriods(n, offset=offset)
         else:
-            algo_freq = bt.algos.RunOnce()
+            algo_freq = bt.AlgoStack(bt.algos.RunAfterDays(offset), bt.algos.RunOnce())
         return algo_freq
 
 
@@ -2831,18 +2856,26 @@ class BacktestManager():
         if cond(weigh, 'ERC'):
             algo_weigh = bt.algos.WeighERC(lookback=lookback, lag=lag)
             # Use SelectHasData to avoid LedoitWolf ERROR; other weights like InvVol work fine without it.
-            algo_weigh = bt.AlgoStack(bt.algos.SelectHasData(lookback=lookback), algo_weigh)
+            lb = sum_dateoffsets(lookback, lag)
+            algo_weigh = bt.AlgoStack(bt.algos.SelectHasData(lookback=lb), algo_weigh)
         elif cond(weigh, 'Specified'):
+            algo_after = AlgoRunAfter(lookback=lookback, lag=lag)
             algo_weigh = bt.algos.WeighSpecified(**weights)
+            algo_weigh = bt.AlgoStack(algo_after, algo_weigh)
         elif cond(weigh, 'Randomly'):
+            algo_after = AlgoRunAfter(lookback=lookback, lag=lag)
             algo_weigh = bt.algos.WeighRandomly()
+            algo_weigh = bt.AlgoStack(algo_after, algo_weigh)
         elif cond(weigh, 'InvVol'): # risk parity
             algo_weigh = bt.algos.WeighInvVol(lookback=lookback, lag=lag)
         elif cond(weigh, 'MeanVar'): # Markowitz’s mean-variance optimization
             algo_weigh = bt.algos.WeighMeanVar(lookback=lookback, lag=lag, rf=rf, bounds=bounds)
-            algo_weigh = bt.AlgoStack(bt.algos.SelectHasData(lookback=lookback), algo_weigh)
+            lb = sum_dateoffsets(lookback, lag)
+            algo_weigh = bt.AlgoStack(bt.algos.SelectHasData(lookback=lb), algo_weigh)
         else:
+            algo_after = AlgoRunAfter(lookback=lookback, lag=lag)
             algo_weigh = bt.algos.WeighEqually()
+            algo_weigh = bt.AlgoStack(algo_after, algo_weigh)
             if not cond(weigh, 'equally'):
                 print('WARNING:WeighEqually selected') if self.print_algos_msg else None
             
@@ -2924,7 +2957,7 @@ class BacktestManager():
                id_scale=1, threshold=None,
                df_ratio=None, ratio_descending=None, # args for select 'f-ratio'
                weigh='equally', weights=None, rf=0, bounds=(0.0, 1.0),
-               initial_capital=None, commissions=None, algos=None):
+               initial_capital=None, commissions=None, algos=None, df_prices=None):
         """
         make backtest of a strategy
         offset: int, for freq
@@ -2933,7 +2966,7 @@ class BacktestManager():
         commissions: %; same for all tickers
         algos: set List of Algos to build backtest directly
         """
-        dfs = self.df_prices
+        dfs = self._check_var(df_prices, self.df_prices)
         if isinstance(select, list):
             try:
                 dfs = self.align_period(dfs[select], axis=0)
@@ -3025,21 +3058,12 @@ class BacktestManager():
         else:
             start, end = df_prices.index.min(), df_prices.index.max()
         dfs = dfs.loc[start:end]
-        
-        weights = BacktestManager.check_weights(weights, dfs)
-        weigh = {'weigh':'specified', 'weights':weights}
-        # convert lookback & lag to DateOffset
-        lookback = self._get_date_offset(lookback)
-        lag = self._get_date_offset(lag, 'weeks') 
-        select = {'select':'all', 'lookback':lookback, 'lag':lag}
-        initial_capital = self._check_var(initial_capital, self.initial_capital)
-        commissions = self._check_var(commissions, self.commissions)
-       
-        self.portfolios[name] = self.backtest(dfs, name=name, select=select, 
-                                              freq={'freq':'once'}, weigh=weigh, 
-                                              initial_capital=initial_capital, 
-                                              commissions=commissions)
-        return None
+
+        return self.build(name=name, build_cv=False, freq='once', 
+                          select='all', lookback=lookback, lag=lag,
+                          weigh='specified', weights=weights, 
+                          initial_capital=initial_capital, commissions=commissions, 
+                          df_prices=dfs)
 
 
     def benchmark_ticker(self, name='KODEX200', ticker=None, **kwargs):
