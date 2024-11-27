@@ -2764,7 +2764,8 @@ class BacktestManager():
         return algo_freq
 
 
-    def _get_algo_select(self, select='all', n_tickers=0, lookback=0, lag=0, 
+    def _get_algo_select(self, select='all', n_tickers=0, 
+                         lookback=pd.DateOffset(days=0), lag=pd.DateOffset(days=0), 
                          id_scale=1, threshold=None, df_ratio=None, ratio_descending=None):
         """
         select: all, momentum, kratio, randomly, list of tickers
@@ -2772,45 +2773,43 @@ class BacktestManager():
         tickers: list of tickers to select in SelectThese algo
         """
         cond = lambda x,y: False if x is None else x.lower() == y.lower()
-        lb = self._get_date_offset(lookback)
-        lg = self._get_date_offset(lag, 'weeks')
 
         if isinstance(select, list): # set for SelectThese
             tickers = select
             select = 'Specified'
               
         if cond(select, 'Momentum'):
-            algo_select = SelectMomentum(n=n_tickers, lookback=lb, lag=lg, threshold=threshold)
+            algo_select = SelectMomentum(n=n_tickers, lookback=lookback, lag=lag, threshold=threshold)
             # SelectAll() or similar should be called before SelectMomentum(), 
             # as StatTotalReturn uses values of temp[‘selected’]
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'f-ratio'):
             algo_select = AlgoSelectFinRatio(df_ratio, n_tickers, 
-                                             lookback_days=lb,
+                                             lookback_days=lookback,
                                              sort_descending=ratio_descending)
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'k-ratio'):
-            algo_select = AlgoSelectKRatio(n=n_tickers, lookback=lb, lag=lg)
+            algo_select = AlgoSelectKRatio(n=n_tickers, lookback=lookback, lag=lag)
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'ID'):
             id_scale = id_scale if id_scale > 1 else 2
             n_pool = round(n_tickers * id_scale)
-            algo_select1 = bt.algos.SelectMomentum(n=n_pool, lookback=lb, lag=lg)
-            algo_select2 = AlgoSelectIDiscrete(n=n_tickers, lookback=lb, lag=lg)
+            algo_select1 = bt.algos.SelectMomentum(n=n_pool, lookback=lookback, lag=lag)
+            algo_select2 = AlgoSelectIDiscrete(n=n_tickers, lookback=lookback, lag=lag)
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select1, algo_select2)
         elif cond(select, 'IDRank'):
-            algo_select = AlgoSelectIDRank(n=n_tickers, lookback=lb, lag=lg, scale=id_scale)
+            algo_select = AlgoSelectIDRank(n=n_tickers, lookback=lookback, lag=lag, scale=id_scale)
             algo_select = bt.AlgoStack(bt.algos.SelectAll(), algo_select)
         elif cond(select, 'randomly'):
-            algo_after = AlgoRunAfter(lookback=lb, lag=lg)
+            algo_after = AlgoRunAfter(lookback=lookback, lag=lag)
             algo_select = bt.algos.SelectRandomly(n=n_tickers)
             algo_select = bt.AlgoStack(algo_after, bt.algos.SelectAll(), algo_select)
         elif cond(select, 'specified'):
-            algo_after = AlgoRunAfter(lookback=lb, lag=lg)
+            algo_after = AlgoRunAfter(lookback=lookback, lag=lag)
             algo_select = bt.algos.SelectThese(tickers)
             algo_select = bt.AlgoStack(algo_after, bt.algos.SelectAll(), algo_select)
         else:
-            algo_after = AlgoRunAfter(lookback=lb, lag=lg)
+            algo_after = AlgoRunAfter(lookback=lookback, lag=lag)
             algo_select = bt.AlgoStack(algo_after, bt.algos.SelectAll())
             if not cond(select, 'all'):
                 print('WARNING:SelectAll selected') if self.print_algos_msg else None
@@ -2818,32 +2817,30 @@ class BacktestManager():
         return algo_select
         
 
-    def _get_algo_weigh(self, weigh='equally', 
-                         weights=None, lookback=0, lag=0, rf=0, bounds=(0.0, 1.0)):
+    def _get_algo_weigh(self, weigh='equally', weights=None, lookback=pd.DateOffset(days=0), 
+                        lag=pd.DateOffset(days=0), rf=0, bounds=(0.0, 1.0)):
         """
         weigh: equally, erc, specified, randomly, invvol, meanvar
         """
         cond = lambda x,y: False if x is None else x.lower() == y.lower()
-        lb = self._get_date_offset(lookback) # default month
-        lg = self._get_date_offset(lag, 'weeks') # default week
         
         # reset weigh if weights not given
         if cond(weigh, 'Specified') and (weights is None):
             weigh = 'equally'
         
         if cond(weigh, 'ERC'):
-            algo_weigh = bt.algos.WeighERC(lookback=lb, lag=lg)
+            algo_weigh = bt.algos.WeighERC(lookback=lookback, lag=lag)
             # Use SelectHasData to avoid LedoitWolf ERROR; other weights like InvVol work fine without it.
-            algo_weigh = bt.AlgoStack(bt.algos.SelectHasData(lookback=lb), algo_weigh)
+            algo_weigh = bt.AlgoStack(bt.algos.SelectHasData(lookback=lookback), algo_weigh)
         elif cond(weigh, 'Specified'):
             algo_weigh = bt.algos.WeighSpecified(**weights)
         elif cond(weigh, 'Randomly'):
             algo_weigh = bt.algos.WeighRandomly()
         elif cond(weigh, 'InvVol'): # risk parity
-            algo_weigh = bt.algos.WeighInvVol(lookback=lb, lag=lg)
+            algo_weigh = bt.algos.WeighInvVol(lookback=lookback, lag=lag)
         elif cond(weigh, 'MeanVar'): # Markowitz’s mean-variance optimization
-            algo_weigh = bt.algos.WeighMeanVar(lookback=lb, lag=lg, rf=rf, bounds=bounds)
-            algo_weigh = bt.AlgoStack(bt.algos.SelectHasData(lookback=lb), algo_weigh)
+            algo_weigh = bt.algos.WeighMeanVar(lookback=lookback, lag=lag, rf=rf, bounds=bounds)
+            algo_weigh = bt.AlgoStack(bt.algos.SelectHasData(lookback=lookback), algo_weigh)
         else:
             algo_weigh = bt.algos.WeighEqually()
             if not cond(weigh, 'equally'):
@@ -2904,16 +2901,30 @@ class BacktestManager():
 
     def _get_date_offset(self, n, unit='months'):
         return BacktestManager.get_date_offset(n, unit=unit)
+
+
+    def build(self, name=None, build_cv=False, **kwargs):
+        """
+        prepare for cv or run self.backtest for each run/iteration
+        kwargs: all kwargs for self._build
+        """
+        if build_cv:
+            # prepare cv process after which each iteration of cv will run in cross_validate
+            # which use self.build by setting build_cv to False
+            self.cv_strategies[name] = kwargs
+        else:
+            self._build(name=name, **kwargs)
+        return None
         
 
-    def build(self, name=None, 
-              freq='M', offset=0,
-              select='all', n_tickers=0, lookback=0, lag=0,
-              lookback_w=None, lag_w=None,
-              id_scale=1, threshold=None,
-              df_ratio=None, ratio_descending=None, # args for select 'f-ratio'
-              weigh='equally', weights=None, rf=0, bounds=(0.0, 1.0),
-              initial_capital=None, commissions=None, algos=None, build_cv=False):
+    def _build(self, name=None, 
+               freq='M', offset=0,
+               select='all', n_tickers=0, lookback=0, lag=0,
+               lookback_w=None, lag_w=None,
+               id_scale=1, threshold=None,
+               df_ratio=None, ratio_descending=None, # args for select 'f-ratio'
+               weigh='equally', weights=None, rf=0, bounds=(0.0, 1.0),
+               initial_capital=None, commissions=None, algos=None):
         """
         make backtest of a strategy
         offset: int, for freq
@@ -2921,8 +2932,6 @@ class BacktestManager():
         lookback_w, lag_w: for weigh. reuse those for select if None
         commissions: %; same for all tickers
         algos: set List of Algos to build backtest directly
-        build_cv: set to True to prepare cross-validate,
-                  which makes self.portfolios only when running cross-validate
         """
         dfs = self.df_prices
         if isinstance(select, list):
@@ -2938,27 +2947,30 @@ class BacktestManager():
         initial_capital = self._check_var(initial_capital, self.initial_capital)
         commissions = self._check_var(commissions, self.commissions)
 
+        # convert lookback & lag to DateOffset just before running self.backtest
+        lookback = self._get_date_offset(lookback) # default month
+        lag = self._get_date_offset(lag, 'weeks') # default week
+        lookback_w = lookback if lookback_w is None else self._get_date_offset(lookback_w) 
+        lag_w = lag if lag_w is None else self._get_date_offset(lag_w, 'weeks')
+        
+        # calc init offset for RunEveryNPeriods in _get_algo_freq
+        lags = [(lookback, lag), (lookback_w, lag_w)]
+        lags = [len(dfs.loc[ : dfs.index[0] + x + y ]) for x, y in lags]
+        # 1st run is after max(lags) for select or weigh, 
+        # without which 1st run could be after freq + max(lags) in worst case 
+        offset += max(lags) 
+        
         # build args for self._get_algo_* from build args
         select = {'select':select, 'n_tickers':n_tickers, 'lookback':lookback, 'lag':lag, 
                   'id_scale':id_scale, 'threshold':threshold,
                   'df_ratio':df_ratio, 'ratio_descending':ratio_descending}
-        # offset updated in following for single run or _cross_validate_strategy for cv
-        freq = {'freq':freq} 
+        freq = {'freq':freq, 'offset':offset, 'days_in_year':self.days_in_year} 
         weigh = {'weigh':weigh, 'weights':weights, 'rf':rf, 'bounds':bounds,
-                 'lookback':self._check_var(lookback_w, lookback), 
-                 'lag':self._check_var(lag_w, lag)}
+                 'lookback':lookback_w, 'lag':lag_w}
         
-        if build_cv: # backtest inserted to self.portfolios when running cross_validate
-            self.cv_strategies[name] = {
-                # convert args for self.build_batch in self._cross_validate_strategy
-                **select, **freq, **weigh, 'algos':None,
-                'initial_capital':initial_capital, 'commissions':commissions
-            }
-        else:
-            freq.update({'offset':offset, 'days_in_year':self.days_in_year})
-            kwargs = {'select':select, 'freq':freq, 'weigh':weigh, 'algos':algos,
-                      'initial_capital':initial_capital, 'commissions':commissions}
-            self.portfolios[name] = self.backtest(dfs, name=name, **kwargs)
+        kwargs = {'select':select, 'freq':freq, 'weigh':weigh, 'algos':algos,
+                  'initial_capital':initial_capital, 'commissions':commissions}
+        self.portfolios[name] = self.backtest(dfs, name=name, **kwargs)
         
         return None
         
@@ -3016,6 +3028,9 @@ class BacktestManager():
         
         weights = BacktestManager.check_weights(weights, dfs)
         weigh = {'weigh':'specified', 'weights':weights}
+        # convert lookback & lag to DateOffset
+        lookback = self._get_date_offset(lookback)
+        lag = self._get_date_offset(lag, 'weeks') 
         select = {'select':'all', 'lookback':lookback, 'lag':lag}
         initial_capital = self._check_var(initial_capital, self.initial_capital)
         commissions = self._check_var(commissions, self.commissions)
@@ -3113,6 +3128,7 @@ class BacktestManager():
                        size_batch=0, file_batch='tmp_batch', path_batch='.',  delete_batch=True):
         """
         pf_list: str, index, list of str or list of index
+        lag: int
         simplify: result format mean ± std if True, dict of cv if False 
         """
         if len(self.cv_strategies) == 0:
