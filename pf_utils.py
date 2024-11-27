@@ -2901,16 +2901,30 @@ class BacktestManager():
 
     def _get_date_offset(self, n, unit='months'):
         return BacktestManager.get_date_offset(n, unit=unit)
+
+
+    def build(self, name=None, build_cv=False, **kwargs):
+        """
+        prepare for cv or run self.backtest for each run/iteration
+        kwargs: all kwargs for self._build
+        """
+        if build_cv:
+            # prepare cv process after which each iteration of cv will run in cross_validate
+            # which use self.build by setting build_cv to False
+            self.cv_strategies[name] = kwargs
+        else:
+            self._build(name=name, **kwargs)
+        return None
         
 
-    def build(self, name=None, 
-              freq='M', offset=0,
-              select='all', n_tickers=0, lookback=0, lag=0,
-              lookback_w=None, lag_w=None,
-              id_scale=1, threshold=None,
-              df_ratio=None, ratio_descending=None, # args for select 'f-ratio'
-              weigh='equally', weights=None, rf=0, bounds=(0.0, 1.0),
-              initial_capital=None, commissions=None, algos=None, build_cv=False):
+    def _build(self, name=None, 
+               freq='M', offset=0,
+               select='all', n_tickers=0, lookback=0, lag=0,
+               lookback_w=None, lag_w=None,
+               id_scale=1, threshold=None,
+               df_ratio=None, ratio_descending=None, # args for select 'f-ratio'
+               weigh='equally', weights=None, rf=0, bounds=(0.0, 1.0),
+               initial_capital=None, commissions=None, algos=None):
         """
         make backtest of a strategy
         offset: int, for freq
@@ -2918,8 +2932,6 @@ class BacktestManager():
         lookback_w, lag_w: for weigh. reuse those for select if None
         commissions: %; same for all tickers
         algos: set List of Algos to build backtest directly
-        build_cv: set to True to prepare cross-validate,
-                  which makes self.portfolios only when running cross-validate
         """
         dfs = self.df_prices
         if isinstance(select, list):
@@ -2935,11 +2947,12 @@ class BacktestManager():
         initial_capital = self._check_var(initial_capital, self.initial_capital)
         commissions = self._check_var(commissions, self.commissions)
 
-        # convert lookback & lag to DateOffset
+        # convert lookback & lag to DateOffset just before running self.backtest
         lookback = self._get_date_offset(lookback) # default month
         lag = self._get_date_offset(lag, 'weeks') # default week
         lookback_w = lookback if lookback_w is None else self._get_date_offset(lookback_w) 
         lag_w = lag if lag_w is None else self._get_date_offset(lag_w, 'weeks')
+        
         # calc init offset for RunEveryNPeriods in _get_algo_freq
         lags = [(lookback, lag), (lookback_w, lag_w)]
         lags = [len(dfs.loc[ : dfs.index[0] + x + y ]) for x, y in lags]
@@ -2951,22 +2964,13 @@ class BacktestManager():
         select = {'select':select, 'n_tickers':n_tickers, 'lookback':lookback, 'lag':lag, 
                   'id_scale':id_scale, 'threshold':threshold,
                   'df_ratio':df_ratio, 'ratio_descending':ratio_descending}
-        # offset updated in following for single run or _cross_validate_strategy for cv
-        freq = {'freq':freq} 
+        freq = {'freq':freq, 'offset':offset, 'days_in_year':self.days_in_year} 
         weigh = {'weigh':weigh, 'weights':weights, 'rf':rf, 'bounds':bounds,
                  'lookback':lookback_w, 'lag':lag_w}
         
-        if build_cv: # backtest inserted to self.portfolios when running cross_validate
-            self.cv_strategies[name] = {
-                # convert args for self.build_batch in self._cross_validate_strategy
-                **select, **freq, **weigh, 'algos':None,
-                'initial_capital':initial_capital, 'commissions':commissions
-            }
-        else:
-            freq.update({'offset':offset, 'days_in_year':self.days_in_year})
-            kwargs = {'select':select, 'freq':freq, 'weigh':weigh, 'algos':algos,
-                      'initial_capital':initial_capital, 'commissions':commissions}
-            self.portfolios[name] = self.backtest(dfs, name=name, **kwargs)
+        kwargs = {'select':select, 'freq':freq, 'weigh':weigh, 'algos':algos,
+                  'initial_capital':initial_capital, 'commissions':commissions}
+        self.portfolios[name] = self.backtest(dfs, name=name, **kwargs)
         
         return None
         
