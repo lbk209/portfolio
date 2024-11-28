@@ -20,8 +20,6 @@ from datetime import date as datetime_date
 from contextlib import contextmanager
 from os import listdir
 from os.path import isfile, join, splitext
-from pf_custom import (AlgoSelectKRatio, AlgoRunAfter, calc_kratio, AlgoSelectIDiscrete, 
-                       AlgoSelectIDRank, SelectMomentum, AlgoSelectFinRatio, RedistributeWeights)
 from ffn import calc_stats, calc_perf_stats
 from pykrx import stock as pyk
 from tqdm import tqdm
@@ -30,6 +28,10 @@ from matplotlib.gridspec import GridSpec
 from numbers import Number
 
 from pf_data import PortfolioData
+from pf_custom import (AlgoSelectKRatio, AlgoRunAfter, calc_kratio, AlgoSelectIDiscrete, 
+                       AlgoSelectIDRank, SelectMomentum, AlgoSelectFinRatio, 
+                       RedistributeWeights, redistribute_weights)
+
 
 warnings.filterwarnings(action='ignore', category=FutureWarning)
 warnings.filterwarnings(action='ignore', category=pd.errors.PerformanceWarning)
@@ -867,14 +869,18 @@ class DataManager():
         return SecurityDict(security_names, names=security_names)
 
 
-    def get_date_range(self, df_prices=None, return_intersection=False):
+    def get_date_range(self, tickers=None, df_prices=None, return_intersection=False):
         df_prices = self._check_var(df_prices, self.df_prices)
         security_names = self.security_names
         if df_prices is None:
             return print('ERROR from get_date_range')
-        else:
-            return get_date_range(df_prices, security_names, 
-                                  return_intersection=return_intersection)
+        if tickers is not None:
+            try:
+                df_prices = df_prices[tickers]
+            except KeyError as e:
+                print('ERROR: KeyError {e}')
+        return get_date_range(df_prices, security_names, 
+                              return_intersection=return_intersection)
 
 
     def check_days_in_year(self, days_in_year=251, freq='M', n_thr=10):
@@ -1533,7 +1539,7 @@ class FundDownloader():
 class PortfolioBuilder():
     def __init__(self, df_universe, file=None, path='.', name='portfolio',
                  method_select='all', sort_ascending=False, n_tickers=0, lookback=0, lag=0, tickers=None, 
-                 method_weigh='Equally', weights=None, lookback_w=None, lag_w=None, 
+                 method_weigh='Equally', weights=None, lookback_w=None, lag_w=None, weight_min=0,
                  df_additional=None, security_names=None, 
                  cols_record = {'date':'date', 'tkr':'ticker', 'name':'name', 'prc':'price', 
                                 'trs':'transaction', 'net':'net', 'wgt':'weight', 'wgta':'weight*'},
@@ -1565,6 +1571,7 @@ class PortfolioBuilder():
         self.weights = weights
         self.lookback_w = self._check_var(lookback_w, self.lookback) # for weigh
         self.lag_w = self._check_var(lag_w, self.lag)
+        self.weight_min = weight_min
         self.df_additional = df_additional
         self.security_names = security_names
         self.name = name # portfolio name
@@ -1616,12 +1623,12 @@ class PortfolioBuilder():
         dts = get_date_minmax(df_data, self.date_format)
         info_date = f'from {dts[0]} to {dts[1]}'
         
-        method = method.lower()
-        if method == 'k-ratio':
+        cond = lambda x,y: False if x is None else x.lower() == y.lower()
+        if cond(method, 'k-ratio'):
             rank = (df_data.pct_change(1).apply(lambda x: calc_kratio(x.dropna()))
                     .sort_values(ascending=sort_ascending)[:n_tickers])
             method = 'K-ratio'
-        elif method == 'f-ratio':
+        elif cond(method, 'f-ratio'):
             if df_additional is None:
                 return print('ERROR: no df_additional available')
 
@@ -1639,7 +1646,7 @@ class PortfolioBuilder():
             if rank.index.difference(df_data.columns).size > 0:
                 print('ERROR: check selected tickers if price data given')
             method = 'Financial Ratio'
-        elif method == 'momentum':
+        elif cond(method, 'momentum'):
             #rank = bt.ffn.calc_total_return(df_data).sort_values(ascending=False)[:n_tickers]
             # no difference with calc_total_return as align_axis=1
             rank = (df_data.apply(lambda x: x.dropna().iloc[-1]/x.dropna().iloc[0]-1)
@@ -1656,16 +1663,18 @@ class PortfolioBuilder():
         return rank    
 
     
-    def weigh(self, method=None, weights=None, lookback=None, lag=None):
+    def weigh(self, method=None, weights=None, lookback=None, lag=None, weight_min=None, **kwargs):
         """
         method: ERC, InvVol, Equally, Specified
         weights: str, list of str, dict, or None. Used only for 'Specified' method
+        weight_min: min weight for every equity. not work with method specified or equal weights
         """
         selected = self.selected
         method = self._check_var(method, self.method_weigh)
         weights = self._check_var(weights, self.weights)
         lookback = self._check_var(lookback, self.lookback_w)
         lag = self._check_var(lag, self.lag_w)
+        weight_min = self._check_var(weight_min, self.weight_min)
         
         if selected is None:
             return print('ERROR')
@@ -1674,13 +1683,17 @@ class PortfolioBuilder():
             tickers = selected['tickers']
 
         df_data = self._get_data(lookback, lag, date=date, tickers=tickers)
-        if method.lower() == 'erc':
-            weights = bt.ffn.calc_erc_weights(df_data.pct_change(1).dropna())
+        cond = lambda x,y: False if x is None else x.lower() == y.lower()
+        if cond(method, 'erc'):
+            weights = bt.ffn.calc_erc_weights(df_data.pct_change(1).dropna(), **kwargs)
             method = 'ERC'
-        elif method.lower() == 'invvol':
+        elif cond(method, 'invvol'):
             weights = bt.ffn.calc_inv_vol_weights(df_data.pct_change(1).dropna())
             method = 'Inv.Vol'
-        elif method.lower() == 'specified':
+        elif cond(method, 'meanvar'):
+            weights = bt.ffn.calc_mean_var_weights(df_data.pct_change(1).dropna(), **kwargs)
+            method = 'MeanVar'
+        elif cond(method, 'specified'):
             w = self._check_weights(weights, df_data, none_weight_is_error=True)
             if w is None:
                 return self.liquidation.check_weights(weights)
@@ -1688,12 +1701,19 @@ class PortfolioBuilder():
             weights.update(w)
             weights = pd.Series(weights)
             method = 'Specified'
+            weight_min = 0
         else: # default equal. no need to set arg weights
             weights = {x:1/len(tickers) for x in tickers}
             weights = pd.Series(weights)
             method = 'Equal weights'
+            weight_min = 0
 
-        self.selected['weights'] = weights # weights is series
+        if weight_min > 0: # drop equities of weight lt weight_min
+            w = redistribute_weights(weights, weight_min, n_min=1, none_if_fail=True)
+            weights = pd.Series(0, index=weights.index) if w is None else pd.Series(w)
+
+        
+        self.selected['weights'] = np.round(weights, 4) # weights is series
         print(f'Weights of tickers determined by {method}.')
         return weights
         
@@ -1746,6 +1766,7 @@ class PortfolioBuilder():
         wi = pd.Series(weights, name=col_wgt).rename_axis(col_tkr) # ideal weights
         wvi = wi * capital / (1+commissions/100) # weighted security value
         df_net = wvi / df_prc.loc[date, tickers] # stock quantity float
+        df_net = df_net.rename_axis(col_tkr) # missing index name in some cases
         df_net = df_net.apply(np.floor).astype(int).to_frame(col_net) # stock quant int
         df_net = df_net.assign(**{col_date: date})
         df_net = df_prc.loc[date].to_frame(col_prc).join(df_net, how='right')
@@ -1762,6 +1783,9 @@ class PortfolioBuilder():
         # add weights as new cols
         wa = self.calc_weight_actual(df_net)
         df_net = df_net.join(wi.apply(lambda x: f'{x:.03f}')).join(wa)
+        df_net = df_net.loc[df_net[col_net]>0] # drop equities of zero net
+        if len(df_net) == 0:
+            return print('ERROR: No allocation at all')
 
         # add security names
         if security_names is None:
@@ -3519,13 +3543,13 @@ class BacktestManager():
         if start is None:
             df = df_prices.diff(-1).abs().cumsum()
             start = df.loc[df.iloc[:,0]>0].index.min()
+            start = None if start is pd.NaT else start
         start = mldate(start)
         
         if end is None:
             end = df_prices.index.max()
         end = mldate(end)
-        # comprehensioni for nan from mldate with NaT input
-        return [None if np.isnan(x) else x for x in (start, end)]
+        return (start, end)
 
 
     def get_turnover(self, pf_list=None, drop_zero=True):
