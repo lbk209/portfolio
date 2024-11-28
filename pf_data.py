@@ -20,11 +20,12 @@ UNIVERSES = {k: {**dict(zip(kwargs_dm, v)), 'path':path_data} for k,v in UNIVERS
 STRATEGIES = dict(
     MMT = dict(method_select='Momentum', method_weigh='Equally', sort_ascending=False, n_tickers=5, lookback='1y', lag='1w'),
     PER = dict(method_select='F-ratio', method_weigh='Equally', sort_ascending=True, n_tickers=20, lookback='2m', lag=0),
-    WTR = dict(method_select='All', method_weigh='Equally'),
+    # 'Selected' works with additional ticker list
+    WTR = dict(method_select='Selected', method_weigh='Equally', lookback='6m', lag=0), # freq6m
     LIQ = dict(method_select='Selected', method_weigh='Equally'),
-    IRP = dict(method_select='Selected', method_weigh='Equally'),
-    HANA= dict(method_select='Selected', method_weigh='Equally'),
-    FCTR= dict(method_select='Selected', method_weigh='Equally'),
+    TDF = dict(method_select='Selected', method_weigh='MeanVar', lookback='6m', lag=0, weight_min=0.2), # freq6m
+    HANA= dict(method_select='Selected', method_weigh='InvVol', lookback='2y', lag=0), # freq2y
+    FCTR= dict(method_select='Selected', method_weigh='MeanVar', lookback='1q', lag=0), # freq1q
     KRX = dict(method_select='Momentum', method_weigh='Equally', sort_ascending=False, n_tickers=5, lookback='1y', lag='1m')
 )
 
@@ -34,7 +35,8 @@ RECORDS = dict(
     PER = 'pf_k200_per',
     WTR = 'pf_wtr_static',
     LIQ = 'pf_liq_static',
-    IRP = 'pf_irp_static',
+    TDF = 'pf_tdf_static',
+    #TDF = 'test_pf_tdf_static', # for testing
     HANA= 'pf_hana_static',
     FCTR= 'pf_fctr_static',
     KRX = 'test_pf_krx_momentum'
@@ -48,7 +50,7 @@ PORTFOLIOS = [
     ('PER', 'UV_K200'), 
     ('WTR', 'UV_WTR'), # modified all weather
     ('LIQ', 'UV_LIQ'), 
-    ('IRP', 'UV_FUND'), 
+    ('TDF', 'UV_FUND'), 
     ('HANA', 'UV_FUND'), 
     ('FCTR', 'UV_FCTR'), # factor intesting with etf
     ('KRX', 'UV_KRX') # for testing
