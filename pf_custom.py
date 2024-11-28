@@ -40,7 +40,7 @@ def calc_information_discreteness(ret):
     return get_sign(tret) * (sign_cnt[-1] - sign_cnt[1])/sum(sign_cnt) 
 
 
-def redistribute_weights(weights, threshold=0.1):
+def redistribute_weights(weights, threshold=0.1, n_min=1, none_if_fail=False):
     """
     Discards elements below the threshold and redistributes their weights 
     to the remaining elements proportionally based on their original weights.
@@ -62,15 +62,19 @@ def redistribute_weights(weights, threshold=0.1):
     above_threshold = weights[weights >= threshold]
     below_threshold = weights[weights < threshold]
 
-    if above_threshold.empty:
-        raise ValueError("No weights above the threshold. All weights have been discarded.")
+    if len(above_threshold) < n_min:
+        #print("WARNING:No weights above the limit. All weights have been discarded.")
+        return None if none_if_fail else weights.to_dict()
 
     # Redistribute the sum of discarded weights to remaining weights proportionally
     discarded_sum = below_threshold.sum()
     redistributed_weights = above_threshold + (above_threshold / above_threshold.sum()) * discarded_sum
 
     # Normalize weights to ensure they sum to 1
-    return np.round(redistributed_weights / redistributed_weights.sum(), 4)
+    result = np.round(redistributed_weights / redistributed_weights.sum(), 4).to_dict()
+    if discarded_sum > 0:
+        result = {**result, **{k:0 for k in below_threshold.keys()}}
+    return result
 
 
 class AlgoSelectKRatio(AlgoStack):
@@ -338,9 +342,11 @@ class RedistributeWeights(Algo):
     to the remaining elements proportionally based on their original weights.
     """
 
-    def __init__(self, threshold=0.1):
+    def __init__(self, threshold=0.1, n_min=1, false_if_fail=True):
         super(RedistributeWeights, self).__init__()
         self.threshold = threshold
+        self.n_min = n_min
+        self.false_if_fail = false_if_fail
 
     def __call__(self, target):
         if "weights" not in target.temp:
@@ -350,7 +356,10 @@ class RedistributeWeights(Algo):
         if len(tw) == 0:
             return True
 
-        tw = redistribute_weights(tw, self.threshold)
-        target.temp["weights"] = tw
+        tw = redistribute_weights(tw, self.threshold, self.n_min, self.false_if_fail)
+        if tw is None:
+            return False
+        else:
+            target.temp["weights"] = tw
 
         return True

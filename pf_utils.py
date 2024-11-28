@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from os import listdir
 from os.path import isfile, join, splitext
 from pf_custom import (AlgoSelectKRatio, AlgoRunAfter, calc_kratio, AlgoSelectIDiscrete, 
-                       AlgoSelectIDRank, SelectMomentum, AlgoSelectFinRatio)
+                       AlgoSelectIDRank, SelectMomentum, AlgoSelectFinRatio, RedistributeWeights)
 from ffn import calc_stats, calc_perf_stats
 from pykrx import stock as pyk
 from tqdm import tqdm
@@ -2843,7 +2843,7 @@ class BacktestManager():
         
 
     def _get_algo_weigh(self, weigh='equally', weights=None, lookback=pd.DateOffset(days=0), 
-                        lag=pd.DateOffset(days=0), rf=0, bounds=(0.0, 1.0)):
+                        lag=pd.DateOffset(days=0), rf=0, bounds=(0.0, 1.0), threshold=0):
         """
         weigh: equally, erc, specified, randomly, invvol, meanvar
         """
@@ -2878,6 +2878,10 @@ class BacktestManager():
             algo_weigh = bt.AlgoStack(algo_after, algo_weigh)
             if not cond(weigh, 'equally'):
                 print('WARNING:WeighEqually selected') if self.print_algos_msg else None
+
+        if threshold > 0: # drop equities of weight lt threshold
+            algo_redist = RedistributeWeights(threshold, n_min=1, false_if_fail=True)
+            algo_weigh = bt.AlgoStack(algo_weigh, algo_redist)
             
         return algo_weigh
 
@@ -2956,8 +2960,9 @@ class BacktestManager():
                lookback_w=None, lag_w=None,
                id_scale=1, threshold=None,
                df_ratio=None, ratio_descending=None, # args for select 'f-ratio'
-               weigh='equally', weights=None, rf=0, bounds=(0.0, 1.0),
-               initial_capital=None, commissions=None, algos=None, df_prices=None):
+               weigh='equally', weights=None, rf=0, bounds=(0.0, 1.0), weight_min=0,
+               initial_capital=None, commissions=None, algos=None, df_prices=None,
+               align_axis=0):
         """
         make backtest of a strategy
         offset: int, for freq
@@ -2965,15 +2970,16 @@ class BacktestManager():
         lookback_w, lag_w: for weigh. reuse those for select if None
         commissions: %; same for all tickers
         algos: set List of Algos to build backtest directly
+        align_axis: None, 0, 1. option for select list or all
         """
         dfs = self._check_var(df_prices, self.df_prices)
         if isinstance(select, list):
             try:
-                dfs = self.align_period(dfs[select], axis=0)
+                dfs = self.align_period(dfs[select], axis=align_axis)
             except KeyError as e:
                 return print('ERROR: KeyError {e}')
         elif select.lower() == 'all':
-            dfs = self.align_period(dfs, axis=0)
+            dfs = self.align_period(dfs, axis=align_axis)
                 
         weights = BacktestManager.check_weights(weights, dfs)
         name = self._check_name(name)
@@ -2999,7 +3005,7 @@ class BacktestManager():
                   'df_ratio':df_ratio, 'ratio_descending':ratio_descending}
         freq = {'freq':freq, 'offset':offset, 'days_in_year':self.days_in_year} 
         weigh = {'weigh':weigh, 'weights':weights, 'rf':rf, 'bounds':bounds,
-                 'lookback':lookback_w, 'lag':lag_w}
+                 'lookback':lookback_w, 'lag':lag_w, 'threshold':weight_min}
         
         kwargs = {'select':select, 'freq':freq, 'weigh':weigh, 'algos':algos,
                   'initial_capital':initial_capital, 'commissions':commissions}
@@ -3518,8 +3524,8 @@ class BacktestManager():
         if end is None:
             end = df_prices.index.max()
         end = mldate(end)
-        
-        return (start, end)
+        # comprehensioni for nan from mldate with NaT input
+        return [None if np.isnan(x) else x for x in (start, end)]
 
 
     def get_turnover(self, pf_list=None, drop_zero=True):
