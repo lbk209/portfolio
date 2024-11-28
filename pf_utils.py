@@ -403,16 +403,19 @@ class SecurityDict(dict):
         self.names = names
 
     def __repr__(self):
+        return self._print(self.keys())
+
+    def _print(self, keys):
         output = ""
-        for i, key in enumerate(self.keys()):
-            name = self.get_names(key)
+        for i, key in enumerate(keys):
+            name = self.get_name(key)
             if name is None:
                 output += f"{i}) {key}\n"
             else:
                 output += f"{i}) {key}: {name}\n"
         return output
 
-    def get_names(self, key):
+    def get_name(self, key):
         if self.names is None:
             return None
         else:
@@ -420,6 +423,12 @@ class SecurityDict(dict):
                 return self.names[key]
             except KeyError:
                 return None
+
+    def get_names(self, keys):
+        if isinstance(keys, str):
+            keys = [keys]
+        res = self._print(keys)
+        print(res)
 
 
 class IndentOutput:
