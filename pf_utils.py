@@ -2544,6 +2544,124 @@ class PortfolioBuilder():
         dt1 = date - self._get_date_offset(lag, 'weeks')
         dt0 = dt1 - self._get_date_offset(lookback, 'month')
         return df_data.loc[dt0:dt1].dropna(axis=1)
+
+
+
+class test(PortfolioBuilder):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def calc_cost(self, commissions, date=None):
+        """
+        percent: True if fees given as percentage
+        """
+        cols_record = self.cols_record
+        col_prc = cols_record['prc']
+        col_trs = cols_record['trs']
+        col_net = cols_record['net']
+        col_tkr = cols_record['tkr']
+        
+        # get latest record
+        df_rec = self._check_result(False)
+        if df_rec is None:
+            return None
+        else:
+            df_rec = df_rec.loc[:date]
+            
+        date = datetime.today() if date is None else date
+
+        df_trs = df_rec.apply(lambda x: x[col_prc] * x[col_trs], axis=1)
+        cost_buy = df_trs.loc[df_trs>0].sum() * commissions['buy'] / 100
+        cost_sell = df_trs.loc[df_trs<0].sum() * commissions['sell'] / 100
+        cost_tax = df_trs.loc[df_trs<0].sum() * commissions['tax'] / 100
+
+        df_val = df_rec[col_prc] * df_rec[col_net]
+        cost_fee = self._calc_fees(df_val, fees, date)
+
+
+    def calc_tax(self, tax, date=None, percent=True):
+        cols = ['prc', 'trs']
+        cols = {f'col_{k}':v for k,v in self.cols_record.items() if k in cols}
+
+        # get latest record
+        df_rec = self._check_result(False)
+        if df_rec is None:
+            return None
+        else:
+            df_rec = df_rec.loc[:date]
+        
+        tax = tax * (0.01 if percent else 1)
+        return self._calc_tax(df_rec, tax, **cols)
+        
+
+    def calc_fee_trading(self, commission, date=None, percent=True):
+        cols = ['prc', 'trs']
+        cols = {f'col_{k}':v for k,v in self.cols_record.items() if k in cols}
+
+        # get latest record
+        df_rec = self._check_result(False)
+        if df_rec is None:
+            return None
+        else:
+            df_rec = df_rec.loc[:date]
+        
+        commission = commission * (0.01 if percent else 1)
+        return self._calc_fee_trading(df_rec, commission, **cols)
+
+
+    def calc_fee_annual(self, fees, date=None, percent=True):
+        cols = ['prc', 'net', 'tkr', 'date']
+        cols = {f'col_{k}':v for k,v in self.cols_record.items() if k in cols}
+
+        # get latest record
+        df_rec = self._check_result(False)
+        if df_rec is None:
+            return None
+        
+        date = datetime.today() if date is None else date
+        df_rec = df_rec.loc[:date]
+        
+        sr_fee = pd.Series(fees) if isinstance(fees, dict) else fees
+        sr_fee = sr_fee * (0.01 if percent else 1)
+        return self._calc_fee_annual(df_rec, sr_fee, date, **cols)
+
+
+    def _calc_fee_trading(self, df_rec, commission,
+                          col_prc='price', col_trs='transaction'):
+        """
+        calc trading fees
+        commission: sell/buy commissions. rate
+        """
+        sr_val = df_rec[col_prc] * df_rec[col_trs]
+        return sr_val.abs().sum() * commission
+
+
+    def _calc_fee_annual(self, df_rec, sr_fee, date, 
+                         col_prc='price', col_net='net', col_tkr='ticker', col_date='date'):
+        """
+        calc annual fees
+        sr_val: series of net values of tickers on each date
+        sr_fee: series of ticker to annual fee. rate
+        """
+        df_val = (df_rec.apply(lambda x: x[col_prc] * x[col_net], axis=1)
+                        .swaplevel().sort_index().to_frame('value'))
+        df_val['start'] = df_val.index.get_level_values(col_date)
+        df_val['end'] = df_val.groupby(col_tkr, group_keys=False).apply(lambda x: x['start'].shift(-1)).fillna(date)
+        df_val['period'] = df_val.apply(lambda x: x['end'] - x['start'], axis=1).dt.days
+        df_val = df_val.loc[df_val['value'] > 0]
+        df_val['rate'] = df_val['period'].mul(1/365) * sr_fee.rename_axis(col_tkr)
+        return df_val.apply(lambda x: x['value'] * x['rate'], axis=1).sum() 
+
+
+    def _calc_tax(self, df_rec, tax,
+                  col_prc='price', col_trs='transaction'):
+        """
+        calc tax 
+        tax: rate
+        """
+        sr_val = df_rec[col_prc] * df_rec[col_trs]
+        return sr_val.loc[sr_val < 0].abs().sum() * tax
+        
     
 
 class Liquidation():
