@@ -2547,74 +2547,69 @@ class PortfolioBuilder():
 
 
 
-class test(PortfolioBuilder):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def calc_cost(self, commissions, date=None):
+class CostCalculator():
+    def __init__(self, df_rec, cols_record):
         """
-        percent: True if fees given as percentage
+        df_rec: transaction record from PortfolioBuilder
+        cols_record: dict of var name to col name of df_rec
         """
-        cols_record = self.cols_record
-        col_prc = cols_record['prc']
-        col_trs = cols_record['trs']
-        col_net = cols_record['net']
-        col_tkr = cols_record['tkr']
+        self.df_rec = df_rec
+        self.cols_record = cols_record
         
+
+    def calc_cost(self, commission=0, tax=0.18, sr_fee=None, date=None, percent=True):
+        """
+        sr_fee: series or dict of ticker to annual fee
+        """
         # get latest record
-        df_rec = self._check_result(False)
+        df_rec = self.df_rec
         if df_rec is None:
             return None
-        else:
+        else:    
+            date = datetime.today() if date is None else date
             df_rec = df_rec.loc[:date]
-            
-        date = datetime.today() if date is None else date
 
-        df_trs = df_rec.apply(lambda x: x[col_prc] * x[col_trs], axis=1)
-        cost_buy = df_trs.loc[df_trs>0].sum() * commissions['buy'] / 100
-        cost_sell = df_trs.loc[df_trs<0].sum() * commissions['sell'] / 100
-        cost_tax = df_trs.loc[df_trs<0].sum() * commissions['tax'] / 100
+        get_kw = lambda *cols: {f'col_{k}':v for k,v in self.cols_record.items() if k in cols}
+        kw_trading = get_kw('prc', 'trs')
+        kw_annual = get_kw('prc', 'net', 'tkr', 'date')
+        
+        m = 0.01 if percent else 1
+        sr_fee = pd.Series(sr_fee) if isinstance(sr_fee, dict) else sr_fee
 
-        df_val = df_rec[col_prc] * df_rec[col_net]
-        cost_fee = self._calc_fees(df_val, fees, date)
+        cost_trading = self._calc_fee_trading(df_rec, m*commission, transaction='all', **kw_trading)
+        cost_tax = self._calc_fee_trading(df_rec, m*tax, transaction='sell', **kw_trading)
+        if sr_fee is not None:
+            cost_annual = self._calc_fee_annual(df_rec, m*sr_fee, date, **kw_annual)
+        else:
+            cost_annual = 0
+        return cost_trading + cost_tax + cost_annual
 
 
-    def calc_tax(self, tax, date=None, percent=True):
+    def calc_fee_trading(self, commission, date=None, transaction='all', percent=True):
         cols = ['prc', 'trs']
         cols = {f'col_{k}':v for k,v in self.cols_record.items() if k in cols}
 
         # get latest record
-        df_rec = self._check_result(False)
-        if df_rec is None:
-            return None
-        else:
-            df_rec = df_rec.loc[:date]
-        
-        tax = tax * (0.01 if percent else 1)
-        return self._calc_tax(df_rec, tax, **cols)
-        
-
-    def calc_fee_trading(self, commission, date=None, percent=True):
-        cols = ['prc', 'trs']
-        cols = {f'col_{k}':v for k,v in self.cols_record.items() if k in cols}
-
-        # get latest record
-        df_rec = self._check_result(False)
+        df_rec = self.df_rec
         if df_rec is None:
             return None
         else:
             df_rec = df_rec.loc[:date]
         
         commission = commission * (0.01 if percent else 1)
-        return self._calc_fee_trading(df_rec, commission, **cols)
+        return self._calc_fee_trading(df_rec, commission, transaction=transaction, **cols)
 
+
+    def calc_tax(self, tax, date=None, percent=True):
+        return self.calc_fee_trading(tax, date=date, transaction='sell', percent=percent)
+        
 
     def calc_fee_annual(self, fees, date=None, percent=True):
         cols = ['prc', 'net', 'tkr', 'date']
         cols = {f'col_{k}':v for k,v in self.cols_record.items() if k in cols}
 
         # get latest record
-        df_rec = self._check_result(False)
+        df_rec = self.df_rec
         if df_rec is None:
             return None
         
@@ -2626,13 +2621,19 @@ class test(PortfolioBuilder):
         return self._calc_fee_annual(df_rec, sr_fee, date, **cols)
 
 
-    def _calc_fee_trading(self, df_rec, commission,
+    def _calc_fee_trading(self, df_rec, commission, transaction='all',
                           col_prc='price', col_trs='transaction'):
         """
         calc trading fees
         commission: sell/buy commissions. rate
         """
         sr_val = df_rec[col_prc] * df_rec[col_trs]
+        if transaction == 'buy':
+            sr_val = sr_val.loc[sr_val > 0]
+        elif transaction == 'sell':
+            sr_val = sr_val.loc[sr_val < 0]
+        else:
+            pass
         return sr_val.abs().sum() * commission
 
 
@@ -2640,7 +2641,6 @@ class test(PortfolioBuilder):
                          col_prc='price', col_net='net', col_tkr='ticker', col_date='date'):
         """
         calc annual fees
-        sr_val: series of net values of tickers on each date
         sr_fee: series of ticker to annual fee. rate
         """
         df_val = (df_rec.apply(lambda x: x[col_prc] * x[col_net], axis=1)
@@ -2651,16 +2651,6 @@ class test(PortfolioBuilder):
         df_val = df_val.loc[df_val['value'] > 0]
         df_val['rate'] = df_val['period'].mul(1/365) * sr_fee.rename_axis(col_tkr)
         return df_val.apply(lambda x: x['value'] * x['rate'], axis=1).sum() 
-
-
-    def _calc_tax(self, df_rec, tax,
-                  col_prc='price', col_trs='transaction'):
-        """
-        calc tax 
-        tax: rate
-        """
-        sr_val = df_rec[col_prc] * df_rec[col_trs]
-        return sr_val.loc[sr_val < 0].abs().sum() * tax
         
     
 
