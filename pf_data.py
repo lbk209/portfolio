@@ -21,9 +21,9 @@ STRATEGIES = dict(
     MMT = dict(method_select='Momentum', method_weigh='Equally', sort_ascending=False, n_tickers=5, lookback='1y', lag='1w'),
     PER = dict(method_select='F-ratio', method_weigh='Equally', sort_ascending=True, n_tickers=20, lookback='2m', lag=0),
     # 'Selected' works with additional ticker list
-    WTR = dict(method_select='Selected', method_weigh='Equally', lookback='6m', lag=0), # freq6m
+    WTR = dict(method_select='Selected', method_weigh='Equally'), # freq6m
     LIQ = dict(method_select='Selected', method_weigh='Equally'),
-    TDF = dict(method_select='Selected', method_weigh='MeanVar', lookback='6m', lag=0, weight_min=0.2), # freq6m
+    TDF = dict(method_select='Selected', method_weigh='Equally'),
     HANA= dict(method_select='Selected', method_weigh='InvVol', lookback='2y', lag=0), # freq2y
     FCTR= dict(method_select='Selected', method_weigh='MeanVar', lookback='1q', lag=0), # freq1q
     KRX = dict(method_select='Momentum', method_weigh='Equally', sort_ascending=False, n_tickers=5, lookback='1y', lag='1m')

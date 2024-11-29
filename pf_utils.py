@@ -932,10 +932,12 @@ class DataManager():
         return self._convert_price_to_daily(confirm, cols)
 
 
-    def performance(self, metrics=None, sort_by=None):
+    def performance(self, metrics=None, sort_by=None, start_date=None, end_date=None):
         df_prices = self.df_prices
         if df_prices is None:
             return print('ERROR')
+        else:
+            df_prices.loc[start_date:end_date]
         
         df_stat = performance_stats(df_prices, metrics=None)
         df_stat = df_stat.T
@@ -3310,7 +3312,7 @@ class BacktestManager():
     def catplot(data, path='.', ref_val=None, **kw):
         """
         data: output of get_cat_data or its file
-        ref_val: name kwarg for util_import_data if str, ticker if list/tuple
+        ref_val: name kwarg for util_import_data if str, ticker if list/tuple or value
             ex) s&p500, ('LRGF', 'yahoo'), (005930, None)
         kw: kwargs of sns.catplot. 
             ex) {'y':'cagr', 'x':'freq', 'row':'n_tickers', 'col':'lookback', 'hue':'lag'}
@@ -3327,16 +3329,17 @@ class BacktestManager():
         else:
             g = sns.catplot(data=data, **kw)
             if ref_val is not None:
-                start_date, end_date = data['start'].min(), data['end'].max()
-                if isinstance(ref_val, str):
-                    name, ticker = ref_val, None
-                elif isinstance(ref_val, (list, tuple)):
-                    name, ticker = None, ref_val
-                else:
-                    pass # ERROR?
-                kw = dict(metric=kw['y'], name=name, ticker=ticker, 
-                          start_date=start_date, end_date=end_date)
-                ref_val = BacktestManager.benchmark_stats(**kw)
+                if not isinstance(ref_val, Number):
+                    start_date, end_date = data['start'].min(), data['end'].max()
+                    if isinstance(ref_val, str):
+                        name, ticker = ref_val, None
+                    elif isinstance(ref_val, (list, tuple)):
+                        name, ticker = None, ref_val
+                    else:
+                        pass # ERROR?
+                    kw = dict(metric=kw['y'], name=name, ticker=ticker, 
+                              start_date=start_date, end_date=end_date)
+                    ref_val = BacktestManager.benchmark_stats(**kw)
                 g.refline(y=ref_val)
             return g
 
