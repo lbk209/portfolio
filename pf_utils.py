@@ -2429,6 +2429,7 @@ class PortfolioBuilder():
                      col_val='value', col_sell='sell', col_buy='buy'):
         """
         calc history of roi or unrealized gain/loss
+        sr_val: output of _calc_value_history
         result: ROI, UGL or None
         """
         df = (sr_val.to_frame(col_val)
@@ -2557,9 +2558,9 @@ class CostCalculator():
         self.cols_record = cols_record
         
 
-    def calc_cost(self, commission=0, tax=0.18, sr_fee=None, date=None, percent=True):
+    def calc_cost(self, buy=0.00363960, sell=0.00363960, tax=0.18, fee=0, date=None, percent=True):
         """
-        sr_fee: series or dict of ticker to annual fee
+        buy, sell, tax, fee: float, series or dict of ticker to annual fee
         """
         # get latest record
         df_rec = self.df_rec
@@ -2570,19 +2571,15 @@ class CostCalculator():
             df_rec = df_rec.loc[:date]
 
         get_kw = lambda *cols: {f'col_{k}':v for k,v in self.cols_record.items() if k in cols}
-        kw_trading = get_kw('prc', 'trs')
+        kw_trading = get_kw('tkr', 'prc', 'trs')
         kw_annual = get_kw('prc', 'net', 'tkr', 'date')
         
         m = 0.01 if percent else 1
-        sr_fee = pd.Series(sr_fee) if isinstance(sr_fee, dict) else sr_fee
-
-        cost_trading = self._calc_fee_trading(df_rec, m*commission, transaction='all', **kw_trading)
-        cost_tax = self._calc_fee_trading(df_rec, m*tax, transaction='sell', **kw_trading)
-        if sr_fee is not None:
-            cost_annual = self._calc_fee_annual(df_rec, m*sr_fee, date, **kw_annual)
-        else:
-            cost_annual = 0
-        return cost_trading + cost_tax + cost_annual
+        cost = self._calc_fee_trading(df_rec, m*buy, transaction='buy', **kw_trading)
+        cost += self._calc_fee_trading(df_rec, m*sell, transaction='sell', **kw_trading)
+        cost += self._calc_fee_trading(df_rec, m*tax, transaction='sell', **kw_trading)
+        cost += self._calc_fee_annual(df_rec, m*fee, date, **kw_annual)
+        return cost
 
 
     def calc_fee_trading(self, commission, date=None, transaction='all', percent=True):
@@ -2604,7 +2601,7 @@ class CostCalculator():
         return self.calc_fee_trading(tax, date=date, transaction='sell', percent=percent)
         
 
-    def calc_fee_annual(self, fees, date=None, percent=True):
+    def calc_fee_annual(self, fee, date=None, percent=True):
         cols = ['prc', 'net', 'tkr', 'date']
         cols = {f'col_{k}':v for k,v in self.cols_record.items() if k in cols}
 
@@ -2616,40 +2613,47 @@ class CostCalculator():
         date = datetime.today() if date is None else date
         df_rec = df_rec.loc[:date]
         
-        sr_fee = pd.Series(fees) if isinstance(fees, dict) else fees
-        sr_fee = sr_fee * (0.01 if percent else 1)
-        return self._calc_fee_annual(df_rec, sr_fee, date, **cols)
+        fee = fee * (0.01 if percent else 1)
+        return self._calc_fee_annual(df_rec, fee, date, **cols)
 
 
-    def _calc_fee_trading(self, df_rec, commission, transaction='all',
-                          col_prc='price', col_trs='transaction'):
+    def _calc_fee_trading(self, df_rec, sr_fee, transaction='all',
+                          col_tkr='ticker', col_prc='price', col_trs='transaction'):
         """
-        calc trading fees
-        commission: sell/buy commissions. rate
+        calc trading fee
+        sr_fee: sell/buy commissions. rate of float or seires or dict
+        transaction: 'all', 'buy', 'sell'
         """
         sr_val = df_rec[col_prc] * df_rec[col_trs]
+        # now sr_fee series or float
+        sr_fee = pd.Series(sr_fee) if isinstance(sr_fee, dict) else sr_fee
+        # rename axis to multiply if series
+        sr_fee = sr_fee.rename_axis(col_tkr) if isinstance(sr_fee, pd.Series) else sr_fee
         if transaction == 'buy':
             sr_val = sr_val.loc[sr_val > 0]
         elif transaction == 'sell':
             sr_val = sr_val.loc[sr_val < 0]
         else:
             pass
-        return sr_val.abs().sum() * commission
+        return sr_val.abs().mul(sr_fee).sum()
 
 
     def _calc_fee_annual(self, df_rec, sr_fee, date, 
                          col_prc='price', col_net='net', col_tkr='ticker', col_date='date'):
         """
-        calc annual fees
-        sr_fee: series of ticker to annual fee. rate
+        calc annual fee
+        sr_fee: dict or series of ticker to annual fee. rate
         """
+        sr_fee = pd.Series(sr_fee) if isinstance(sr_fee, dict) else sr_fee
+        sr_fee = sr_fee.rename_axis(col_tkr) if isinstance(sr_fee, pd.Series) else sr_fee
+        
         df_val = (df_rec.apply(lambda x: x[col_prc] * x[col_net], axis=1)
                         .swaplevel().sort_index().to_frame('value'))
         df_val['start'] = df_val.index.get_level_values(col_date)
         df_val['end'] = df_val.groupby(col_tkr, group_keys=False).apply(lambda x: x['start'].shift(-1)).fillna(date)
         df_val['period'] = df_val.apply(lambda x: x['end'] - x['start'], axis=1).dt.days
         df_val = df_val.loc[df_val['value'] > 0]
-        df_val['rate'] = df_val['period'].mul(1/365) * sr_fee.rename_axis(col_tkr)
+        df_val['rate'] = df_val['period'].mul(1/365).mul(sr_fee)
         return df_val.apply(lambda x: x['value'] * x['rate'], axis=1).sum() 
         
     
