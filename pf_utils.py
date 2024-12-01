@@ -1893,7 +1893,7 @@ class PortfolioBuilder():
         return df_rec
 
 
-    def valuate(self, date=None, print_msg=False):
+    def valuate(self, date=None, print_msg=False, profit_on_transaction_date=False):
         """
         calc date, buy/sell prices & portfolio value from self.record or self.df_rec
         """
@@ -1904,7 +1904,7 @@ class PortfolioBuilder():
         date_format = self.date_format
         
         # get latest record
-        df_rec = self._check_result(print_msg)
+        df_rec = self._check_result(print_msg, profit_on_transaction_date=profit_on_transaction_date)
         if df_rec is None:
             return None
         
@@ -1982,11 +1982,11 @@ class PortfolioBuilder():
         return df_rec    
 
 
-    def get_value_history(self):
+    def get_value_history(self, profit_on_transaction_date=False):
         """
         get history of portfolio value
         """
-        df_rec = self._check_result()
+        df_rec = self._check_result(profit_on_transaction_date=profit_on_transaction_date)
         if df_rec is None:
             return None
         else:
@@ -2024,11 +2024,12 @@ class PortfolioBuilder():
     
     def plot(self, start_date=None, end_date=None, 
              figsize=(10,6), legend=True, height_ratios=(3,1), loc='upper left',
-             msg_cr=True, roi=True, roi_log=False, cashflow=True):
+             msg_cr=True, roi=True, roi_log=False, cashflow=True,
+             profit_on_transaction_date=False):
         """
         plot total, net and profit histories of portfolio
         """
-        df_rec = self._check_result(msg_cr)
+        df_rec = self._check_result(msg_cr, profit_on_transaction_date=profit_on_transaction_date)
         if df_rec is None:
             return None
             
@@ -2249,7 +2250,7 @@ class PortfolioBuilder():
         get 'n_latest' latest or oldest transaction record 
         """
         if df_rec is None:
-            df_rec = self._check_result(msg, profit_on_transaction_date=False)
+            df_rec = self._check_result(msg)
         if df_rec is None:
             return None
 
@@ -2451,7 +2452,7 @@ class PortfolioBuilder():
         return df
         
 
-    def _check_result(self, msg=True, profit_on_transaction_date=True):
+    def _check_result(self, msg=True, profit_on_transaction_date=False):
         if self.df_rec is None:
             if self.record is None:
                 return print('ERROR: No transaction record') if msg else None
