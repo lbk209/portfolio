@@ -2328,7 +2328,7 @@ class PortfolioBuilder():
         df_cf = df[col_prc].mul(df[col_trs]).groupby(col_date).sum().cumsum().to_frame('buy')
         df = record.loc[record[col_trs]<0]
         df_sell = df[col_prc].mul(df[col_trs]).groupby(col_date).sum().cumsum().mul(-1)
-        return df_cf.join(df_sell.rename('sell')).ffill().fillna(0)
+        return df_cf.join(df_sell.rename('sell'), how='outer').ffill().fillna(0)
         
 
     def _update_universe(self, df_rec, msg=False):
