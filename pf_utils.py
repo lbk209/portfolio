@@ -2549,13 +2549,14 @@ class PortfolioBuilder():
 
 
 class CostCalculator():
-    def __init__(self, df_rec, cols_record):
+    def __init__(self, df_rec, cols_record, date_format='%Y-%m-%d'):
         """
         df_rec: transaction record from PortfolioBuilder
         cols_record: dict of var name to col name of df_rec
         """
         self.df_rec = df_rec
         self.cols_record = cols_record
+        self.date_format = date_format
         
 
     def calc_cost(self, buy=0.00363960, sell=0.00363960, tax=0.18, fee=0, date=None, percent=True):
@@ -2567,7 +2568,7 @@ class CostCalculator():
         if df_rec is None:
             return None
         else:    
-            date = datetime.today() if date is None else date
+            date = datetime.today().strftime(self.date_format) if date is None else date
             df_rec = df_rec.loc[:date]
 
         get_kw = lambda *cols: {f'col_{k}':v for k,v in self.cols_record.items() if k in cols}
@@ -2575,11 +2576,13 @@ class CostCalculator():
         kw_annual = get_kw('prc', 'net', 'tkr', 'date')
         
         m = 0.01 if percent else 1
-        cost = self._calc_fee_trading(df_rec, m*buy, transaction='buy', **kw_trading)
-        cost += self._calc_fee_trading(df_rec, m*sell, transaction='sell', **kw_trading)
-        cost += self._calc_fee_trading(df_rec, m*tax, transaction='sell', **kw_trading)
-        cost += self._calc_fee_annual(df_rec, m*fee, date, **kw_annual)
-        return cost
+        sr_buy = self._calc_fee_trading(df_rec, m*buy, transaction='buy', **kw_trading)
+        sr_sell = self._calc_fee_trading(df_rec, m*sell, transaction='sell', **kw_trading)
+        sr_tax = self._calc_fee_trading(df_rec, m*tax, transaction='sell', **kw_trading).rename('tax')
+        sr_fee = self._calc_fee_annual(df_rec, m*fee, date, **kw_annual)
+        return (sr_buy.to_frame().join(sr_sell, how='outer')
+                .join(sr_fee, how='outer').join(sr_tax, how='outer')
+                .fillna(0))
 
 
     def calc_fee_trading(self, commission, date=None, transaction='all', percent=True):
@@ -2598,7 +2601,7 @@ class CostCalculator():
 
 
     def calc_tax(self, tax, date=None, percent=True):
-        return self.calc_fee_trading(tax, date=date, transaction='sell', percent=percent)
+        return self.calc_fee_trading(tax, date=date, transaction='sell', percent=percent).rename('tax')
         
 
     def calc_fee_annual(self, fee, date=None, percent=True):
@@ -2610,7 +2613,7 @@ class CostCalculator():
         if df_rec is None:
             return None
         
-        date = datetime.today() if date is None else date
+        date = datetime.today().strftime(self.date_format) if date is None else date
         df_rec = df_rec.loc[:date]
         
         fee = fee * (0.01 if percent else 1)
@@ -2635,26 +2638,33 @@ class CostCalculator():
             sr_val = sr_val.loc[sr_val < 0]
         else:
             pass
-        return sr_val.abs().mul(sr_fee).sum()
+        return sr_val.abs().mul(sr_fee).rename(transaction)
 
 
-    def _calc_fee_annual(self, df_rec, sr_fee, date, 
+    def _calc_fee_annual(self, df_rec, sr_fee, date, name='fee',
                          col_prc='price', col_net='net', col_tkr='ticker', col_date='date'):
         """
         calc annual fee
         sr_fee: dict or series of ticker to annual fee. rate
         """
-        sr_fee = pd.Series(sr_fee) if isinstance(sr_fee, dict) else sr_fee
-        sr_fee = sr_fee.rename_axis(col_tkr) if isinstance(sr_fee, pd.Series) else sr_fee
+        if isinstance(sr_fee, dict):
+            sr_fee = pd.Series(sr_fee)
+        elif isinstance(sr_fee, Number):
+            sr_fee = pd.Series(sr_fee, index=df_rec.index.get_level_values(col_tkr).unique())
+        sr_fee = sr_fee.rename_axis(col_tkr).rename(name)
         
         df_val = (df_rec.apply(lambda x: x[col_prc] * x[col_net], axis=1)
                         .swaplevel().sort_index().to_frame('value'))
         df_val['start'] = df_val.index.get_level_values(col_date)
-        df_val['end'] = df_val.groupby(col_tkr, group_keys=False).apply(lambda x: x['start'].shift(-1)).fillna(date)
+        df_val['end'] = (df_val.groupby(col_tkr, group_keys=False)
+                         .apply(lambda x: x['start'].shift(-1)).fillna(date))
         df_val['period'] = df_val.apply(lambda x: x['end'] - x['start'], axis=1).dt.days
+        df_val = (df_val.reset_index(col_date, drop=True)
+                  .rename(columns={'end':col_date}).set_index(col_date, append=True))
         df_val = df_val.loc[df_val['value'] > 0]
-        df_val['rate'] = df_val['period'].mul(1/365).mul(sr_fee)
-        return df_val.apply(lambda x: x['value'] * x['rate'], axis=1).sum() 
+        df_val['rate'] = df_val.join(sr_fee).apply(lambda x: -1 + (1 + x[name]) ** (x['period']/365), axis=1)
+        return (df_val.apply(lambda x: x['value'] * x['rate'], axis=1)
+                .rename(name).swaplevel().sort_index())
         
     
 
