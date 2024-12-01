@@ -1554,7 +1554,7 @@ class PortfolioBuilder():
                  df_additional=None, security_names=None, 
                  cols_record = {'date':'date', 'tkr':'ticker', 'name':'name', 'prc':'price', 
                                 'trs':'transaction', 'net':'net', 'wgt':'weight', 'wgta':'weight*'},
-                 date_format='%Y-%m-%d'
+                 date_format='%Y-%m-%d', cost=None
                 ):
         """
         file: file of transaction history. 
@@ -1588,6 +1588,7 @@ class PortfolioBuilder():
         self.name = name # portfolio name
         self.cols_record = cols_record
         self.date_format = date_format # date str format for record & printing
+        self.cost = cost # dict of buy/sell commissions, fee and tax. see CostManager
         
         self.selected = None # data for select, weigh and allocate
         self.df_rec = None # record updated with new transaction
@@ -2001,7 +2002,7 @@ class PortfolioBuilder():
         if df_rec is None:
             return None
         else:
-            return self._calc_cashflow_history(df_rec)
+            return self._calc_cashflow_history(df_rec, self.cost)
 
 
     def get_profit_history(self, result='ROI', roi_log=False, msg=True):
@@ -2017,7 +2018,7 @@ class PortfolioBuilder():
         if (sr_val is None) or (len(sr_val)==1):
             return print('ERROR: need more data to plot')
 
-        df_cf = self._calc_cashflow_history(df_rec) # buy & sell
+        df_cf = self._calc_cashflow_history(df_rec, self.cost) # buy & sell
         sr_prf = self._calc_profit(sr_val, df_cf, result=result, roi_log=roi_log)
         return sr_prf
 
@@ -2039,7 +2040,7 @@ class PortfolioBuilder():
         if (sr_val is None) or (len(sr_val)==1):
             return print('ERROR: need more data to plot')
     
-        df_cf = self._calc_cashflow_history(df_rec) # cashflow
+        df_cf = self._calc_cashflow_history(df_rec, self.cost) # cashflow
         res_prf = 'ROI' if roi else 'UGL'
         sr_prf = self._calc_profit(sr_val, df_cf, result=res_prf, roi_log=roi_log) # profit
     
@@ -2093,7 +2094,7 @@ class PortfolioBuilder():
         if df_rec is None:
             return None
              
-        df_cf = self._calc_cashflow_history(df_rec)
+        df_cf = self._calc_cashflow_history(df_rec, self.cost)
         df_cf = self._plot_cashflow_slice(df_cf, start_date, end_date)
         if ax is None:
             _, ax = plt.subplots(figsize=figsize)
@@ -2315,21 +2316,13 @@ class PortfolioBuilder():
         return df_res
 
         
-    def _calc_cashflow_history(self, record):
+    def _calc_cashflow_history(self, record, cost=None):
         """
         Returns df of cumulative buy and sell prices at each transaction.
         """
-        cols_record = self.cols_record
-        col_prc = cols_record['prc']
-        col_trs = cols_record['trs']
-        col_date = cols_record['date']
-        
-        df = record.loc[record[col_trs]>0]
-        df_cf = df[col_prc].mul(df[col_trs]).groupby(col_date).sum().cumsum().to_frame('buy')
-        df = record.loc[record[col_trs]<0]
-        df_sell = df[col_prc].mul(df[col_trs]).groupby(col_date).sum().cumsum().mul(-1)
-        return df_cf.join(df_sell.rename('sell')).ffill().fillna(0)
-        
+        cm = CostManager(record, self.cols_record, self.date_format)
+        return cm.calc_cashflow_history(cost=cost)
+    
 
     def _update_universe(self, df_rec, msg=False):
         """
@@ -2549,7 +2542,7 @@ class PortfolioBuilder():
 
 
 
-class CostCalculator():
+class CostManager():
     def __init__(self, df_rec, cols_record, date_format='%Y-%m-%d'):
         """
         df_rec: transaction record from PortfolioBuilder
@@ -2558,47 +2551,70 @@ class CostCalculator():
         self.df_rec = df_rec
         self.cols_record = cols_record
         self.date_format = date_format
-        
 
-    def calc_cost(self, buy=0.00363960, sell=0.00363960, tax=0.18, fee=0, date=None, percent=True):
+    
+    def calc_cashflow_history(self, date=None, percent=True,
+                              cost=dict(buy=0.00363960, sell=0.00363960, tax=0.18, fee=0)):
+        """
+        calc net buy & sell prices at each transaction date
+        cost: dict of cost items
+        """
+        df_rec = self.df_rec
+        if df_rec is None:
+            return None
+        else:
+            cols_record = self.cols_record
+        
+        df_cf = CostManager._calc_cashflow_history(df_rec, cols_record)
+        df_cf = df_cf.loc[:date]
+        if cost is None: # cashflow without cost
+            return df_cf
+            
+        # calc cost
+        df_cost = self.calc_cost(date=date, percent=percent, **cost)
+        df_cost = df_cost.groupby('date').sum().rename(columns={'buy':'cost_buy'})
+        df_cost['cost_sell'] = df_cost['sell'] + df_cost['fee'] + df_cost['tax']
+        df_cost = df_cost[['cost_buy', 'cost_sell']].cumsum()
+        
+        # calc net cashflow
+        df_net = df_cf.join(df_cost, how='outer').ffill()
+        df_net['buy']  = df_net['buy'] + df_net['cost_buy']
+        df_net['sell']  = df_net['sell'] - df_net['cost_sell']
+        return df_net[['buy', 'sell']]
+
+
+    def calc_cost(self, date=None, buy=0, sell=0, tax=0, fee=0, percent=True):
         """
         buy, sell, tax, fee: float, series or dict of ticker to annual fee
         """
-        # get latest record
         df_rec = self.df_rec
         if df_rec is None:
             return None
         else:    
+            cols_record = self.cols_record
             date = datetime.today().strftime(self.date_format) if date is None else date
             df_rec = df_rec.loc[:date]
 
-        get_kw = lambda *cols: {f'col_{k}':v for k,v in self.cols_record.items() if k in cols}
-        kw_trading = get_kw('tkr', 'prc', 'trs')
-        kw_annual = get_kw('prc', 'net', 'tkr', 'date')
-        
         m = 0.01 if percent else 1
-        sr_buy = self._calc_fee_trading(df_rec, m*buy, transaction='buy', **kw_trading)
-        sr_sell = self._calc_fee_trading(df_rec, m*sell, transaction='sell', **kw_trading)
-        sr_tax = self._calc_fee_trading(df_rec, m*tax, transaction='sell', **kw_trading).rename('tax')
-        sr_fee = self._calc_fee_annual(df_rec, m*fee, date, **kw_annual)
+        sr_buy = CostManager._calc_fee_trading(df_rec, cols_record, m*buy, transaction='buy')
+        sr_sell = CostManager._calc_fee_trading(df_rec, cols_record, m*sell, transaction='sell')
+        sr_tax = CostManager._calc_fee_trading(df_rec, cols_record, m*tax, transaction='sell').rename('tax')
+        sr_fee = CostManager._calc_fee_annual(df_rec, cols_record, m*fee, date)
         return (sr_buy.to_frame().join(sr_sell, how='outer')
                 .join(sr_fee, how='outer').join(sr_tax, how='outer')
                 .fillna(0))
 
 
     def calc_fee_trading(self, commission, date=None, transaction='all', percent=True):
-        cols = ['prc', 'trs']
-        cols = {f'col_{k}':v for k,v in self.cols_record.items() if k in cols}
-
-        # get latest record
         df_rec = self.df_rec
         if df_rec is None:
             return None
         else:
+            cols_record = self.cols_record
             df_rec = df_rec.loc[:date]
         
         commission = commission * (0.01 if percent else 1)
-        return self._calc_fee_trading(df_rec, commission, transaction=transaction, **cols)
+        return CostManager._calc_fee_trading(df_rec, cols_record, commission, transaction=transaction)
 
 
     def calc_tax(self, tax, date=None, percent=True):
@@ -2606,28 +2622,45 @@ class CostCalculator():
         
 
     def calc_fee_annual(self, fee, date=None, percent=True):
-        cols = ['prc', 'net', 'tkr', 'date']
-        cols = {f'col_{k}':v for k,v in self.cols_record.items() if k in cols}
-
-        # get latest record
         df_rec = self.df_rec
         if df_rec is None:
             return None
-        
-        date = datetime.today().strftime(self.date_format) if date is None else date
-        df_rec = df_rec.loc[:date]
+        else:
+            cols_record = self.cols_record
+            date = datetime.today().strftime(self.date_format) if date is None else date
+            df_rec = df_rec.loc[:date]
         
         fee = fee * (0.01 if percent else 1)
-        return self._calc_fee_annual(df_rec, fee, date, **cols)
+        return CostManager._calc_fee_annual(df_rec, cols_record, fee, date)
 
 
-    def _calc_fee_trading(self, df_rec, sr_fee, transaction='all',
-                          col_tkr='ticker', col_prc='price', col_trs='transaction'):
+    @staticmethod
+    def _calc_cashflow_history(df_rec, cols_record):
+        """
+        Returns df of cumulative buy and sell prices at each transaction.
+        """
+        col_prc = cols_record['prc']
+        col_trs = cols_record['trs']
+        col_date = cols_record['date']
+        
+        df = df_rec.loc[df_rec[col_trs]>0]
+        df_cf = df[col_prc].mul(df[col_trs]).groupby(col_date).sum().cumsum().to_frame('buy')
+        df = df_rec.loc[df_rec[col_trs]<0]
+        df_sell = df[col_prc].mul(df[col_trs]).groupby(col_date).sum().cumsum().mul(-1)
+        return df_cf.join(df_sell.rename('sell'), how='outer').ffill().fillna(0)
+
+
+    @staticmethod
+    def _calc_fee_trading(df_rec, cols_record, sr_fee, transaction='all'):
         """
         calc trading fee
         sr_fee: sell/buy commissions. rate of float or seires or dict
         transaction: 'all', 'buy', 'sell'
         """
+        col_tkr = cols_record['tkr']
+        col_prc = cols_record['prc']
+        col_trs = cols_record['trs']
+        
         sr_val = df_rec[col_prc] * df_rec[col_trs]
         # now sr_fee series or float
         sr_fee = pd.Series(sr_fee) if isinstance(sr_fee, dict) else sr_fee
@@ -2642,12 +2675,17 @@ class CostCalculator():
         return sr_val.abs().mul(sr_fee).rename(transaction)
 
 
-    def _calc_fee_annual(self, df_rec, sr_fee, date, name='fee',
-                         col_prc='price', col_net='net', col_tkr='ticker', col_date='date'):
+    @staticmethod
+    def _calc_fee_annual(df_rec, cols_record, sr_fee, date, name='fee'):
         """
         calc annual fee
         sr_fee: dict or series of ticker to annual fee. rate
         """
+        col_tkr = cols_record['tkr']
+        col_prc = cols_record['prc']
+        col_net = cols_record['net']
+        col_date = cols_record['date']
+        
         if isinstance(sr_fee, dict):
             sr_fee = pd.Series(sr_fee)
         elif isinstance(sr_fee, Number):
