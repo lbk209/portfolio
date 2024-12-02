@@ -1552,16 +1552,29 @@ class FundDownloader():
         else: # assuming datetime
             return pd.Index(dates).strftime(date_format)
 
-    def export_cost(self, file=None, path='.', append=True,
-                    cols_cost=['ticker', 'buy', 'sell', 'fee', 'tax'], 
-                    strategy=None, universe='UV_FUND'):
+    @staticmethod
+    def create(**kwargs):
+        """
+        kwargs: kwargs of DataManager
+        """
+        file = kwargs.pop('tickers', None)
+        path = kwargs.pop('path', None)
+        return FundDownloader(file, path)
+
+    
+    def export_cost(self, portfolio, file=None, path='.', append=True,
+                    cols_cost=['ticker', 'buy', 'sell', 'fee', 'tax']):
+        """
+        portfolio: portfolio name. see keys of PORTFOLIOS
+        """
         data_tickers = self.data_tickers
         if data_tickers is None:
             return print('ERROR: no ticker data loaded yet')
+            
         df_cost = (data_tickers.reset_index().loc[:, cols_cost]
                    .fillna(0)
-                   .assign(strategy=strategy).assign(universe=universe)
-                   .loc[:, ['strategy', 'universe', *cols_cost]])
+                   .assign(portfolio=portfolio)
+                   .loc[:, ['portfolio', *cols_cost]])
         if file:
             file = set_filename(file, ext='csv')
             file = os.path.join(path, file)
@@ -2763,18 +2776,14 @@ class CostManager():
 
     
     @staticmethod
-    def get_cost(file, path='.', strategy=None, universe=None,
+    def get_cost(portfolio, file, path='.', 
                  cols_cost=['buy', 'sell', 'fee', 'tax'],
-                 col_stt='strategy', col_unv='universe', col_tkr='ticker'):
+                 col_pf='portfolio', col_tkr='ticker'):
         df_kw = CostManager.load_cost(file, path)
         if df_kw is None:
             return print('ERROR: Load cost file first')
 
-        if strategy is not None:
-            df_kw = df_kw.loc[df_kw[col_stt] == strategy]
-        if universe is not None:
-            df_kw = df_kw.loc[df_kw[col_unv] == universe]
-
+        df_kw = df_kw.loc[df_kw[col_pf] == portfolio]
         if len(df_kw) == 1: # same cost for all tickers
             return df_kw[cols_cost].to_dict('records')[0]
         elif len(df_kw) > 1: # cost items are series of ticker to cost
@@ -4850,21 +4859,27 @@ class PortfolioManager():
             
         # get kwargs of PortfolioBuilder
         strategy_data = pfd.review_portfolio(name, strategy=True, universe=False)
-        if len(kwargs) > 0:
-            strategy_data = {**strategy_data, **kwargs}
-            name_strategy = None # reset strategy name
+        # update strategy_data if input kwargs given
+        tmp = [k for k in kwargs.keys() if k in strategy_data.keys()]
+        name_strategy = None if len(tmp) > 0 else name_strategy 
+        strategy_data = {**strategy_data, **kwargs}
         # set portfolio_data for ref
         portfolio_data['strategy'] = {'data':strategy_data, 'name':name_strategy}
 
-        # get fees if given
+        # create cost if its file given
         cost = kwargs.pop('cost', None)
         if (cost is None) and (file_cost is not None):
-            cost = CostManager.get_cost(file_cost, path=path_cost, **kwa_pf)
+            cost = PortfolioManager.get_cost(name, file_cost, path=path_cost)
         
         kws = {**strategy_data, 'name':name, 'security_names':security_names, 'cost':cost}
         pb = PortfolioBuilder(df_universe, *args, df_additional=df_additional, **kws)
         pb.portfolio_data = portfolio_data
         return pb
+
+
+    @staticmethod
+    def get_cost(name, file, path='.'):
+        return CostManager.get_cost(name, file, path=path)
 
 
     def check_portfolios(self, pf_names=None, loading=False):
