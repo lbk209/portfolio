@@ -307,14 +307,18 @@ def performance_stats(df_prices, metrics=None, sort_by=None, align_period=True, 
     return df_stats
 
 
-def convert_to_daily(df, method='ffill'):
+def convert_to_daily(df, method='linear'):
     """
     convert df to daily time series
+    method: 'ffill', 'linear'
     """
     start = df.index.min()
     end = df.index.max()
     index = pd.date_range(start, end)
-    return df.reindex(index, method=method)
+    if method == 'linear':
+        return df.reindex(index, method=None).interpolate()
+    else:
+        return df.reindex(index, method=method)
 
 
 def mldate(date, date_format='%Y-%m-%d'):
@@ -867,6 +871,8 @@ class DataManager():
         kwargs: additional args for _get_tickers
         """
         security_names = self.security_names
+        if (tickers is None) and (self.df_prices is not None):
+            tickers = self.df_prices.columns.to_list()
         if reset or (security_names is None):
             security_names = self._get_tickers(tickers=tickers, **kwargs)
             if security_names is None:
@@ -1926,16 +1932,11 @@ class PortfolioBuilder():
         df_rec = df_rec.loc[:date]
         date_lt = df_rec.index.get_level_values(0).max()
         
-        # buy & sell prices to date. see _calc_cashflow_history for their history
-        df = df_rec.loc[df_rec[col_trs]>0]
-        buy = df[col_prc].mul(df[col_trs]).sum()
-        df = df_rec.loc[df_rec[col_trs]<0]
-        sell = df[col_prc].mul(df[col_trs]).mul(-1).sum()
-        
+        # buy & sell prices to date.
+        cf = self._calc_cashflow_history(df_rec, self.cost).sort_index().iloc[-1].astype(int)
+        sell, buy = cf['sell'], cf['buy']
         # calc value
-        n_tickers = df_rec.loc[date_lt, col_net]
-        val = n_tickers.mul(df_prices.loc[date, n_tickers.index]).sum().astype(int)
-            
+        val = self._calc_value_history(df_rec, self.name, msg=False).sort_index().iloc[-1]
         # calc roi & unrealized gain/loss
         ugl = val + sell - buy
         roi = ugl / buy
@@ -2314,6 +2315,19 @@ class PortfolioBuilder():
                 _ = set_matplotlib_twins(ax1, ax2, legend=legend)
     
         return df_res
+
+
+    def get_names(self, tickers=None):
+        security_names = self.security_names
+        if security_names is None:
+            return print('ERROR: Set security_names first')
+        if tickers is None:
+            if self.tickers is None:
+                tickers = self.df_universe.columns
+            else:
+                tickers = self.tickers
+        s = {k:v for k,v in security_names.items() if k in tickers}
+        return SecurityDict(s, names=s)
 
         
     def _calc_cashflow_history(self, record, cost=None):
