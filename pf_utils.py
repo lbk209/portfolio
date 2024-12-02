@@ -264,11 +264,11 @@ def set_filename(file, ext=None, default='test'):
     return file
 
 
-def save_dataframe(df, file, path='.', 
+def save_dataframe(df, file, path='.', overwrite=False,
                    msg_succeed='file saved.',
                    msg_fail='ERROR: failed to save as the file exists'):
     f = os.path.join(path, file)
-    if os.path.exists(f):
+    if os.path.exists(f) and not overwrite:
         print(msg_fail)
         return False
     else:
@@ -1228,7 +1228,7 @@ class FundDownloader():
             data_tickers.update(df, join='left', overwrite=True)
             print('data_tickers updated')
             self.data_tickers = data_tickers
-            self.save_master() if save else None # file renamed in the func not to overwrite
+            self.save_master(overwrite=True) if save else None # overwite after updating
 
         if len(failed) > 0:
             print('WARNING: check output of failed')
@@ -1332,7 +1332,7 @@ class FundDownloader():
         return None
 
 
-    def save_master(self, file=None, path=None):
+    def save_master(self, file=None, path=None, overwrite=False):
         """
         save master data
         """
@@ -1342,17 +1342,18 @@ class FundDownloader():
         if data_tickers is None:
             print('ERROR')
         else:
-            self._save(data_tickers, file, path)
+            self._save(data_tickers, file, path, overwrite=overwrite)
         return None
 
 
-    def _save(self, df_result, file, path, date=None, date_format='%y%m%d'):
+    def _save(self, df_result, file, path, date=None, date_format='%y%m%d', overwrite=False):
         if date is None:
             date = datetime.now()
         if not isinstance(date, str):
             date = date.strftime(date_format)
         file = get_filename(file, f'_{date}', r"_\d+(?=\.\w+$)")
-        _ = save_dataframe(df_result, file, path, msg_succeed=f'{file} saved',
+        _ = save_dataframe(df_result, file, path, overwrite=overwrite,
+                           msg_succeed=f'{file} saved',
                            msg_fail=f'ERROR: failed to save as {file} exists')
         return None
 
