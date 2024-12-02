@@ -5,7 +5,7 @@ path_tran = 'transaction'
 kwargs_dm = ['universe', 'file', 'tickers', 'daily'] # kwargs of DataManager
 UNIVERSES = dict(
     UV_K200 = ['kospi200', 'kospi200_prices', 'KRX/INDEX/STOCK/1028', True],
-    UV_KRX = ['krx', 'krx_prices', 'KOSPI/KOSDAQ', True],
+    UV_KRX = ['krx', 'krx_prices', 'KOSPI,KOSDAQ', True],
     UV_LIQ = ['krx', 'krx_liq_prices', 'KOSPI,KOSDAQ', True],
     UV_WTR = ['etf', 'etfs_weather', 'ETF/KR', True],
     UV_ETF = ['etf', 'etfs_all', 'ETF/KR', True],
@@ -44,7 +44,7 @@ RECORDS = dict(
 STRATEGIES = {k: {**STRATEGIES[k], 'file':RECORDS[k], 'path':path_tran} for k,v in STRATEGIES.items()}
 
 
-# kwargs of PotfolioManager
+# kwargs of PortfolioData
 PORTFOLIOS = [
     ('MMT', 'UV_K200'), 
     ('PER', 'UV_K200'), 
