@@ -1563,32 +1563,35 @@ class FundDownloader():
         return FundDownloader(file, path)
 
     
-    def export_cost(self, portfolio, file=None, path='.', append=True,
-                    cols_cost=['ticker', 'buy', 'sell', 'fee', 'tax']):
+    def export_cost(self, portfolio, file=None, path='.', update=True,
+                    cols_cost=['buy', 'sell', 'fee', 'tax'],
+                    col_pf='portfolio', col_ticker='ticker'):
         """
         portfolio: portfolio name. see keys of PORTFOLIOS
+        update: True to update file with news cost data
         """
         data_tickers = self.data_tickers
         if data_tickers is None:
             return print('ERROR: no ticker data loaded yet')
-            
-        df_cost = (data_tickers.reset_index().loc[:, cols_cost]
+
+        cols = [col_ticker, *cols_cost]
+        df_cost = (data_tickers.reset_index().loc[:, cols]
                    .fillna(0)
                    .assign(portfolio=portfolio)
-                   .loc[:, ['portfolio', *cols_cost]])
+                   .loc[:, [col_pf, *cols]])
         if file:
             file = set_filename(file, ext='csv')
-            file = os.path.join(path, file)
-            if os.path.exists(file):
-                if append:
-                    mode = 'a'
-                    header = False
+            fp = os.path.join(path, file)
+            if os.path.exists(fp):
+                if update:
+                    df = CostManager.load_cost(file, path)
+                    idx = [col_pf, col_ticker]
+                    df = df.set_index(idx)
+                    df = df.loc[~df.index.isin(df_cost.set_index(idx).index)]
+                    df_cost = pd.concat([df.reset_index(), df_cost])
                 else:
                     return print(f'ERROR: {file} exists')
-            else:
-                mode = 'w'
-                header = True
-            df_cost.to_csv(file, mode=mode, header=header, index=False)
+            df_cost.to_csv(fp, index=False)
             return print(f'{file} saved.')
         else:
             return df_cost
@@ -2767,13 +2770,13 @@ class CostManager():
 
     
     @staticmethod
-    def load_cost(file, path='.', col_tkr='ticker'):
+    def load_cost(file, path='.', col_ticker='ticker'):
         """
         load cost data of strategy, universe & ticker
         """
         try:
             file = set_filename(file, 'csv') 
-            result = pd.read_csv(f'{path}/{file}', dtype={col_tkr:str}, comment='#')
+            result = pd.read_csv(f'{path}/{file}', dtype={col_ticker:str}, comment='#')
             print(f'Cost data {file} loaded')
         except FileNotFoundError:
             result = print('ERROR: Failed to load')
@@ -2783,7 +2786,7 @@ class CostManager():
     @staticmethod
     def get_cost(portfolio, file=None, path='.', 
                  cols_cost=['buy', 'sell', 'fee', 'tax'],
-                 col_pf='portfolio', col_tkr='ticker'):
+                 col_pf='portfolio', col_ticker='ticker'):
         """
         load cost file and get dict of commission for the portfolio
         """
@@ -2796,7 +2799,7 @@ class CostManager():
         if len(df_kw) == 1: # same cost for all tickers
             return df_kw[cols_cost].to_dict('records')[0]
         elif len(df_kw) > 1: # cost items are series of ticker to cost
-            return df_kw.set_index(col_tkr)[cols_cost].to_dict('series')
+            return df_kw.set_index(col_ticker)[cols_cost].to_dict('series')
         else:
             return print('WARNING: No cost data available')
 
