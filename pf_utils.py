@@ -1888,7 +1888,7 @@ class PortfolioBuilder():
         cols_val = [col_trs, col_net] # valid record only if not None nor zero
         cols_idx = [col_date, col_tkr]
         cols_all = [x for x in cols_record.values() if x not in cols_idx]
-        cols_int = [col_prc, col_trs, col_net]
+        cols_int = [col_trs, col_net]
                 
         date = df_net.index.get_level_values(0).max()
         record = self._check_var(record, self.record)
@@ -2225,17 +2225,11 @@ class PortfolioBuilder():
                     print(f'ERROR: KeyError {e} to update names')
 
         # update actual weights
-        wa = self.calc_weight_actual(record)
-        record.update(wa)
-        print('Actual weights updated')
-
-        if save:
-            file, path = self.file, self.path
-            record.to_csv(f'{path}/{file}')
-            print(f'Transaction file {file} updated')
-            if update_var:
-                self.record = self.import_record(print_msg=False)
-                print(f'self.record updated')
+        record = self._update_actual_weights(record)
+        if save: # overwrite record
+            self._overwrite_record(record, update_var=update_var) 
+        else:
+            print('REMINDER: Set save to True to save update')
         return record
 
 
@@ -2292,7 +2286,7 @@ class PortfolioBuilder():
         return df_rec
 
     
-    def view_record(self, n_latest=0, df_rec=None, msg=True):
+    def view_record(self, n_latest=0, df_rec=None, amount=False, msg=True):
         """
         get 'n_latest' latest or oldest transaction record 
         """
@@ -2300,7 +2294,16 @@ class PortfolioBuilder():
             df_rec = self._check_result(msg)
         if df_rec is None:
             return None
-
+        
+        cols_record = self.cols_record
+        col_prc = cols_record['prc']
+        col_trs = cols_record['trs']
+        col_net = cols_record['net']
+        df_rec[col_prc] = df_rec[col_prc].astype(int)    
+        if amount: # display total amount for transaction & net
+            for x in (col_trs, col_net):
+                df_rec[x] = df_rec[col_prc].mul(df_rec[x]).astype(int).map('{:,}'.format)
+    
         idx = df_rec.index.get_level_values(0).unique().sort_values(ascending=True)
         if n_latest > 0:
             idx = idx[:n_latest]
@@ -2374,7 +2377,42 @@ class PortfolioBuilder():
         s = {k:v for k,v in security_names.items() if k in tickers}
         return SecurityDict(s, names=s)
 
+
+    def convert_transaction(self, save=False, update_var=True):
+        """
+        convert transaction as amount of money to number of shares of transaction 
+         and update net for the last transaction date
+        save: overwrite record file if True
+        """
+        record = self.import_record()
+        if record is None:
+            return None
         
+        cols_record = self.cols_record
+        col_date = cols_record['date']
+        col_tkr = cols_record['tkr']
+        col_prc = cols_record['prc']
+        col_trs = cols_record['trs']
+        col_net = cols_record['net']
+        
+        date = record.index.get_level_values(0).max()
+        idx = pd.IndexSlice
+        sr_n = record.loc[idx[date, :], :].apply(lambda x: x[col_trs] / x[col_prc], axis=1).astype(int)
+        if sr_n.abs().min() < 1:
+            return print('ERROR: Make sure the transaction is amount not number of shares')
+        record.loc[idx[date, :], col_trs] = sr_n
+        record.loc[idx[date, :], col_net] = (record.loc[:, col_trs].groupby(col_tkr).sum().to_frame(col_net)
+                                             .assign(**{col_date:date}).set_index(col_date, append=True).swaplevel())
+
+        # update actual weights
+        record = self._update_actual_weights(record)
+        if save: # overwrite record
+            self._overwrite_record(record, update_var=update_var) 
+        else:
+            print('REMINDER: Set save to True to save conversion')
+        return record
+
+
     def _calc_cashflow_history(self, record, cost=None):
         """
         Returns df of cumulative buy and sell prices at each transaction.
@@ -2518,7 +2556,7 @@ class PortfolioBuilder():
             if msg:
                 print('Transaction dates updated for profit/loss on the dates')
         
-        return df_res
+        return df_res.copy() # self.df_rec or self.record could be modified if not copied
     
 
     def _load_transaction(self, file, path, print_msg=True):
@@ -2598,6 +2636,23 @@ class PortfolioBuilder():
         dt1 = date - self._get_date_offset(lag, 'weeks')
         dt0 = dt1 - self._get_date_offset(lookback, 'month')
         return df_data.loc[dt0:dt1].dropna(axis=1)
+
+
+    def _overwrite_record(self, record, update_var=True):
+        file, path = self.file, self.path
+        record.to_csv(f'{path}/{file}')
+        print(f'Transaction file {file} updated')
+        if update_var:
+            self.record = self.import_record(print_msg=False)
+            print(f'self.record updated')
+        return None
+            
+
+    def _update_actual_weights(self, record):
+        wa = self.calc_weight_actual(record)
+        record.update(wa)
+        print('Actual weights updated')
+        return record
 
 
 
