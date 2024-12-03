@@ -27,7 +27,7 @@ from matplotlib.dates import num2date, date2num, ConciseDateConverter
 from matplotlib.gridspec import GridSpec
 from numbers import Number
 
-from pf_data import PortfolioData
+from pf_data import PORTFOLIOS, STRATEGIES, UNIVERSES
 from pf_custom import (AlgoSelectKRatio, AlgoRunAfter, calc_kratio, AlgoSelectIDiscrete, 
                        AlgoSelectIDRank, SelectMomentum, AlgoSelectFinRatio, 
                        RedistributeWeights, redistribute_weights)
@@ -1551,7 +1551,48 @@ class FundDownloader():
             return pd.to_datetime(dates).strftime(date_format)
         else: # assuming datetime
             return pd.Index(dates).strftime(date_format)
-        
+
+    @staticmethod
+    def create(file, path='.'):
+        """
+        file: master file or instance of DataManager
+        """
+        if isinstance(file, DataManager):
+            path = file.path
+            file = file.tickers
+        return FundDownloader(file, path)
+
+    
+    def export_cost(self, portfolio, file=None, path='.', append=True,
+                    cols_cost=['ticker', 'buy', 'sell', 'fee', 'tax']):
+        """
+        portfolio: portfolio name. see keys of PORTFOLIOS
+        """
+        data_tickers = self.data_tickers
+        if data_tickers is None:
+            return print('ERROR: no ticker data loaded yet')
+            
+        df_cost = (data_tickers.reset_index().loc[:, cols_cost]
+                   .fillna(0)
+                   .assign(portfolio=portfolio)
+                   .loc[:, ['portfolio', *cols_cost]])
+        if file:
+            file = set_filename(file, ext='csv')
+            file = os.path.join(path, file)
+            if os.path.exists(file):
+                if append:
+                    mode = 'a'
+                    header = False
+                else:
+                    return print(f'ERROR: {file} exists')
+            else:
+                mode = 'w'
+                header = True
+            df_cost.to_csv(file, mode=mode, header=header, index=False)
+            return print(f'{file} saved.')
+        else:
+            return df_cost
+            
 
 
 class PortfolioBuilder():
@@ -2558,7 +2599,8 @@ class PortfolioBuilder():
 
 
 class CostManager():
-    def __init__(self, df_rec, cols_record, date_format='%Y-%m-%d'):
+    def __init__(self, df_rec, cols_record, date_format='%Y-%m-%d',
+                 file=None, path='.'):
         """
         df_rec: transaction record from PortfolioBuilder
         cols_record: dict of var name to col name of df_rec
@@ -2566,7 +2608,7 @@ class CostManager():
         self.df_rec = df_rec
         self.cols_record = cols_record
         self.date_format = date_format
-
+        
     
     def calc_cashflow_history(self, date=None, percent=True,
                               cost=dict(buy=0.00363960, sell=0.00363960, tax=0.18, fee=0)):
@@ -2613,7 +2655,7 @@ class CostManager():
         m = 0.01 if percent else 1
         sr_buy = CostManager._calc_fee_trading(df_rec, cols_record, m*buy, transaction='buy')
         sr_sell = CostManager._calc_fee_trading(df_rec, cols_record, m*sell, transaction='sell')
-        sr_tax = CostManager._calc_fee_trading(df_rec, cols_record, m*tax, transaction='sell').rename('tax')
+        sr_tax = CostManager._calc_fee_trading(df_rec, cols_record, m*tax, transaction='tax')
         sr_fee = CostManager._calc_fee_annual(df_rec, cols_record, m*fee, date)
         return (sr_buy.to_frame().join(sr_sell, how='outer')
                 .join(sr_fee, how='outer').join(sr_tax, how='outer')
@@ -2633,7 +2675,7 @@ class CostManager():
 
 
     def calc_tax(self, tax, date=None, percent=True):
-        return self.calc_fee_trading(tax, date=date, transaction='sell', percent=percent).rename('tax')
+        return self.calc_fee_trading(tax, date=date, transaction='tax', percent=percent)
         
 
     def calc_fee_annual(self, fee, date=None, percent=True):
@@ -2670,7 +2712,7 @@ class CostManager():
         """
         calc trading fee
         sr_fee: sell/buy commissions. rate of float or seires or dict
-        transaction: 'all', 'buy', 'sell'
+        transaction: 'all', 'buy', 'sell', 'tax'
         """
         col_tkr = cols_record['tkr']
         col_prc = cols_record['prc']
@@ -2683,11 +2725,12 @@ class CostManager():
         sr_fee = sr_fee.rename_axis(col_tkr) if isinstance(sr_fee, pd.Series) else sr_fee
         if transaction == 'buy':
             sr_val = sr_val.loc[sr_val > 0]
-        elif transaction == 'sell':
+        elif transaction in ('sell', 'tax'):
             sr_val = sr_val.loc[sr_val < 0]
         else:
             pass
-        return sr_val.abs().mul(sr_fee).rename(transaction)
+        # fillna for missing tickers in sr_fee
+        return sr_val.abs().mul(sr_fee).fillna(0).rename(transaction)
 
 
     @staticmethod
@@ -2716,11 +2759,48 @@ class CostManager():
         df_val = (df_val.reset_index(col_date, drop=True)
                   .rename(columns={'end':col_date}).set_index(col_date, append=True))
         df_val = df_val.loc[df_val['value'] > 0]
-        df_val['rate'] = df_val.join(sr_fee).apply(lambda x: -1 + (1 + x[name]) ** (x['period']/365), axis=1)
+        df_val['rate'] = (df_val.join(sr_fee)
+                          .apply(lambda x: -1 + (1 + x[name]) ** (x['period']/365), axis=1)
+                          .fillna(0)) # fillna for missing tickers in sr_fee
         return (df_val.apply(lambda x: x['value'] * x['rate'], axis=1)
                 .rename(name).swaplevel().sort_index())
-        
+
     
+    @staticmethod
+    def load_cost(file, path='.', col_tkr='ticker'):
+        """
+        load cost data of strategy, universe & ticker
+        """
+        try:
+            file = set_filename(file, 'csv') 
+            result = pd.read_csv(f'{path}/{file}', dtype={col_tkr:str}, comment='#')
+            print(f'Cost data {file} loaded')
+        except FileNotFoundError:
+            result = print('ERROR: Failed to load')
+        return result
+
+    
+    @staticmethod
+    def get_cost(portfolio, file=None, path='.', 
+                 cols_cost=['buy', 'sell', 'fee', 'tax'],
+                 col_pf='portfolio', col_tkr='ticker'):
+        """
+        load cost file and get dict of commission for the portfolio
+        """
+        df_kw = CostManager.load_cost(file, path)
+        if df_kw is None:
+            #return print('ERROR: Load cost file first')
+            return None
+
+        df_kw = df_kw.loc[df_kw[col_pf] == portfolio]
+        if len(df_kw) == 1: # same cost for all tickers
+            return df_kw[cols_cost].to_dict('records')[0]
+        elif len(df_kw) > 1: # cost items are series of ticker to cost
+            return df_kw.set_index(col_tkr)[cols_cost].to_dict('series')
+        else:
+            return print('WARNING: No cost data available')
+
+
 
 class Liquidation():
     def __init__(self):
@@ -4760,22 +4840,26 @@ class PortfolioManager():
         
     
     @staticmethod
-    def create_portfolio(name, *args, df_universe=None, df_additional=None, **kwargs):
+    def create_portfolio(name, *args, df_universe=None, df_additional=None, 
+                         file_cost=None, **kwargs):
         """
-        name: strategy name
+        name: portfolio name
         args, kwargs: additional args & kwargs for PortfolioBuilder
         df_additional: explicit set to exlcude from kwargs
         """
         # removal for comparison with strategy_data
         security_names = kwargs.pop('security_names', None)
-        name_pf = kwargs.pop('name', None)
+        _ = kwargs.pop('name', None) # drop name if it's in kwargs
         
         # get kwarg sets of portfolios
         pfd = PortfolioData()
+        kwa_pf = pfd.review_portfolio(name, strategy=False, universe=False)
+        name_strategy = kwa_pf['strategy']
+        name_universe = kwa_pf['universe']
+
         # get universe
         if df_universe is None:
-            kwa_p = pfd.review_portfolio(name, strategy=False, universe=False)
-            dm = PortfolioManager.create_universe(kwa_p['universe']) # instance of DataManager
+            dm = PortfolioManager.create_universe(name_universe) # instance of DataManager
             security_names = dm.get_names() if security_names is None else security_names # update security_names
             df_universe = dm.df_prices
             portfolio_data = dm.portfolio_data
@@ -4784,16 +4868,29 @@ class PortfolioManager():
             
         # get kwargs of PortfolioBuilder
         strategy_data = pfd.review_portfolio(name, strategy=True, universe=False)
-        strategy = name
-        if len(kwargs) > 0:
-            strategy_data = {**strategy_data, **kwargs}
-            strategy = None
-        portfolio_data['strategy'] = {'data': strategy_data, 'name':strategy}
+        # update strategy_data if input kwargs given
+        tmp = [k for k in kwargs.keys() if k in strategy_data.keys()]
+        name_strategy = None if len(tmp) > 0 else name_strategy 
+        strategy_data = {**strategy_data, **kwargs}
+        # set portfolio_data for ref
+        portfolio_data['strategy'] = {'data':strategy_data, 'name':name_strategy}
+
+        # create cost if its file given
+        cost = strategy_data.pop('cost', None)
+        if (cost is None) and (file_cost is not None):
+            # cost file in the same path to transaction files
+            path = strategy_data['path'] if 'path' in strategy_data.keys() else '.'
+            cost = PortfolioManager.get_cost(name, file_cost, path=path)
         
-        kws = {**strategy_data, 'name':name, 'security_names':security_names}
+        kws = {**strategy_data, 'name':name, 'security_names':security_names, 'cost':cost}
         pb = PortfolioBuilder(df_universe, *args, df_additional=df_additional, **kws)
         pb.portfolio_data = portfolio_data
         return pb
+
+
+    @staticmethod
+    def get_cost(name, file=None, path='.'):
+        return CostManager.get_cost(name, file=file, path=path)
 
 
     def check_portfolios(self, pf_names=None, loading=False):
@@ -4901,3 +4998,87 @@ class PortfolioManager():
         if no_res is not None:
             df_res[no_res] = None
         return df_res
+
+
+
+class PortfolioData():
+    def __init__(self, portfolios=PORTFOLIOS, strategies=STRATEGIES, universes=UNIVERSES):
+        """
+        portfolios: dict of portfolios (portfolio name to tuple of strategy and universe)
+        """
+        self.portfolios = portfolios
+        self.strategies = strategies
+        self.universes = universes
+        self.df_cost = None
+
+    def review(self, space=None):
+        """
+        get list of portfolios, strategies or universes
+        """
+        space = 'P' if space is None else space[0].upper()
+        if space == 'U':
+            args = [self.universes, 'Universe']
+        elif space == 'S':
+            args = [self.strategies, 'Strategy']
+        else: # default portfolio names
+            args = [self.portfolios, 'Portfolio']
+        return self._print_items(*args)
+
+    def review_portfolio(self, name, strategy=False, universe=False):
+        """
+        review param values of a portfolio
+        name: portfolio name
+        """
+        if self.portfolios is None:
+            return print('ERROR: no portfolios set')
+        
+        result = self._get_item(name, self.portfolios)
+        if result is None:
+            return None
+
+        res_s = self.review_strategy(result['strategy'])
+        res_u = self.review_universe(result['universe'])
+        if strategy:
+            if universe:
+                result = {'strategy': res_s, 'universe': res_u}
+            else:
+                result = res_s
+        else:
+            if universe:
+                result = res_u
+            else:
+                pass
+        return result
+
+    def review_strategy(self, name):
+        """
+        name: universe name
+        """
+        if self.strategies is None:
+            return print('ERROR: no strategies set')
+        else:
+            return self._get_item(name, self.strategies)
+
+    def review_universe(self, name):
+        """
+        name: universe name
+        """
+        if self.universes is None:
+            return print('ERROR: no universes set')
+        else:
+            return self._get_item(name, self.universes)
+
+    def _print_items(self, items, space):
+        if items is None:
+            return print(f'ERROR: No {space} set')
+        else:
+            return print(f"{space}: {', '.join(items.keys())}")
+        
+    def _get_item(self, name, data):
+        """
+        name: universe name
+        """
+        try:
+            return data[name]
+        except KeyError as e:
+            return print(f'ERROR: No {e}')
