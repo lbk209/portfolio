@@ -1553,12 +1553,13 @@ class FundDownloader():
             return pd.Index(dates).strftime(date_format)
 
     @staticmethod
-    def create(**kwargs):
+    def create(file, path='.'):
         """
-        kwargs: kwargs of DataManager
+        file: master file or instance of DataManager
         """
-        file = kwargs.pop('tickers', None)
-        path = kwargs.pop('path', None)
+        if isinstance(file, DataManager):
+            path = file.path
+            file = file.tickers
         return FundDownloader(file, path)
 
     
@@ -2770,18 +2771,26 @@ class CostManager():
         """
         load cost data of strategy, universe & ticker
         """
-        file = set_filename(file, 'csv') 
-        print(f'Cost data {file} loaded')
-        return pd.read_csv(f'{path}/{file}', dtype={col_tkr:str}, comment='#')
+        try:
+            file = set_filename(file, 'csv') 
+            result = pd.read_csv(f'{path}/{file}', dtype={col_tkr:str}, comment='#')
+            print(f'Cost data {file} loaded')
+        except FileNotFoundError:
+            result = print('ERROR: Failed to load')
+        return result
 
     
     @staticmethod
-    def get_cost(portfolio, file, path='.', 
+    def get_cost(portfolio, file=None, path='.', 
                  cols_cost=['buy', 'sell', 'fee', 'tax'],
                  col_pf='portfolio', col_tkr='ticker'):
+        """
+        load cost file and get dict of commission for the portfolio
+        """
         df_kw = CostManager.load_cost(file, path)
         if df_kw is None:
-            return print('ERROR: Load cost file first')
+            #return print('ERROR: Load cost file first')
+            return None
 
         df_kw = df_kw.loc[df_kw[col_pf] == portfolio]
         if len(df_kw) == 1: # same cost for all tickers
@@ -4832,7 +4841,7 @@ class PortfolioManager():
     
     @staticmethod
     def create_portfolio(name, *args, df_universe=None, df_additional=None, 
-                         file_cost=None, path_cost='.', **kwargs):
+                         file_cost=None, **kwargs):
         """
         name: portfolio name
         args, kwargs: additional args & kwargs for PortfolioBuilder
@@ -4867,9 +4876,11 @@ class PortfolioManager():
         portfolio_data['strategy'] = {'data':strategy_data, 'name':name_strategy}
 
         # create cost if its file given
-        cost = kwargs.pop('cost', None)
+        cost = strategy_data.pop('cost', None)
         if (cost is None) and (file_cost is not None):
-            cost = PortfolioManager.get_cost(name, file_cost, path=path_cost)
+            # cost file in the same path to transaction files
+            path = strategy_data['path'] if 'path' in strategy_data.keys() else '.'
+            cost = PortfolioManager.get_cost(name, file_cost, path=path)
         
         kws = {**strategy_data, 'name':name, 'security_names':security_names, 'cost':cost}
         pb = PortfolioBuilder(df_universe, *args, df_additional=df_additional, **kws)
@@ -4878,8 +4889,8 @@ class PortfolioManager():
 
 
     @staticmethod
-    def get_cost(name, file, path='.'):
-        return CostManager.get_cost(name, file, path=path)
+    def get_cost(name, file=None, path='.'):
+        return CostManager.get_cost(name, file=file, path=path)
 
 
     def check_portfolios(self, pf_names=None, loading=False):
