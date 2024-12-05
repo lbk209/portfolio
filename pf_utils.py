@@ -1945,7 +1945,7 @@ class PortfolioBuilder():
         return df_rec
 
 
-    def valuate(self, date=None, print_msg=False, profit_on_transaction_date=False):
+    def valuate(self, date=None, print_msg=False):
         """
         calc date, buy/sell prices & portfolio value from self.record or self.df_rec
         """
@@ -1956,7 +1956,7 @@ class PortfolioBuilder():
         date_format = self.date_format
         
         # get latest record
-        df_rec = self._check_result(print_msg, profit_on_transaction_date=profit_on_transaction_date)
+        df_rec = self._check_result(print_msg)
         if df_rec is None:
             return None
         
@@ -2029,11 +2029,11 @@ class PortfolioBuilder():
         return df_rec    
 
 
-    def get_value_history(self, profit_on_transaction_date=False):
+    def get_value_history(self):
         """
         get history of portfolio value
         """
-        df_rec = self._check_result(profit_on_transaction_date=profit_on_transaction_date)
+        df_rec = self._check_result()
         if df_rec is None:
             return None
         else:
@@ -2071,12 +2071,11 @@ class PortfolioBuilder():
     
     def plot(self, start_date=None, end_date=None, 
              figsize=(10,6), legend=True, height_ratios=(3,1), loc='upper left',
-             msg_cr=True, roi=True, roi_log=False, cashflow=True,
-             profit_on_transaction_date=False):
+             msg_cr=True, roi=True, roi_log=False, cashflow=True):
         """
         plot total, net and profit histories of portfolio
         """
-        df_rec = self._check_result(msg_cr, profit_on_transaction_date=profit_on_transaction_date)
+        df_rec = self._check_result(msg_cr)
         if df_rec is None:
             return None
             
@@ -2542,7 +2541,7 @@ class PortfolioBuilder():
         return df
         
 
-    def _check_result(self, msg=True, profit_on_transaction_date=False):
+    def _check_result(self, msg=True):
         if self.df_rec is None:
             if self.record is None:
                 return print('ERROR: No transaction record') if msg else None
@@ -2550,13 +2549,8 @@ class PortfolioBuilder():
                 df_res = self.record
         else:
             df_res = self.df_rec
-        
-        if profit_on_transaction_date:
-            df_res = self._update_transaction_dates(df_res, self.df_universe, self.cols_record['date'])
-            if msg:
-                print('Transaction dates updated for profit/loss on the dates')
-        
-        return df_res.copy() # self.df_rec or self.record could be modified if not copied
+        # self.df_rec or self.record could be modified if not copied
+        return df_res.copy() 
     
 
     def _load_transaction(self, file, path, print_msg=True):
@@ -2567,8 +2561,8 @@ class PortfolioBuilder():
         else:
             return None
         # fill ticker less than 6 digits with zeros
-        df_rec = (df_rec.reset_index(level=1)
-                        .assign(ticker=lambda x: x.ticker.str.zfill(6))
+        df_rec = (df_rec.reset_index(level=col_tkr)
+                        .assign(**{col_tkr: lambda x: x.ticker.str.zfill(6)})
                         .set_index(col_tkr, append=True))
         
         if print_msg:
@@ -2601,18 +2595,6 @@ class PortfolioBuilder():
         get the latest transaction file
         """
         return get_file_latest(file, path, msg=True, file_type='record')
-
-
-    def _update_transaction_dates(self, record, df_universe, col_date):
-        """
-        modify transaction dates to be able to compare purchase price 
-         and close price on the transaction date 
-        """
-        dts_trs = record.index.get_level_values(0).unique()
-        dts_dict = {x: df_universe.loc[:x - timedelta(days=1)].index.max() for x in dts_trs}
-        return (record.reset_index(level=0)
-                      .assign(**{col_date: lambda x: x[col_date].apply(lambda x: dts_dict[x])})
-                      .set_index(col_date, append=True).swaplevel())
 
     
     def _get_date_offset(self, *args, **kwargs):
@@ -2754,14 +2736,13 @@ class CostManager():
         """
         Returns df of cumulative buy and sell prices at each transaction.
         """
-        col_prc = cols_record['prc']
         col_trs = cols_record['trs']
         col_date = cols_record['date']
         
         df = df_rec.loc[df_rec[col_trs]>0]
-        df_cf = df[col_prc].mul(df[col_trs]).groupby(col_date).sum().cumsum().to_frame('buy')
+        df_cf = df[col_trs].groupby(col_date).sum().cumsum().to_frame('buy')
         df = df_rec.loc[df_rec[col_trs]<0]
-        df_sell = df[col_prc].mul(df[col_trs]).groupby(col_date).sum().cumsum().mul(-1)
+        df_sell = df[col_trs].groupby(col_date).sum().cumsum().mul(-1)
         return df_cf.join(df_sell.rename('sell'), how='outer').ffill().fillna(0)
 
 
