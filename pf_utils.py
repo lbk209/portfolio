@@ -1923,9 +1923,7 @@ class PortfolioBuilder():
             df_rec = pd.concat([df_rec, df_m])
 
             # get num of shares for transaction & net with price history
-            sr_trs = self._calc_shares(df_rec, df_prc, 'trs', int_share=False)
-            sr_net = self._calc_shares(df_rec, df_prc, 'net', int_share=False)
-            df_share = sr_trs.to_frame(col_trs).join(sr_net.rename(col_net))
+            df_share = self.convert_to_shares(df_rec, df_prc, int_share=False)
             # get transaction amount for the transaction date
             df_trs = (df_share.loc[date, col_net]
                       .sub(df_share.groupby(col_tkr)[col_trs].sum())
@@ -2283,7 +2281,7 @@ class PortfolioBuilder():
         return df_rec
 
     
-    def view_record(self, n_latest=0, df_rec=None, amount=False, msg=True):
+    def view_record(self, n_latest=0, df_rec=None, share=False, msg=False, int_share=True):
         """
         get 'n_latest' latest or oldest transaction record 
         """
@@ -2291,16 +2289,12 @@ class PortfolioBuilder():
             df_rec = self._check_result(msg)
         if df_rec is None:
             return None
+
+        if share: # show number of shares instead of amount
+            df_prc = self._update_universe(df_rec, msg=msg)
+            df_prc = self.liquidation.set_price(df_prc)
+            df_rec = self.convert_to_shares(df_rec, df_prc, int_share=int_share)
         
-        cols_record = self.cols_record
-        col_prc = cols_record['prc']
-        col_trs = cols_record['trs']
-        col_net = cols_record['net']
-        df_rec[col_prc] = df_rec[col_prc].astype(int)    
-        if amount: # display total amount for transaction & net
-            for x in (col_trs, col_net):
-                df_rec[x] = df_rec[col_prc].mul(df_rec[x]).astype(int).map('{:,}'.format)
-    
         idx = df_rec.index.get_level_values(0).unique().sort_values(ascending=True)
         if n_latest > 0:
             idx = idx[:n_latest]
@@ -2375,41 +2369,6 @@ class PortfolioBuilder():
         return SecurityDict(s, names=s)
 
 
-    def convert_transaction(self, save=False, update_var=True):
-        """
-        convert transaction as amount of money to number of shares of transaction 
-         and update net for the last transaction date
-        save: overwrite record file if True
-        """
-        record = self.import_record()
-        if record is None:
-            return None
-        
-        cols_record = self.cols_record
-        col_date = cols_record['date']
-        col_tkr = cols_record['tkr']
-        col_prc = cols_record['prc']
-        col_trs = cols_record['trs']
-        col_net = cols_record['net']
-        
-        date = record.index.get_level_values(0).max()
-        idx = pd.IndexSlice
-        sr_n = record.loc[idx[date, :], :].apply(lambda x: x[col_trs] / x[col_prc], axis=1).astype(int)
-        if sr_n.abs().min() < 1:
-            return print('ERROR: Make sure the transaction is amount not number of shares')
-        record.loc[idx[date, :], col_trs] = sr_n
-        record.loc[idx[date, :], col_net] = (record.loc[:, col_trs].groupby(col_tkr).sum().to_frame(col_net)
-                                             .assign(**{col_date:date}).set_index(col_date, append=True).swaplevel())
-
-        # update actual weights
-        record = self._update_actual_weights(record)
-        if save: # overwrite record
-            self._overwrite_record(record, update_var=update_var) 
-        else:
-            print('REMINDER: Set save to True to save conversion')
-        return record
-
-
     def _calc_cashflow_history(self, record, cost=None):
         """
         Returns df of cumulative buy and sell prices at each transaction.
@@ -2441,31 +2400,46 @@ class PortfolioBuilder():
             return df_prices
 
 
-    def _calc_shares(self, df_rec, df_universe, col_amount='net', int_share=False):
+    def _calc_shares(self, sr_amount, df_universe, int_share=False):
         """
         calc number of shares for amount net or transaction in record df_rec from price history df_universe
-        col_amount: 'net' or 'transaction'
+        sr_amount: sr of 'net' or 'transaction'
         """
         cols_record = self.cols_record
-        col_amt = cols_record[col_amount]
         index = [cols_record['date'],cols_record['tkr']]
         col_prc = 'price'
-        sr = (df_rec[col_amt].to_frame()
+        col_amt = sr_amount.name
+        col_amt = 'number of shares' if col_amt is None else col_amt
+        sr = (sr_amount.to_frame(col_amt)
                 .join(df_universe.stack().sort_index().rename_axis(index).to_frame(col_prc))
-                .apply(lambda x: x[col_amt]/x[col_prc], axis=1))
+                .apply(lambda x: x[col_amt]/x[col_prc], axis=1)
+                .rename(col_amt))
         return sr.apply(np.fix).astype(int) if int_share else sr
+
+
+    def convert_to_shares(self, df_rec, df_universe, int_share=False):
+        df_share = df_rec.copy()
+        cols_record = self.cols_record
+        col_trs = cols_record['trs']
+        col_net = cols_record['net']
+        sr_trs = self._calc_shares(df_rec[col_trs], df_universe, int_share=int_share)
+        sr_net = self._calc_shares(df_rec[col_net], df_universe, int_share=int_share)
+        df = sr_trs.to_frame().join(sr_net)
+        df_share.update(df, overwrite=True)
+        return df_share
         
 
     def _calc_value_history(self, df_rec, name, msg=False):
         """
         calc historical of portfolio value from transaction
         """
+        col_net = self.cols_record['net']
         end = datetime.today()
         sr_ttl = pd.Series()
         dates_trs = df_rec.index.get_level_values(0).unique()
         # update price data with df_rec
         df_universe = self._update_universe(df_rec, msg=msg)
-        sr_share = self._calc_shares(df_rec, df_universe, 'net')
+        sr_share = self._calc_shares(df_rec[col_net], df_universe)
         
         # loop for transaction dates in descending order
         for start in dates_trs.sort_values(ascending=False):
