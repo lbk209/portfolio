@@ -1578,14 +1578,14 @@ class FundDownloader():
         df_cost = (data_tickers.reset_index().loc[:, cols]
                    .fillna(0)
                    .assign(universe=universe)
-                   .loc[:, [col_pf, *cols]])
+                   .loc[:, [col_uv, *cols]])
         if file:
             file = set_filename(file, ext='csv')
             fp = os.path.join(path, file)
             if os.path.exists(fp):
                 if update:
                     df = CostManager.load_cost(file, path)
-                    idx = [col_pf, col_ticker]
+                    idx = [col_uv, col_ticker]
                     df = df.set_index(idx)
                     df = df.loc[~df.index.isin(df_cost.set_index(idx).index)]
                     df_cost = pd.concat([df.reset_index(), df_cost])
@@ -1825,7 +1825,7 @@ class PortfolioBuilder():
                 capital += sr['value'] # add porfolio value to capital
 
         # calc amount of each security by weights and capital
-        df_prc = self.df_universe
+        df_prc = self.df_universe # no _update_universe as no record yet
         wi = pd.Series(weights, name=col_wgt).rename_axis(col_tkr) # ideal weights
         wvi = wi * capital / (1+commissions/100) # weighted security value
 
@@ -1958,6 +1958,7 @@ class PortfolioBuilder():
         
         # update price data by adding tickers not in the universe if existing
         df_prices = self._update_universe(df_rec, msg=print_msg)
+        df_prices = self.liquidation.set_price(df_prices)
     
         # check date by price data
         date = df_prices.loc[:date].index.max() # works even if date None
@@ -2305,6 +2306,13 @@ class PortfolioBuilder():
         return df_rec.loc[idx]
 
 
+    def export_record(self, share=False, int_share=True):
+        """
+        share: set to True to show num of shares for transaction & net
+        """
+        return self.view_record(n_latest=0, df_rec=None, share=share, int_share=int_share)
+
+
     def check_weights(self, *args, **kwargs):
         return BacktestManager.check_weights(*args, **kwargs)
         
@@ -2399,13 +2407,12 @@ class PortfolioBuilder():
         else:
             return df_prices
 
-
-    def _calc_shares(self, sr_amount, df_universe, int_share=False):
+    @staticmethod
+    def calc_shares(sr_amount, df_universe, cols_record, int_share=False):
         """
         calc number of shares for amount net or transaction in record df_rec from price history df_universe
         sr_amount: sr of 'net' or 'transaction'
         """
-        cols_record = self.cols_record
         index = [cols_record['date'],cols_record['tkr']]
         col_prc = 'price'
         col_amt = sr_amount.name
@@ -2422,24 +2429,26 @@ class PortfolioBuilder():
         cols_record = self.cols_record
         col_trs = cols_record['trs']
         col_net = cols_record['net']
-        sr_trs = self._calc_shares(df_rec[col_trs], df_universe, int_share=int_share)
-        sr_net = self._calc_shares(df_rec[col_net], df_universe, int_share=int_share)
+        sr_trs = PortfolioBuilder.calc_shares(df_rec[col_trs], df_universe, cols_record, int_share=int_share)
+        sr_net = PortfolioBuilder.calc_shares(df_rec[col_net], df_universe, cols_record, int_share=int_share)
         df = sr_trs.to_frame().join(sr_net)
         df_share.update(df, overwrite=True)
         return df_share
         
 
-    def _calc_value_history(self, df_rec, name, msg=False):
+    def _calc_value_history(self, df_rec, name=None, msg=False):
         """
         calc historical of portfolio value from transaction
         """
-        col_net = self.cols_record['net']
+        cols_record = self.cols_record
+        col_net = cols_record['net']
         end = datetime.today()
         sr_ttl = pd.Series()
         dates_trs = df_rec.index.get_level_values(0).unique()
         # update price data with df_rec
         df_universe = self._update_universe(df_rec, msg=msg)
-        sr_share = self._calc_shares(df_rec[col_net], df_universe)
+        df_universe = self.liquidation.set_price(df_universe)
+        sr_share = PortfolioBuilder.calc_shares(df_rec[col_net], df_universe, cols_record)
         
         # loop for transaction dates in descending order
         for start in dates_trs.sort_values(ascending=False):
@@ -2455,7 +2464,8 @@ class PortfolioBuilder():
 
         if len(sr_ttl) > 0:
             # sort by date
-            return sr_ttl.astype(int).rename(name).sort_index()
+            sr = sr_ttl.astype(int).sort_index()
+            return sr if name is None else sr.rename(name)
         else:
             return print('ERROR: no historical')
 
@@ -2742,10 +2752,9 @@ class CostManager():
         transaction: 'all', 'buy', 'sell', 'tax'
         """
         col_tkr = cols_record['tkr']
-        col_prc = cols_record['prc']
         col_trs = cols_record['trs']
         
-        sr_val = df_rec[col_prc] * df_rec[col_trs]
+        sr_val = df_rec[col_trs]
         # now sr_fee series or float
         sr_fee = pd.Series(sr_fee) if isinstance(sr_fee, dict) else sr_fee
         # rename axis to multiply if series
@@ -2765,9 +2774,9 @@ class CostManager():
         """
         calc annual fee
         sr_fee: dict or series of ticker to annual fee. rate
+        method_sell: True if fee calculated when selling (end date)
         """
         col_tkr = cols_record['tkr']
-        col_prc = cols_record['prc']
         col_net = cols_record['net']
         col_date = cols_record['date']
         
@@ -2776,13 +2785,13 @@ class CostManager():
         elif isinstance(sr_fee, Number):
             sr_fee = pd.Series(sr_fee, index=df_rec.index.get_level_values(col_tkr).unique())
         sr_fee = sr_fee.rename_axis(col_tkr).rename(name)
-        
-        df_val = (df_rec.apply(lambda x: x[col_prc] * x[col_net], axis=1)
-                        .swaplevel().sort_index().to_frame('value'))
+            
+        df_val = df_rec[col_net].swaplevel().sort_index().to_frame('value')
         df_val['start'] = df_val.index.get_level_values(col_date)
         df_val['end'] = (df_val.groupby(col_tkr, group_keys=False)
                          .apply(lambda x: x['start'].shift(-1)).fillna(date))
-        df_val['period'] = df_val.apply(lambda x: x['end'] - x['start'], axis=1).dt.days
+        df_val['period'] = df_val.apply(lambda x: x['end'] - x['start'], axis=1).dt.days    
+        
         df_val = (df_val.reset_index(col_date, drop=True)
                   .rename(columns={'end':col_date}).set_index(col_date, append=True))
         df_val = df_val.loc[df_val['value'] > 0]
@@ -4597,23 +4606,20 @@ class FinancialRatios():
         return df
 
 
-    def util_compare_periods(self, df, level=0):
+    def util_compare_periods(self, df, level=0, name='Price'):
         """
         compare date index between df_ratios and df (ex. price)
         level: index level of date
         """
         df_ratios = self.df_ratios
         date_format = self.date_format
-
-        getd = lambda x, l=1: x.index.get_level_values(l).unique()
-        dts = getd(df, level).difference(getd(df_ratios))
-        n = dts.size
-        if n > 0:
-            d0 = dts.min().strftime(date_format)
-            d1 = dts.max().strftime(date_format)
-            print(f'WARNING: {n} days from {d0} to {d1} missing in the ratio')
+        d0, d1 = get_date_minmax(df_ratios, date_format, level=1)
+        print(f'Ratio: {d0} ~ {d1}')
+        d0, d1 = get_date_minmax(df, date_format)
+        print(f'{name}: {d0} ~ {d1}')
         return None
 
+    
     @staticmethod
     def util_get_ratio(metric, file, path='.', reshape=True):
         fr = FinancialRatios(file, path)
