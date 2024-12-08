@@ -2306,11 +2306,43 @@ class PortfolioBuilder():
         return df_rec.loc[idx]
 
 
-    def export_record(self, share=False, int_share=True):
+    def get_record_by_asset(self, date=None, msg=False):
         """
-        share: set to True to show num of shares for transaction & net
+        get record of transactions with values by asset
         """
-        return self.view_record(n_latest=0, df_rec=None, share=share, int_share=int_share)
+        cols_record = self.cols_record
+        col_date = cols_record['date']
+        col_tkr = cols_record['tkr']
+        col_net = cols_record['net']
+        col_buy = 'buy'
+        col_val = 'value'
+        col_prc = 'price'
+        col_stt = 'start'
+        col_end = 'end'
+    
+        df_rec = self._check_result(msg)
+        if df_rec is None:
+            return None
+        else:
+            sr_net = df_rec[col_net]
+        if date is None:
+            date = sr_net.index.get_level_values(col_date).max()
+        
+        # get universe
+        df_prc  = self._update_universe(df_rec, msg=msg)
+        df_prc = self.liquidation.set_price(df_prc)
+        
+        df_rec = sr_net.to_frame(col_buy)
+        df_rec[col_val] = PortfolioBuilder.calc_shares(sr_net, df_prc, cols_record, int_share=False)
+        df_rec = df_rec.swaplevel().sort_index()
+        df_rec[col_stt] = df_rec.index.get_level_values(col_date)
+        df_rec[col_end] = (df_rec.groupby(col_tkr, group_keys=False)
+                         .apply(lambda x: x[col_stt].shift(-1)).fillna(date))
+    
+        idx = [col_tkr, col_end]
+        df = df_prc.stack().swaplevel().sort_index().rename(col_prc).rename_axis(idx)
+        df_rec[col_val] = df_rec.join(df, on=idx).apply(lambda x: x[col_val] * x[col_prc], axis=1)
+        return df_rec.loc[df_rec[col_val]>0].loc[:, [col_buy, col_end, col_val]]
 
 
     def check_weights(self, *args, **kwargs):
@@ -2770,7 +2802,7 @@ class CostManager():
 
 
     @staticmethod
-    def _calc_fee_annual(df_rec, cols_record, sr_fee, date, name='fee'):
+    def _calc_fee_annual(df_rec, cols_record, sr_fee, date, name='fee', method_sell=False):
         """
         calc annual fee
         sr_fee: dict or series of ticker to annual fee. rate
@@ -2779,22 +2811,26 @@ class CostManager():
         col_tkr = cols_record['tkr']
         col_net = cols_record['net']
         col_date = cols_record['date']
+    
+        cols = ['end', 'value']
+        if pd.Index(cols).difference(df_rec.columns).size > 0:
+            return print('ERROR')
+        else:
+            df_val = df_rec[cols]
+            df_val['period'] = df_rec['end'].sub(df_rec.index.get_level_values('date')).dt.days
         
         if isinstance(sr_fee, dict):
             sr_fee = pd.Series(sr_fee)
         elif isinstance(sr_fee, Number):
             sr_fee = pd.Series(sr_fee, index=df_rec.index.get_level_values(col_tkr).unique())
         sr_fee = sr_fee.rename_axis(col_tkr).rename(name)
-            
-        df_val = df_rec[col_net].swaplevel().sort_index().to_frame('value')
-        df_val['start'] = df_val.index.get_level_values(col_date)
-        df_val['end'] = (df_val.groupby(col_tkr, group_keys=False)
-                         .apply(lambda x: x['start'].shift(-1)).fillna(date))
-        df_val['period'] = df_val.apply(lambda x: x['end'] - x['start'], axis=1).dt.days    
+    
+        if method_sell:
+            df_val = (df_val.reset_index(col_date, drop=True)
+                      .rename(columns={'end':col_date}).set_index(col_date, append=True))
         
-        df_val = (df_val.reset_index(col_date, drop=True)
-                  .rename(columns={'end':col_date}).set_index(col_date, append=True))
         df_val = df_val.loc[df_val['value'] > 0]
+        
         df_val['rate'] = (df_val.join(sr_fee)
                           .apply(lambda x: -1 + (1 + x[name]) ** (x['period']/365), axis=1)
                           .fillna(0)) # fillna for missing tickers in sr_fee
