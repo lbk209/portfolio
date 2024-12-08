@@ -2282,7 +2282,8 @@ class PortfolioBuilder():
         return df_rec
 
     
-    def view_record(self, n_latest=0, df_rec=None, share=False, msg=False, int_share=True):
+    def view_record(self, n_latest=0, df_rec=None, share=False, value=False,
+                    msg=False, int_share=True):
         """
         get 'n_latest' latest or oldest transaction record 
         """
@@ -2291,11 +2292,16 @@ class PortfolioBuilder():
         if df_rec is None:
             return None
 
-        if share: # show number of shares instead of amount
+        if share or value:
             df_prc = self._update_universe(df_rec, msg=msg)
             df_prc = self.liquidation.set_price(df_prc)
+
+        if value: # run before share
+            df_val = self._calc_record_value(df_rec, df_prc)
+
+        if share: # show number of shares instead of amount
             df_rec = self.convert_to_shares(df_rec, df_prc, int_share=int_share)
-        
+
         idx = df_rec.index.get_level_values(0).unique().sort_values(ascending=True)
         if n_latest > 0:
             idx = idx[:n_latest]
@@ -2303,10 +2309,14 @@ class PortfolioBuilder():
             idx = idx[n_latest:]
         else:
             pass
-        return df_rec.loc[idx]
+
+        if value:
+            return df_rec.loc[idx].join(df_val)
+        else:
+            return df_rec.loc[idx]
 
 
-    def get_record_by_asset(self, date=None, msg=False):
+    def _calc_record_value(self, df_rec, df_prices, date=None, msg=False):
         """
         get record of transactions with values by asset
         """
@@ -2314,37 +2324,26 @@ class PortfolioBuilder():
         col_date = cols_record['date']
         col_tkr = cols_record['tkr']
         col_net = cols_record['net']
-        col_buy = 'buy'
         col_val = 'value'
         col_prc = 'price'
         col_stt = 'start'
         col_end = 'end'
     
-        df_rec = self._check_result(msg)
-        if df_rec is None:
-            return None
-        else:
-            sr_net = df_rec[col_net]
-        if date is None:
-            date = sr_net.index.get_level_values(col_date).max()
+        sr_net = df_rec[col_net]
+        date = sr_net.index.get_level_values(col_date).max() if date is None else date
         
-        # get universe
-        df_prc  = self._update_universe(df_rec, msg=msg)
-        df_prc = self.liquidation.set_price(df_prc)
-        
-        df_rec = sr_net.to_frame(col_buy)
-        df_rec[col_val] = PortfolioBuilder.calc_shares(sr_net, df_prc, cols_record, int_share=False)
-        df_rec = df_rec.swaplevel().sort_index()
-        df_rec[col_stt] = df_rec.index.get_level_values(col_date)
-        df_rec[col_end] = (df_rec.groupby(col_tkr, group_keys=False)
-                         .apply(lambda x: x[col_stt].shift(-1)).fillna(date))
+        df_val = PortfolioBuilder.calc_shares(sr_net, df_prices, cols_record, int_share=False)
+        df_val = df_val.to_frame(col_val)
+        df_val[col_stt] = df_val.index.get_level_values(col_date)
+        df_val[col_end] = (df_val.groupby(col_tkr, group_keys=False)
+                          .apply(lambda x: x[col_stt].shift(-1)).fillna(date))
     
         idx = [col_tkr, col_end]
-        df = df_prc.stack().swaplevel().sort_index().rename(col_prc).rename_axis(idx)
-        df_rec[col_val] = df_rec.join(df, on=idx).apply(lambda x: x[col_val] * x[col_prc], axis=1)
-        return df_rec.loc[df_rec[col_val]>0].loc[:, [col_buy, col_end, col_val]]
+        df = df_prices.stack().swaplevel().sort_index().rename(col_prc).rename_axis(idx)
+        df_val[col_val] = df_val.join(df, on=idx).apply(lambda x: x[col_val] * x[col_prc], axis=1)
+        return df_val.loc[:, [col_end, col_val]]
 
-
+    
     def check_weights(self, *args, **kwargs):
         return BacktestManager.check_weights(*args, **kwargs)
         
@@ -2817,7 +2816,8 @@ class CostManager():
             return print('ERROR')
         else:
             df_val = df_rec[cols]
-            df_val['period'] = df_rec['end'].sub(df_rec.index.get_level_values('date')).dt.days
+            sr_p = df_rec['end'].sub(df_rec.index.get_level_values('date')).dt.days.rename('period')
+            df_val = df_val.join(sr_p)
         
         if isinstance(sr_fee, dict):
             sr_fee = pd.Series(sr_fee)
