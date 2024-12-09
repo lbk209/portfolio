@@ -1945,7 +1945,7 @@ class PortfolioBuilder():
         return df_rec
 
 
-    def valuate(self, date=None, print_msg=False):
+    def valuate(self, date=None, print_msg=False, cost_excluded=False):
         """
         calc date, buy/sell prices & portfolio value from self.record or self.df_rec
         """
@@ -1975,7 +1975,8 @@ class PortfolioBuilder():
         date_lt = df_rec.index.get_level_values(0).max()
         
         # buy & sell prices to date.
-        cf = self._calc_cashflow_history(df_rec, self.cost).sort_index().iloc[-1].astype(int)
+        cost = None if cost_excluded else self.cost
+        cf = self._calc_cashflow_history(df_rec, cost).sort_index().iloc[-1].astype(int)
         sell, buy = cf['sell'], cf['buy']
         # calc value
         val = self._calc_value_history(df_rec, self.name, msg=False).sort_index().iloc[-1]
@@ -2037,7 +2038,7 @@ class PortfolioBuilder():
             return self._calc_value_history(df_rec, self.name, msg=True)
 
 
-    def get_cash_history(self):
+    def get_cash_history(self, cost_excluded=False):
         """
         get history of buy and sell prices
         """
@@ -2045,10 +2046,11 @@ class PortfolioBuilder():
         if df_rec is None:
             return None
         else:
-            return self._calc_cashflow_history(df_rec, self.cost)
+            cost = None if cost_excluded else self.cost
+            return self._calc_cashflow_history(df_rec, cost)
 
 
-    def get_profit_history(self, result='ROI', roi_log=False, msg=True):
+    def get_profit_history(self, result='ROI', roi_log=False, msg=True, cost_excluded=False):
         """
         get history of profit/loss
         result: 'ROI', 'UGL' or 'all'
@@ -2061,14 +2063,15 @@ class PortfolioBuilder():
         if (sr_val is None) or (len(sr_val)==1):
             return print('ERROR: need more data to plot')
 
-        df_cf = self._calc_cashflow_history(df_rec, self.cost) # buy & sell
+        cost = None if cost_excluded else self.cost
+        df_cf = self._calc_cashflow_history(df_rec, cost) # buy & sell
         sr_prf = self._calc_profit(sr_val, df_cf, result=result, roi_log=roi_log)
         return sr_prf
 
     
     def plot(self, start_date=None, end_date=None, 
              figsize=(10,6), legend=True, height_ratios=(3,1), loc='upper left',
-             msg_cr=True, roi=True, roi_log=False, cashflow=True):
+             msg_cr=True, roi=True, roi_log=False, cashflow=True, cost_excluded=False):
         """
         plot total, net and profit histories of portfolio
         """
@@ -2081,8 +2084,9 @@ class PortfolioBuilder():
         sr_val = self._calc_value_history(df_rec, self.name, msg=True).rename(col_net)
         if (sr_val is None) or (len(sr_val)==1):
             return print('ERROR: need more data to plot')
-    
-        df_cf = self._calc_cashflow_history(df_rec, self.cost) # cashflow
+
+        cost = None if cost_excluded else self.cost
+        df_cf = self._calc_cashflow_history(df_rec, cost) # cashflow
         res_prf = 'ROI' if roi else 'UGL'
         sr_prf = self._calc_profit(sr_val, df_cf, result=res_prf, roi_log=roi_log) # profit
     
@@ -2096,7 +2100,7 @@ class PortfolioBuilder():
         sr_prf = func(sr_prf)
         
        # set title
-        sr = self.valuate(end_date, print_msg=False)
+        sr = self.valuate(end_date, print_msg=False, cost_excluded=cost_excluded)
         title = format_rounded_string(sr['ROI'], sr['UGL'])
         title = f"{title} ({sr['date']})"
             
@@ -2125,18 +2129,20 @@ class PortfolioBuilder():
         if cashflow:
             # set slice for record with a single transaction
             start, end = get_date_minmax(sr_val)
-            ax2 = self.plot_cashflow(df_rec=df_rec, start_date=start, end_date=end, ax=ax2)
+            ax2 = self.plot_cashflow(df_rec=df_rec, start_date=start, end_date=end, 
+                                     cost_excluded=cost_excluded, ax=ax2)
         return None
 
 
-    def plot_cashflow(self, df_rec=None, start_date=None, end_date=None,
+    def plot_cashflow(self, df_rec=None, start_date=None, end_date=None, cost_excluded=False,
                       ax=None, figsize=(8,2), alpha=0.4, colors=('r', 'g'),
                       labels=['Buy', 'Sell'], loc='upper left'):
         df_rec = self._check_result() if df_rec is None else df_rec
         if df_rec is None:
             return None
-             
-        df_cf = self._calc_cashflow_history(df_rec, self.cost)
+
+        cost = None if cost_excluded else self.cost
+        df_cf = self._calc_cashflow_history(df_rec, cost)
         df_cf = self._plot_cashflow_slice(df_cf, start_date, end_date)
         if ax is None:
             _, ax = plt.subplots(figsize=figsize)
@@ -2330,7 +2336,7 @@ class PortfolioBuilder():
         col_end = 'end'
     
         sr_net = df_rec[col_net]
-        date = sr_net.index.get_level_values(col_date).max() if date is None else date
+        date = df_prices.index.max() if date is None else date
         
         df_val = PortfolioBuilder.calc_shares(sr_net, df_prices, cols_record, int_share=False)
         df_val = df_val.to_frame(col_val)
@@ -2412,7 +2418,10 @@ class PortfolioBuilder():
         """
         Returns df of cumulative buy and sell prices at each transaction.
         """
-        cm = CostManager(record, self.cols_record, self.date_format)
+        # add value to record to calc year-fee
+        df_rec = self.view_record(0, df_rec=record, share=False, 
+                                  value=True, msg=False, int_share=False)
+        cm = CostManager(df_rec, self.cols_record, self.date_format)
         return cm.calc_cashflow_history(cost=cost)
     
 
@@ -2801,23 +2810,24 @@ class CostManager():
 
 
     @staticmethod
-    def _calc_fee_annual(df_rec, cols_record, sr_fee, date, name='fee', method_sell=False):
+    def _calc_fee_annual(df_rec, cols_record, sr_fee, date, name='fee'):
         """
         calc annual fee
         sr_fee: dict or series of ticker to annual fee. rate
-        method_sell: True if fee calculated when selling (end date)
         """
         col_tkr = cols_record['tkr']
         col_net = cols_record['net']
         col_date = cols_record['date']
-    
-        cols = ['end', 'value']
+        col_end, col_prd, col_val, col_rate = 'end', 'period', 'value', 'rate'
+        cols = [col_end, col_val]
         if pd.Index(cols).difference(df_rec.columns).size > 0:
-            return print('ERROR')
+            return print('ERROR: No value in record')
         else:
             df_val = df_rec[cols]
-            sr_p = df_rec['end'].sub(df_rec.index.get_level_values('date')).dt.days.rename('period')
-            df_val = df_val.join(sr_p)
+        # value for fee calc is avg of buy and valuated on next transaction date
+        df_val.loc[:, 'value'] = (df_val['value'] + df_rec['net'])/2
+        sr_p = df_rec[col_end].sub(df_rec.index.get_level_values(col_date)).dt.days.rename(col_prd)
+        df_val = df_val.join(sr_p).loc[df_val[col_val] > 0]
         
         if isinstance(sr_fee, dict):
             sr_fee = pd.Series(sr_fee)
@@ -2825,16 +2835,10 @@ class CostManager():
             sr_fee = pd.Series(sr_fee, index=df_rec.index.get_level_values(col_tkr).unique())
         sr_fee = sr_fee.rename_axis(col_tkr).rename(name)
     
-        if method_sell:
-            df_val = (df_val.reset_index(col_date, drop=True)
-                      .rename(columns={'end':col_date}).set_index(col_date, append=True))
-        
-        df_val = df_val.loc[df_val['value'] > 0]
-        
-        df_val['rate'] = (df_val.join(sr_fee)
-                          .apply(lambda x: -1 + (1 + x[name]) ** (x['period']/365), axis=1)
+        df_val[col_rate] = (df_val.join(sr_fee)
+                          .apply(lambda x: -1 + (1 + x[name]) ** (x[col_prd]/365), axis=1)
                           .fillna(0)) # fillna for missing tickers in sr_fee
-        return (df_val.apply(lambda x: x['value'] * x['rate'], axis=1)
+        return (df_val.apply(lambda x: x[col_val] * x[col_rate], axis=1)
                 .rename(name).swaplevel().sort_index())
 
     
@@ -4909,8 +4913,7 @@ class PortfolioManager():
         
     
     @staticmethod
-    def create_portfolio(name, *args, df_universe=None, df_additional=None, 
-                         file_cost=None, **kwargs):
+    def create_portfolio(name, *args, df_universe=None, df_additional=None, **kwargs):
         """
         name: portfolio name
         args, kwargs: additional args & kwargs for PortfolioBuilder
@@ -4946,9 +4949,9 @@ class PortfolioManager():
 
         # create cost if its file given
         cost = strategy_data.pop('cost', None)
-        if (cost is None) and (file_cost is not None):
+        if isinstance(cost, str): # cost is file name
             path = strategy_data['path'] if 'path' in strategy_data.keys() else '.'
-            cost = PortfolioManager.get_cost(name_universe, file_cost, path=path)
+            cost = PortfolioManager.get_cost(name_universe, cost, path=path)
         
         kws = {**strategy_data, 'name':name, 'security_names':security_names, 'cost':cost}
         pb = PortfolioBuilder(df_universe, *args, df_additional=df_additional, **kws)
