@@ -2644,6 +2644,44 @@ class PortfolioBuilder():
             dt = df_rec.index.get_level_values(0).max().strftime(self.date_format)
             print(f'Transaction record to {dt} loaded')
         return df_rec
+
+
+    def _convert_to_amount(self, df_rec):
+        """
+        update cols of ratio, transaction, & net 
+         where trading price in ratio field & num of shares in transaction
+         converted to ratio of close to trading price & amount of trading
+         with which net updated
+        Applied to the latest transaction
+        """
+        df_universe = self.df_universe
+        cols_record = self.cols_record
+        col_date = cols_record['date']
+        col_tkr = cols_record['tkr']
+        col_trs = cols_record['trs']
+        col_rat = cols_record['rat']
+        col_net = cols_record['net']
+        cols_int = [col_trs, col_net]
+        col_prc = 'close'
+        # get values in ratio, transaction, & net fields
+        dts = df_rec.index.get_level_values(0).unique().sort_values(ascending=False)
+        cols = [col_rat, col_trs, col_net]
+        df_lt = df_rec.loc[dts[0]:, cols]
+        if df_lt[col_net].notna().any():
+            return print(f'ERROR: column {col_net} must be None for conversion')
+        
+        # calc of ratio, transaction, & net
+        df_lt[col_trs] = df_lt[col_rat].mul(df_lt[col_trs])
+        df_lt[col_net] = df_lt[col_trs]
+        if dts.size > 1:
+            df_lt[col_net] += df_rec.loc[dts[1], col_net]
+        idx = [col_date, col_tkr]
+        df_lt[col_rat] = (df_lt[[col_rat]].join(df_universe.stack().rename_axis(idx).rename(col_prc))
+                          .apply(lambda x: x[col_rat]/x[col_prc], axis=1))
+        # update record
+        df_rec.update(df_lt)
+        df_rec[cols_int] = df_rec[cols_int].astype(int)
+        return df_rec
         
 
     def _save_transaction(self, df_rec, file, path, pattern=r"_\d+(?=\.\w+$)"):
