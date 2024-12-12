@@ -1648,16 +1648,16 @@ class PortfolioBuilder():
         self.record = self.import_record()
             
 
-    def import_record(self, record=None, print_msg=True):
+    def import_record(self, record=None, msg=True):
         """
         read record from file and update transaction dates
         """
         if record is None:
-            record = self._load_transaction(self.file, self.path, print_msg=print_msg)
+            record = self._load_transaction(self.file, self.path, print_msg=msg)
         if record is None:
             print('REMINDER: make sure this is 1st transaction as no records provided')
         elif record[self.cols_record['prc']].notna().any():
-            print('ERROR: Run update_record first')
+            print('ERROR: Run update_record first') if msg else None
         return record
 
 
@@ -2204,17 +2204,19 @@ class PortfolioBuilder():
         """
         # load record and check if any ticker name is None
         # reload record as self.record could been modified for liquidation
-        record = self.import_record()
+        record = self.import_record(msg=False)
         if record is None:
             return None
+        else:
+            df_rec = record.copy()
 
         # convert the latest transaction from num of shares to amount
-        df_prc = self._update_universe(record, msg=False)
+        df_prc = self._update_universe(df_rec, msg=False)
         df_prc = self.liquidation.set_price(df_prc)
-        record = self._convert_to_amount(record, df_prc)
+        df_rec = self._convert_to_amount(df_rec, df_prc)
         
         # update ticker name
-        cond = record.name.isna()
+        cond = df_rec.name.isna()
         if cond.sum() > 0:
             # check if ticker name provided
             security_names = self._check_var(security_names, self.security_names)
@@ -2223,16 +2225,17 @@ class PortfolioBuilder():
             else:
                 try:
                     col_name = self.cols_record['name']
-                    record.loc[cond, col_name] = record.loc[cond].apply(lambda x: security_names[x.name[1]], axis=1)
+                    df_rec.loc[cond, col_name] = df_rec.loc[cond].apply(lambda x: security_names[x.name[1]], axis=1)
                     print('Ticker names of None updated')
                 except KeyError as e:
                     print(f'ERROR: KeyError {e} to update names')
 
-        if save: # overwrite record
-            self._overwrite_record(record, update_var=update_var) 
-        else:
-            print('REMINDER: Set save to True to save update')
-        return record
+        if not df_rec.equals(record): # change eixts
+            if save:
+                self._overwrite_record(df_rec, update_var=update_var)
+            else:
+                print('REMINDER: Set save to True to save update')                
+        return df_rec
 
 
     def view_record(self, n_latest=0, df_rec=None, share=False, value=False,
