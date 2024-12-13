@@ -2026,6 +2026,10 @@ class PortfolioBuilder():
                     df_prc = self._update_universe(df_rec, msg=False)
                     df_prc = self.liquidation.set_price(df_prc)
                     df_rec = self._convert_to_shares(df_rec, df_prc, int_share=False)
+                    # set ratio to None for the new transaction which is a flag for calc of ratio with buy/sell price
+                    date_lt = df_rec.index.get_level_values(0).max()
+                    col_rat = self.cols_record['rat']
+                    df_rec.loc[date_lt, col_rat] = None
                 self.save_transaction(df_rec)
             else:
                 print('Set save=True to save transaction record')
@@ -2223,6 +2227,9 @@ class PortfolioBuilder():
         df_prc = self._update_universe(df_rec, msg=False)
         df_prc = self.liquidation.set_price(df_prc)
         df_rec = self._convert_to_amount(df_rec, df_prc)
+
+        # TODO: calc of ratio for col_rat of None
+        pass
         
         # update ticker name
         cond = df_rec.name.isna()
@@ -2314,19 +2321,24 @@ class PortfolioBuilder():
         col_net = cols_record['net']
         col_prc = cols_record['prc']
         col_stt = 'start' # defined inside as not included in output df_val
+        col_n_shares = 'n'
         
-        sr_net = df_rec[col_net].mul(df_rec[col_rat])
-        date = df_prices.index.max() if date is None else date
-        
+        sr_net = df_rec[col_net].mul(df_rec[col_rat]) # amount by closed price
+        # calc num of shares for asset value on col_end
         df_val = PortfolioBuilder.calc_shares(sr_net, df_prices, cols_record, int_share=False)
-        df_val = df_val.to_frame(col_val)
-        df_val[col_stt] = df_val.index.get_level_values(col_date)
+        df_val = df_val.to_frame(col_n_shares) 
+        # transaction date to calc period for fee calc
+        df_val[col_stt] = df_val.index.get_level_values(col_date) 
+        # get end date before next transaction
+        date = df_prices.index.max() if date is None else date
         df_val[col_end] = (df_val.groupby(col_tkr, group_keys=False)
                           .apply(lambda x: x[col_stt].shift(-1)).fillna(date))
-    
+        # calc asset value on col_end
         idx = [col_tkr, col_end]
-        df = df_prices.stack().swaplevel().sort_index().rename(col_prc).rename_axis(idx)
-        df_val[col_val] = df_val.join(df, on=idx).apply(lambda x: x[col_val] * x[col_prc], axis=1)
+        df_p = df_prices.stack().swaplevel().sort_index().rename_axis(idx).rename(col_prc)
+        df_val[col_val] = (df_val.join(df_rec[col_rat]).join(df_p, on=idx)
+                           # calc amout by buy/sell price
+                           .apply(lambda x: x[col_n_shares] * x[col_prc] / x[col_rat], axis=1))
         return df_val.loc[:, [col_end, col_val]]
 
     
@@ -2485,17 +2497,14 @@ class PortfolioBuilder():
         cols_record = self.cols_record
         col_date = cols_record['date']
         col_tkr = cols_record['tkr']
-        col_rat = cols_record['rat']
         col_trs = cols_record['trs']
         col_net = cols_record['net']
         col_prc = cols_record['prc']
         idx = [col_date, col_tkr]
-        cols = [col_rat, col_trs, col_net]
         cols_int = [col_trs, col_net]
         # check if record is # of share
         if df_rec[col_prc].isna().any():
             return df_rec # col_prc must be not None to convert to shares
-        
         # calc amounts for transaction & net
         df_rec.loc[:, cols_int] = df_rec[cols_int].mul(df_rec[col_prc], axis=0).astype(int)
         df_rec.loc[:, col_prc] = None # set col_prc to None as flag
@@ -2553,7 +2562,7 @@ class PortfolioBuilder():
                 
             # get ratio of closed to buy/sell price on transaction date 'start'
             rat_i = df_unit.loc[start:end, n_tickers.index]
-            rat_i.loc[start] = df_rec.loc[start, col_rat]
+            rat_i.loc[start] = df_rec.loc[start, col_rat] # TODO: check what it means and add explanation comment
             
             # calc combined security value history from prv transaction (start) to current (end) 
             sr_i = (df_i.div(rat_i, fill_value=1)
