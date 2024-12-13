@@ -1885,6 +1885,7 @@ class PortfolioBuilder():
         col_trs = cols_record['trs']
         col_net = cols_record['net']
         col_wgt = cols_record['wgt']
+        col_dttr = cols_record['dttr']
         cols_val = [col_trs, col_net] # valid record only if not None nor zero
         cols_idx = [col_date, col_tkr]
         cols_all = [x for x in cols_record.values() if x not in cols_idx]
@@ -1926,7 +1927,7 @@ class PortfolioBuilder():
                       .sub(df_share.groupby(col_tkr)[col_trs].sum())
                       .mul(df_prc.loc[date]).dropna() # get amount by multiplying price
                       .round() # round very small transaction to zero for the cond later
-                      .to_frame(col_trs).assign(**{col_date:date})
+                      .to_frame(col_trs).assign(**{col_date:date, col_dttr:date})
                       .set_index(col_date, append=True).swaplevel())
             # confine tickers on the transaction date
             df_trs = df_trs.loc[df_trs.index.get_level_values(1).isin(tickers_lt)]
@@ -2003,7 +2004,7 @@ class PortfolioBuilder():
         if rank is None:
             return None # rank is not None even for static portfolio (method_select='all')
         
-        if not self.check_new_transaction(msg=False):
+        if not self.check_new_transaction(msg=True):
             # calc profit at the last transaction
             dt = self.selected['date'] # selected defined by self.select
             _ = self.valuate(dt, print_msg=True)
@@ -2466,11 +2467,11 @@ class PortfolioBuilder():
         df_amt = df_rec[[col_trs, col_net]].mul(df_rec[col_rat], axis=0) # get amount by close price
         sr_trs = PortfolioBuilder.calc_shares(df_amt[col_trs], df_universe, cols_record, int_share=int_share)
         sr_net = PortfolioBuilder.calc_shares(df_amt[col_net], df_universe, cols_record, int_share=int_share)
-    
-        df_u = (sr_trs.to_frame().join(sr_net)
-               .join(df_universe.stack().rename_axis(idx).rename(col_prc) # add price
+        # buy/sell price
+        sr_prc = df_universe.stack().rename_axis(idx).div(df_rec[col_rat]).rename(col_prc)
+        df_u = (sr_trs.to_frame().join(sr_net).join(sr_prc) 
                     #.astype(int)
-                   ))
+                )
         df_share.update(df_u, overwrite=True)
         return df_share
         
@@ -2496,9 +2497,8 @@ class PortfolioBuilder():
             return df_rec # col_prc must be not None to convert to shares
         
         # calc amounts for transaction & net
-        df_t = df_rec[col_prc].div(df_rec[col_rat]) # calc trading (buy/sell) price
-        df_rec.loc[:, cols_int] = df_rec[cols_int].mul(df_t, axis=0).astype(int) # amount by trading price
-        df_rec.loc[:, col_prc] = None # set col_prc ot None as flag
+        df_rec.loc[:, cols_int] = df_rec[cols_int].mul(df_rec[col_prc], axis=0).astype(int)
+        df_rec.loc[:, col_prc] = None # set col_prc to None as flag
         return df_rec
         
 
