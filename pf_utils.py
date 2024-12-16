@@ -1127,6 +1127,7 @@ class FundDownloader():
         self.path = path
         self.col_ticker = col_ticker
         self.cols_check = cols_check
+        # df of master file
         self.data_tickers = self._load_master(msg)
         self.url = url
         self.headers = headers
@@ -1563,6 +1564,15 @@ class FundDownloader():
             path = file.path
             file = file.tickers
         return FundDownloader(file, path)
+
+    
+    @staticmethod
+    def export_master(file, path='.'):
+        """
+        get df of fund list (master)
+        """
+        fd = FundDownloader.create(file, path=path)
+        return fd.data_tickers
 
     
     def export_cost(self, universe, file=None, path='.', update=True,
@@ -2587,8 +2597,7 @@ class PortfolioBuilder():
                 
             # get ratio of closed to buy/sell price on transaction date 'start'
             rat_i = df_unit.loc[start:end, n_tickers.index]
-            rat_i.loc[start] = df_rec.loc[start, col_rat] # TODO: check what it means and add explanation comment
-            
+            rat_i.loc[start] = df_rec.loc[start, col_rat]
             # calc combined security value history from prv transaction (start) to current (end) 
             sr_i = (df_c.div(rat_i, fill_value=1) # trading price
                     .apply(lambda x: x*n_tickers.loc[x.name]).sum(axis=1)) # x.name: index name
