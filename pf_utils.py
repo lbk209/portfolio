@@ -8,7 +8,7 @@ import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
 import xml.etree.ElementTree as ET
-import os, time, re, sys, pickle
+import os, time, re, sys, pickle, random
 import bt
 import warnings
 import seaborn as sns
@@ -394,6 +394,29 @@ def sum_dateoffsets(offset1, offset2):
     
     # Return a new DateOffset with the combined kwargs
     return pd.DateOffset(**combined_kwargs)
+
+
+def string_shortener(x, n=20, r=1, ellipsis="..."):
+    """
+    Clips a string to a specified length, inserting an ellipsis ('...') 
+     and cleaning up any surrounding special characters to ensure a tidy output.
+    """
+    if len(x) <= n:
+        return x
+
+    if r == 1:
+        result = f"{x[-n:]}{ellipsis}"
+    elif r == 0:
+        result = f"{ellipsis}{x[:n]}"
+    else:
+        n1 = int(n * r)
+        n2 = int(n * (1 - r))
+        result = f"{x[:n1]}{ellipsis}{x[-n2:]}"
+
+    # Remove special characters immediately surrounding the custom ellipsis
+    result = re.sub(r"([^a-zA-Z0-9\s])" + re.escape(ellipsis), f"{ellipsis}", result)  # Before the ellipsis
+    result = re.sub(re.escape(ellipsis) + r"([^a-zA-Z0-9\s])", f"{ellipsis}", result)  # After the ellipsis
+    return result
     
 
 class SecurityDict(dict):
@@ -594,7 +617,7 @@ class DataManager():
 
     @print_runtime
     def download(self, start_date=None, end_date=None, n_years=3, tickers=None,
-                 save=True, date_format='%Y-%m-%d', close_today=False,
+                 save=True, overwrite=False, date_format='%Y-%m-%d', close_today=False,
                  **kwargs_download):
         """
         download df_prices by using FinanceDataReader
@@ -622,14 +645,16 @@ class DataManager():
             return print(f'ERROR: {e}')
             
         self.df_prices = df_prices
-        self.security_names = security_names     
-        self.save(date=df_prices.index.max()) if save else None
+        self.security_names = security_names
+        if save:
+            if not self.save(date=df_prices.index.max(), overwrite=overwrite):
+                return None
         # convert to daily after saving original monthly
         self.convert_to_daily(True, self.days_in_year) if not self.daily else None
         return print('df_prices updated')
 
     
-    def save(self, file=None, path=None, date=None, date_format='%y%m%d'):
+    def save(self, file=None, path=None, date=None, overwrite=False, date_format='%y%m%d'):
         file = self._check_var(file, self.file_historical)
         path = self._check_var(path, self.path)
         df_prices = self.df_prices
@@ -642,9 +667,9 @@ class DataManager():
             date = date.strftime(date_format)
 
         file = get_filename(file, f'_{date}', r"_\d+(?=\.\w+$)")
-        _ = save_dataframe(df_prices, file, path, msg_succeed=f'{file} saved',
-                           msg_fail=f'ERROR: failed to save as {file} exists')
-        return None
+        return save_dataframe(df_prices, file, path, overwrite=overwrite,
+                               msg_succeed=f'{file} saved',
+                               msg_fail=f'ERROR: failed to save as {file} exists')
 
     
     def _check_var(self, var_arg, var_self):
@@ -966,6 +991,44 @@ class DataManager():
             if len(sort_by) > 0:
                 df_stat = df_stat.sort_values(sort_by[0], ascending=False)
         return df_stat
+
+
+    def plot(self, tickers=None, adjust=False, n_max=5, 
+             figsize=(8,5), length=20, ratio=1):
+        """
+        compare tickers by plot
+        tickers: list of tickers to plot
+        adjust: set to True to adjusting data so the starting values are identical
+        n_max: max num of tickers to plot
+        length, ratio: see legend
+        """
+        df_prices = self.df_prices
+        if df_prices is None:
+            return None
+        
+        if isinstance(tickers, str):
+            tickers = [tickers]
+        
+        tickers = self._check_var(tickers, self.df_prices.columns.to_list())
+        if len(tickers) > n_max:
+            tickers = random.sample(tickers, n_max)
+    
+        df_tickers = df_prices[tickers]
+        dts = df_tickers.apply(lambda x: x.dropna().index.min())
+        if adjust:
+            start = dts.max()
+            df_tickers = df_tickers.apply(lambda x: x / x.loc[start] * 1000)
+        else:
+            start = dts.min()
+        df_tickers = df_tickers.loc[start:]        
+    
+        fig, ax = plt.subplots(figsize=figsize)
+        ax = df_tickers.plot(ax=ax)
+        clip = lambda x: string_shortener(x, n=length, r=ratio)
+        if self.security_names is not None:
+            l = [clip(self.security_names[x]) for x in ax.get_legend_handles_labels()[1]]
+            ax.legend(l)
+        return ax
 
     
     @staticmethod
@@ -1580,7 +1643,7 @@ class FundDownloader():
                     col_uv='universe', col_ticker='ticker'):
         """
         universe: universe name. see keys of UNIVERSES
-        update: True to update file with news cost data
+        update: True to update the file with news cost data
         """
         data_tickers = self.data_tickers
         if data_tickers is None:
@@ -2942,7 +3005,7 @@ class CostManager():
 
     
     @staticmethod
-    def load_cost(file, path='.', col_ticker='ticker'):
+    def load_cost(file, path='.', col_uv='universe', col_ticker='ticker'):
         """
         load cost data of strategy, universe & ticker
         """
@@ -2952,7 +3015,13 @@ class CostManager():
             print(f'Cost data {file} loaded')
         except FileNotFoundError:
             result = print('ERROR: Failed to load')
-        return result
+    
+        dupli = result.duplicated([col_uv, col_ticker], keep=False)
+        if dupli.any():
+            print('ERROR: Check duplicates')
+            return result.loc[dupli]
+        else:
+            return result
 
     
     @staticmethod
@@ -5211,7 +5280,7 @@ class PortfolioData():
         else: # default portfolio names
             args = [self.portfolios, 'Portfolio']
         return self._print_items(*args)
-
+        
     def review_portfolio(self, name, strategy=False, universe=False):
         """
         review param values of a portfolio
@@ -5260,7 +5329,9 @@ class PortfolioData():
         if items is None:
             return print(f'ERROR: No {space} set')
         else:
-            return print(f"{space}: {', '.join(items.keys())}")
+            names = items.keys()
+            print(f"{space}: {', '.join(names)}")
+            return names
         
     def _get_item(self, name, data):
         """
