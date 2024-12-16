@@ -4993,6 +4993,9 @@ class PortfolioManager():
         """
         pfd = PortfolioData()
         universe_data = pfd.review_universe(name)
+        if universe_data is None:
+            return None # see review_universe for err msg 
+            
         universe = name
         if len(kwargs) > 0:
             universe_data = {**universe_data, **kwargs}
@@ -5016,20 +5019,33 @@ class PortfolioManager():
         # get kwarg sets of portfolios
         pfd = PortfolioData()
         kwa_pf = pfd.review_portfolio(name, strategy=False, universe=False)
+        if kwa_pf is None:
+            return None
+            
         name_strategy = kwa_pf['strategy']
         name_universe = kwa_pf['universe']
+        
+        # update transaction file & path if given in kwargs
+        kwa_tran = ['file', 'path']
+        kwa_tran = {x: kwargs.pop(x, None) for x in kwa_tran}
+        kwa_tran = {k:kwa_pf[k] if v is None else v for k,v in kwa_tran.items()}
+        # create portfolio_data with transaction data of the portfolio
+        portfolio_data = {**kwa_tran}
 
         # get universe
         if df_universe is None:
             dm = PortfolioManager.create_universe(name_universe) # instance of DataManager
+            if dm is None:
+                return None
             security_names = dm.get_names() if security_names is None else security_names # update security_names
             df_universe = dm.df_prices
-            portfolio_data = dm.portfolio_data
-        else:
-            portfolio_data = dict()
+            portfolio_data.update(dm.portfolio_data)
             
         # get kwargs of PortfolioBuilder
         strategy_data = pfd.review_portfolio(name, strategy=True, universe=False)
+        if strategy_data is None:
+            return None # see review_portfolio for err msg 
+            
         # update strategy_data if input kwargs given
         tmp = [k for k in kwargs.keys() if k in strategy_data.keys()]
         name_strategy = None if len(tmp) > 0 else name_strategy 
@@ -5040,10 +5056,11 @@ class PortfolioManager():
         # create cost if its file given
         cost = strategy_data.pop('cost', None)
         if isinstance(cost, str): # cost is file name
-            path = strategy_data['path'] if 'path' in strategy_data.keys() else '.'
+            path = kwa_tran['path'] # cost file in the same dir with transaction file
             cost = PortfolioManager.get_cost(name_universe, cost, path=path)
         
-        kws = {**strategy_data, 'name':name, 'security_names':security_names, 'cost':cost}
+        kws = {**strategy_data, 'name':name, 'security_names':security_names, 
+               'cost':cost, **kwa_tran}
         pb = PortfolioBuilder(df_universe, *args, df_additional=df_additional, **kws)
         pb.portfolio_data = portfolio_data
         return pb
@@ -5164,7 +5181,9 @@ class PortfolioManager():
 class PortfolioData():
     def __init__(self, portfolios=PORTFOLIOS, strategies=STRATEGIES, universes=UNIVERSES):
         """
-        portfolios: dict of portfolios (portfolio name to tuple of strategy and universe)
+        portfolios: dict of portfolios (name to strategy name, universe name & transaction data)
+        strategies: dict of strategies (name to strategy data)
+        universes: dict of universes (name to universe data)
         """
         self.portfolios = portfolios
         self.strategies = strategies
@@ -5172,7 +5191,8 @@ class PortfolioData():
 
     def review(self, space=None):
         """
-        get list of portfolios, strategies or universes
+        get list of names of portfolios, strategies or universes
+        space: universe, stragegy, portfolio
         """
         space = 'P' if space is None else space[0].upper()
         if space == 'U':
@@ -5235,9 +5255,10 @@ class PortfolioData():
         
     def _get_item(self, name, data):
         """
-        name: universe name
+        name: universe, strategy, or portfolio name
         """
         try:
             return data[name]
         except KeyError as e:
-            return print(f'ERROR: No {e}')
+            names = ', '.join(data.keys())
+            return print(f'ERROR: No {e}. select one of {names}')

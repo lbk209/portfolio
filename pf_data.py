@@ -16,7 +16,7 @@ UNIVERSES = dict(
 UNIVERSES = {k: {**dict(zip(kwargs_dm, v)), 'path':path_data} for k,v in UNIVERSES.items()}
 
 
-# Portfolio strategy (kwargs of PotfolioManager)
+# Portfolio strategy: strategy name to data
 STRATEGIES = dict(
     MMT = dict(method_select='Momentum', method_weigh='Equally', sort_ascending=False, n_tickers=5, lookback='1y', lag='1w'),
     PER = dict(method_select='F-ratio', method_weigh='Equally', sort_ascending=True, n_tickers=20, lookback='2m', lag=0),
@@ -29,30 +29,32 @@ STRATEGIES = dict(
     KRX = dict(method_select='Momentum', method_weigh='Equally', sort_ascending=False, n_tickers=5, lookback='1y', lag='1m')
 )
 
-# Transaction file
-RECORDS = dict(
-    MMT = 'pf_k200_momentum',
-    PER = 'pf_k200_per',
-    WTR = 'pf_wtr_static',
-    LIQ = 'pf_liq_static',
-    TDF = 'pf_tdf_static',
-    #TDF = 'test_pf_tdf_static', # for testing
-    HANA= 'pf_hana_static',
-    FCTR= 'pf_fctr_static',
-    KRX = 'test_pf_krx_momentum'
+# Transactions: portfolio to transaction file & path
+TRANSACTIONS = dict(
+    MMT_2407 = dict(file='pf_k200_momentum'),
+    PER_2410 = dict(file='pf_k200_per'),
+    WTR_2407 = dict(file='pf_wtr_static'),
+    WTR_2412 = dict(file='pf_wtr2412_static'),
+    LIQ = dict(file='pf_liq_static'),
+    TDF_2406 = dict(file='pf_tdf_static'),
+    #TDF = dict(file='test_pf_tdf_static'), # for testing
+    HANA_2408= dict(file='pf_hana_static'),
+    FCTR= dict(file='pf_fctr_static'),
+    KRX = dict(file='test_pf_krx_momentum')
 )
-STRATEGIES = {k: {**STRATEGIES[k], 'file':RECORDS[k], 'path':path_tran} for k,v in STRATEGIES.items()}
+TRANSACTIONS = {k: {**v, 'path':path_tran} for k,v in TRANSACTIONS.items()}
 
 
 # kwargs of PortfolioData
-PORTFOLIOS = [
-    ('MMT', 'UV_K200'), 
-    ('PER', 'UV_K200'), 
-    ('WTR', 'UV_WTR'), # modified all weather
-    ('LIQ', 'UV_LIQ'), 
-    ('TDF', 'UV_FUND'), 
-    ('HANA', 'UV_FUND'), 
-    ('FCTR', 'UV_FCTR'), # factor intesting with etf
-    ('KRX', 'UV_KRX') # for testing
-]
-PORTFOLIOS = {x[0]: {'strategy':x[0], 'universe':x[1]} for x in PORTFOLIOS}
+PORTFOLIOS = {
+    'MMT_2407': {'strategy': 'MMT', 'universe': 'UV_K200'},
+    'PER_2410': {'strategy': 'PER', 'universe': 'UV_K200'},
+    'WTR_2407': {'strategy': 'WTR', 'universe': 'UV_WTR'}, # modified all weather
+    'WTR_2412': {'strategy': 'WTR', 'universe': 'UV_WTR'},
+    'LIQ': {'strategy': 'LIQ', 'universe': 'UV_LIQ'},
+    'TDF_2406': {'strategy': 'TDF', 'universe': 'UV_FUND'},
+    'HANA_2408': {'strategy': 'HANA', 'universe': 'UV_FUND'},
+    'FCTR': {'strategy': 'FCTR', 'universe': 'UV_FCTR'},  # factor intesting with etf
+    'KRX': {'strategy': 'KRX', 'universe': 'UV_KRX'}, # for testing
+}
+PORTFOLIOS = {k: {**v, **TRANSACTIONS[k]} for k,v in PORTFOLIOS.items()}
