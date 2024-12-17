@@ -2475,7 +2475,7 @@ class PortfolioBuilder():
 
         
     def _calc_periodic_value(self, df_rec, df_prices, date=None, msg=False,
-                           col_val='value', col_end='end'):
+                             col_val='value', col_end='end'):
         """
         get record of transactions with values by asset 
          which is for CostManager._calc_fee_annual
@@ -3012,17 +3012,17 @@ class CostManager():
         sr_fee = sr_fee.rename_axis(col_tkr).rename(name)
     
         df_val[col_rate] = (df_val.join(sr_fee)
+                            # year fee converted to fee for period of x[col_prd] days
                            .apply(lambda x: -1 + (1 + x[name]) ** (x[col_prd]/365), axis=1)
                            .fillna(0)) # fillna for missing tickers in sr_fee
-        return (df_val.apply(lambda x: x[col_val] * x[col_rate], axis=1)
+        return (df_val.apply(lambda x: x[col_val] * x[col_rate], axis=1) # amount of fee for period
                 .rename(name).swaplevel().sort_index())
 
     
     @staticmethod
-    def load_cost(file, path='.', col_uv='universe', col_ticker='ticker', universes=None):
+    def load_cost(file, path='.', col_uv='universe', col_ticker='ticker'):
         """
         load cost data of strategy, universe & ticker
-        universes: list of universes defined
         """
         try:
             file = set_filename(file, 'csv') 
@@ -3030,25 +3030,11 @@ class CostManager():
             print(f'Cost data {file} loaded')
         except FileNotFoundError:
             return print('ERROR: Failed to load')
-
-        # check if all the universes defined
-        if universes is not None:
-            out = df_cost.set_index(col_uv).index.unique().difference(universes)
-            if len(out) > 0:
-                out = ', '.join(out)
-                print(f'WARNING: No universe like {out} exist')
-                
-        # check duplication for col_uv & col_ticker as key
-        dupli = df_cost.duplicated([col_uv, col_ticker], keep=False)
-        if dupli.any(): # returning duplicates only
-            print('ERROR: Check duplicates')
-            df_cost = df_cost.loc[dupli]
-
         return df_cost
 
     
     @staticmethod
-    def get_cost(universe, file=None, path='.', 
+    def get_cost(universe, file, path='.', 
                  cols_cost=['buy', 'sell', 'fee', 'tax'],
                  col_uv='universe', col_ticker='ticker'):
         """
@@ -5167,8 +5153,11 @@ class PortfolioManager():
         return pb
 
     @staticmethod
-    def get_cost(name, file=None, path='.'):
-        return CostManager.get_cost(name, file=file, path=path)
+    def get_cost(name, file, path='.'):
+        """
+        name: universe name
+        """
+        return CostManager.get_cost(name, file, path=path)
 
 
     def check_portfolios(self, pf_names=None, loading=False):
