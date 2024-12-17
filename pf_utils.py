@@ -3054,6 +3054,47 @@ class CostManager():
             return print('WARNING: No cost data available')
 
 
+    @staticmethod
+    def check_cost(file, path='.', universe=None,
+                   col_uv='universe', col_ticker='ticker'):
+        """
+        check cost file and cost data for the universe
+        """
+        # load cost file
+        df_cst = CostManager.load_cost(file, path)
+        if df_cst is None:
+            return None
+    
+        # check cost data for given univese
+        if universe is not None:
+            # check if universe in cost data
+            df_cst_uv = df_cst.loc[df_cst[col_uv] == universe]
+            if len(df_cst_uv) == 0:
+                print(f'ERROR: No cost data for {universe} exists')
+                return df_cst
+            else:
+                df_cst = df_cst_uv
+    
+            # check missing tickers in cost data
+            tickers = df_cst[col_ticker]
+            if (len(tickers)>1) or tickers.notna().all():
+                dm = PortfolioManager.create_universe(universe) # instance of DataManager
+                if dm is None:
+                    return None
+                no_cost = dm.df_prices.columns.difference(tickers.to_list()).to_list()
+                n = len(no_cost)
+                if n > 0:
+                    print(f'ERROR: {n} tickers missing cost data')
+                    return no_cost
+    
+        # check duplication for col_uv & col_ticker as key
+        key = [col_uv, col_ticker]
+        dupli = df_cst.duplicated(key, keep=False)
+        if dupli.any():
+            print(f'ERROR: Check duplicates for {key}')
+            return df_cst.loc[dupli]
+
+
 
 class Liquidation():
     def __init__(self):
@@ -5158,6 +5199,13 @@ class PortfolioManager():
         name: universe name
         """
         return CostManager.get_cost(name, file, path=path)
+
+    @staticmethod
+    def check_cost(name, file, path='.'):
+        """
+        name: universe name
+        """
+        return CostManager.check_cost(file, path=path, universe=name)
 
 
     def check_portfolios(self, pf_names=None, loading=False):
