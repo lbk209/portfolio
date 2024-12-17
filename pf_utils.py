@@ -2019,7 +2019,7 @@ class PortfolioBuilder():
         return df_rec
 
 
-    def valuate(self, date=None, print_msg=False, cost_excluded=False):
+    def valuate(self, date=None, print_msg=False, cost_excluded=False, print_result=False):
         """
         calc date, buy/sell prices & portfolio value from self.record or self.df_rec
         """
@@ -2053,7 +2053,7 @@ class PortfolioBuilder():
         cf = self._calc_cashflow_history(df_rec, cost).sort_index().iloc[-1].astype(int)
         sell, buy = cf['sell'], cf['buy']
         # calc value
-        val = self._calc_value_history(df_rec, self.name, msg=False).sort_index().iloc[-1]
+        val = self._calc_value_history(df_rec, date, self.name, msg=False).sort_index().iloc[-1]
         # calc roi & unrealized gain/loss
         ugl = val + sell - buy
         roi = ugl / buy
@@ -2063,7 +2063,11 @@ class PortfolioBuilder():
              
         data = [date_ft, date, buy, sell, val, ugl, roi]
         index = ['start', 'date', 'buy', 'sell', 'value', 'UGL', 'ROI']
-        return pd.Series(data, index=index)
+        if print_result:
+            print(','.join(index))
+            print(','.join([str(x) for x in data]))
+        else:
+            return pd.Series(data, index=index)
 
 
     def transaction_pipeline(self, date=None, capital=10000000, commissions=0, 
@@ -2120,7 +2124,7 @@ class PortfolioBuilder():
         if df_rec is None:
             return None
         else:
-            return self._calc_value_history(df_rec, self.name, msg=True)
+            return self._calc_value_history(df_rec, name=self.name, msg=True)
 
 
     def get_cash_history(self, cost_excluded=False):
@@ -2144,7 +2148,7 @@ class PortfolioBuilder():
         if df_rec is None:
             return None
             
-        sr_val = self._calc_value_history(df_rec, self.name, msg=msg)
+        sr_val = self._calc_value_history(df_rec, name=self.name, msg=msg)
         if (sr_val is None) or (len(sr_val)==1):
             return print('ERROR: need more data to plot')
 
@@ -2166,7 +2170,7 @@ class PortfolioBuilder():
             
         col_net = 'Net'
         col_sell = 'sell'
-        sr_val = self._calc_value_history(df_rec, self.name, msg=True).rename(col_net)
+        sr_val = self._calc_value_history(df_rec, name=self.name, msg=True).rename(col_net)
         if (sr_val is None) or (len(sr_val)==1):
             return print('ERROR: need more data to plot')
 
@@ -2245,7 +2249,7 @@ class PortfolioBuilder():
         if df_rec is None:
             return None
         
-        sr_val = self._calc_value_history(df_rec, self.name)
+        sr_val = self._calc_value_history(df_rec, name=self.name)
         if sr_val is None:
             return None
         else:
@@ -2311,7 +2315,8 @@ class PortfolioBuilder():
                 self._overwrite_record(df_rec, update_var=update_var)
             else:
                 print('REMINDER: Set save to True to save update')                
-        return df_rec
+        #return df_rec
+        return None
 
 
     def view_record(self, n_latest=0, df_rec=None, nshares=False, value=False,
@@ -2633,14 +2638,16 @@ class PortfolioBuilder():
                 .loc[:, cols.insert(i+1, col_wgta)])
 
 
-    def _calc_value_history(self, df_rec, name=None, msg=False):
+    def _calc_value_history(self, df_rec, end_date=None, name=None, msg=False):
         """
         calc historical of portfolio value from transaction
+        end_date: calc value from 1st transaction of df_rec to end_date.
+        name: name of output series
         """
         cols_record = self.cols_record
         col_rat = cols_record['rat']
         col_net = cols_record['net']
-        end = datetime.today()
+        end = datetime.today() if end_date is None else end_date
         sr_ttl = pd.Series()
         dates_trs = df_rec.index.get_level_values(0).unique()
         # update price data with df_rec
@@ -5198,7 +5205,7 @@ class PortfolioManager():
     
         # total value
         line_ttl = {'c':'gray', 'ls':'--'}
-        dfs = [v._calc_value_history(v.record, k, msg=False) for k,v in self.portfolios.items() if k in pf_names]
+        dfs = [v._calc_value_history(v.record, name=k, msg=False) for k,v in self.portfolios.items() if k in pf_names]
         sr_ttl = pd.concat(dfs, axis=1).ffill().sum(axis=1).rename('Total Value').loc[start_date:end_date]
         ax1 = sr_ttl.plot(title=title, figsize=figsize, **line_ttl)
         ax1.set_ylabel('Total Value')
