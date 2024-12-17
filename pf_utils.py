@@ -2094,10 +2094,11 @@ class PortfolioBuilder():
         df_rec = self.transaction(df_net, record=record)
         if df_rec is not None: # new transaction updated
             if save:
-                # save last transaction as num of shares for the convenience of trading
+                # save transaction as num of shares for the convenience of trading
                 if nshares:
                     df_prc = self._update_universe(df_rec, msg=False)
                     df_prc = self.liquidation.set_price(df_prc)
+                    # DO NOT SAVE transaction & net as int. Set int_nshares to False
                     df_rec = self._convert_to_nshares(df_rec, df_prc, int_nshares=False)
                     # set ratio to None for the new transaction which is a flag for calc of ratio with buy/sell price
                     date_lt = df_rec.index.get_level_values(0).max()
@@ -2752,6 +2753,12 @@ class PortfolioBuilder():
                 df_res = self.record
         else:
             df_res = self.df_rec
+
+        col_prc = self.cols_record['prc']
+        if df_res[col_prc].notna().any(): 
+            # seems like record saved as nshares for editing
+            return print(f'ERROR: Run update_record first after editing record')
+        
         # self.df_rec or self.record could be modified if not copied
         return df_res.copy() 
     
@@ -3005,23 +3012,32 @@ class CostManager():
 
     
     @staticmethod
-    def load_cost(file, path='.', col_uv='universe', col_ticker='ticker'):
+    def load_cost(file, path='.', col_uv='universe', col_ticker='ticker', universes=None):
         """
         load cost data of strategy, universe & ticker
+        universes: list of universes defined
         """
         try:
             file = set_filename(file, 'csv') 
-            result = pd.read_csv(f'{path}/{file}', dtype={col_ticker:str}, comment='#')
+            df_cost = pd.read_csv(f'{path}/{file}', dtype={col_ticker:str}, comment='#')
             print(f'Cost data {file} loaded')
         except FileNotFoundError:
-            result = print('ERROR: Failed to load')
-    
-        dupli = result.duplicated([col_uv, col_ticker], keep=False)
-        if dupli.any():
+            return print('ERROR: Failed to load')
+
+        # check if all the universes defined
+        if universes is not None:
+            out = df_cost.set_index(col_uv).index.unique().difference(universes)
+            if len(out) > 0:
+                out = ', '.join(out)
+                print(f'WARNING: No universe like {out} exist')
+                
+        # check duplication for col_uv & col_ticker as key
+        dupli = df_cost.duplicated([col_uv, col_ticker], keep=False)
+        if dupli.any(): # returning duplicates only
             print('ERROR: Check duplicates')
-            return result.loc[dupli]
-        else:
-            return result
+            df_cost = df_cost.loc[dupli]
+
+        return df_cost
 
     
     @staticmethod
