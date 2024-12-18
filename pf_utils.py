@@ -969,19 +969,21 @@ class DataManager():
         return self._convert_price_to_daily(confirm, cols)
 
 
-    def performance(self, metrics=None, sort_by=None, start_date=None, end_date=None,
+    def performance(self, tickers=None, metrics=None, adjust=False, 
+                    sort_by=None, start_date=None, end_date=None,
                     fee=None, period_fee=3, percent_fee=True):
-        df_prices = self.df_prices
+
+        df_prices = self._get_prices(tickers=tickers, adjust=adjust, n_max=-1)
         if df_prices is None:
-            return print('ERROR')
+            return None
         else:
-            df_prices.loc[start_date:end_date]
+            df_prices = df_prices.loc[start_date:end_date]
 
         if fee is not None:
             df_prices = self._get_prices_after_fee(df_prices, fee, 
                                                    period=period_fee, percent=percent_fee)
         
-        df_stat = performance_stats(df_prices, metrics=None)
+        df_stat = performance_stats(df_prices, metrics=None, align_period=False)
         df_stat = df_stat.T
         
         if metrics is None:
@@ -1003,7 +1005,7 @@ class DataManager():
 
 
     def plot(self, tickers=None, adjust=False, n_max=5, 
-             fee=None, period_fee=3, percent_fee=True,
+             fee=None, period_fee=3, percent_fee=True, compare_fee=True,
              figsize=(8,5), length=20, ratio=1):
         """
         compare tickers by plot
@@ -1012,15 +1014,40 @@ class DataManager():
         n_max: max num of tickers to plot
         length, ratio: see legend
         """
+        df_tickers = self._get_prices(tickers=tickers, adjust=adjust, n_max=n_max)
+        if df_tickers is None:
+            return None
+    
+        if fee is not None:
+            df_tf = self._get_prices_after_fee(df_tickers, fee, 
+                                               period=period_fee, percent=percent_fee)
+            df_tickers = df_tickers if compare_fee else df_tf
+    
+        fig, ax = plt.subplots(figsize=figsize)
+        ax = df_tickers.plot(ax=ax)
+    
+        clip = lambda x: string_shortener(x, n=length, r=ratio)
+        if self.security_names is not None:
+            l = [clip(self.security_names[x]) for x in ax.get_legend_handles_labels()[1]]
+            ax.legend(l)
+    
+        if compare_fee:
+            colors = {x: ax.get_lines()[i].get_color() for i,x in enumerate(df_tickers.columns)}
+            _ = df_tf.apply(lambda x: x.plot(c=colors[x.name], ls='--'))
+               
+        return ax
+    
+    
+    def _get_prices(self, tickers=None, adjust=False, n_max=-1):
         df_prices = self.df_prices
         if df_prices is None:
-            return None
+            return print('ERROR')
         
         if isinstance(tickers, str):
             tickers = [tickers]
         
         tickers = self._check_var(tickers, self.df_prices.columns.to_list())
-        if len(tickers) > n_max:
+        if len(tickers) > n_max > 0:
             tickers = random.sample(tickers, n_max)
     
         df_tickers = df_prices[tickers]
@@ -1030,19 +1057,7 @@ class DataManager():
             df_tickers = df_tickers.apply(lambda x: x / x.loc[start] * 1000)
         else:
             start = dts.min()
-        df_tickers = df_tickers.loc[start:]
-
-        if fee is not None:
-            df_tickers = self._get_prices_after_fee(df_tickers, fee, 
-                                                    period=period_fee, percent=percent_fee)
-    
-        fig, ax = plt.subplots(figsize=figsize)
-        ax = df_tickers.plot(ax=ax)
-        clip = lambda x: string_shortener(x, n=length, r=ratio)
-        if self.security_names is not None:
-            l = [clip(self.security_names[x]) for x in ax.get_legend_handles_labels()[1]]
-            ax.legend(l)
-        return ax
+        return df_tickers.loc[start:]
 
 
     def _get_prices_after_fee(self, df_prices, sr_fee, period=3, percent=True):
