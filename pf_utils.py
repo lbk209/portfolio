@@ -266,13 +266,17 @@ def set_filename(file, ext=None, default='test'):
 
 def save_dataframe(df, file, path='.', overwrite=False,
                    msg_succeed='file saved.',
-                   msg_fail='ERROR: failed to save as the file exists'):
+                   msg_fail='ERROR: failed to save as the file exists',
+                   **kwargs):
+    """
+    kwargs: kwargs for to_csv
+    """
     f = os.path.join(path, file)
     if os.path.exists(f) and not overwrite:
         print(msg_fail)
         return False
     else:
-        df.to_csv(f)    
+        df.to_csv(f, **kwargs)    
         print(msg_succeed)
         return True
         
@@ -405,9 +409,9 @@ def string_shortener(x, n=20, r=1, ellipsis="..."):
         return x
 
     if r == 1:
-        result = f"{x[-n:]}{ellipsis}"
+        result = f"{x[:n]}{ellipsis}"
     elif r == 0:
-        result = f"{ellipsis}{x[:n]}"
+        result = f"{ellipsis}{x[-n:]}"
     else:
         n1 = int(n * r)
         n2 = int(n * (1 - r))
@@ -965,12 +969,17 @@ class DataManager():
         return self._convert_price_to_daily(confirm, cols)
 
 
-    def performance(self, metrics=None, sort_by=None, start_date=None, end_date=None):
+    def performance(self, metrics=None, sort_by=None, start_date=None, end_date=None,
+                    fee=None, period_fee=3, percent_fee=True):
         df_prices = self.df_prices
         if df_prices is None:
             return print('ERROR')
         else:
             df_prices.loc[start_date:end_date]
+
+        if fee is not None:
+            df_prices = self._get_prices_after_fee(df_prices, fee, 
+                                                   period=period_fee, percent=percent_fee)
         
         df_stat = performance_stats(df_prices, metrics=None)
         df_stat = df_stat.T
@@ -994,6 +1003,7 @@ class DataManager():
 
 
     def plot(self, tickers=None, adjust=False, n_max=5, 
+             fee=None, period_fee=3, percent_fee=True,
              figsize=(8,5), length=20, ratio=1):
         """
         compare tickers by plot
@@ -1020,7 +1030,11 @@ class DataManager():
             df_tickers = df_tickers.apply(lambda x: x / x.loc[start] * 1000)
         else:
             start = dts.min()
-        df_tickers = df_tickers.loc[start:]        
+        df_tickers = df_tickers.loc[start:]
+
+        if fee is not None:
+            df_tickers = self._get_prices_after_fee(df_tickers, fee, 
+                                                    period=period_fee, percent=percent_fee)
     
         fig, ax = plt.subplots(figsize=figsize)
         ax = df_tickers.plot(ax=ax)
@@ -1029,6 +1043,14 @@ class DataManager():
             l = [clip(self.security_names[x]) for x in ax.get_legend_handles_labels()[1]]
             ax.legend(l)
         return ax
+
+
+    def _get_prices_after_fee(self, df_prices, sr_fee, period=3, percent=True):
+        """
+        get df_prices after annual fee
+        sr_fee: dict or series of ticker to annual fee. rate
+        """
+        return CostManager.get_history_with_fee(df_prices, sr_fee, period=period, percent=percent)
 
     
     @staticmethod
@@ -1643,7 +1665,7 @@ class FundDownloader():
                     col_uv='universe', col_ticker='ticker'):
         """
         universe: universe name. see keys of UNIVERSES
-        update: True to update the file with news cost data
+        update: True to update the file with new cost data
         """
         data_tickers = self.data_tickers
         if data_tickers is None:
@@ -1654,20 +1676,24 @@ class FundDownloader():
                    .fillna(0)
                    .assign(universe=universe)
                    .loc[:, [col_uv, *cols]])
-        if file:
-            file = set_filename(file, ext='csv')
-            fp = os.path.join(path, file)
-            if os.path.exists(fp):
-                if update:
-                    df = CostManager.load_cost(file, path)
-                    idx = [col_uv, col_ticker]
-                    df = df.set_index(idx)
-                    df = df.loc[~df.index.isin(df_cost.set_index(idx).index)]
-                    df_cost = pd.concat([df.reset_index(), df_cost])
-                else:
-                    return print(f'ERROR: {file} exists')
-            df_cost.to_csv(fp, index=False)
-            return print(f'{file} saved.')
+       
+        if file: # save cost data 
+            file = set_filename(file, 'csv')
+            if update: # update existing cost data
+                df = CostManager.load_cost(file, path)
+                if df is None:
+                    return None
+                idx = [col_uv, col_ticker]
+                df = df.set_index(idx)
+                df = df.loc[~df.index.isin(df_cost.set_index(idx).index)]
+                df_cost = pd.concat([df.reset_index(), df_cost])
+                # save as new file name
+                dt = datetime.today().strftime('%y%m%d')
+                file = get_filename(file, f'_{dt}', r"_\d+(?=\.\w+$)")
+            save_dataframe(df_cost, file, path, 
+                           msg_succeed=f'Cost data saved to {file}',
+                           index=False)
+            return None
         else:
             return df_cost
             
@@ -3018,6 +3044,28 @@ class CostManager():
         return (df_val.apply(lambda x: x[col_val] * x[col_rate], axis=1) # amount of fee for period
                 .rename(name).swaplevel().sort_index())
 
+
+    @staticmethod
+    def get_history_with_fee(df_val, sr_fee, period=3, percent=True):
+        """
+        df_val: history of value or price such as DataManager.df_prices
+        sr_fee: dict or series of ticker to annual fee. rate
+        period: add fee every period of months
+        """
+        # calc fee every period
+        def calc_fee(df, fee, period=period, percent=percent):
+            fee = fee/100 if percent else fee
+            fee = fee.apply(lambda x: -1 + (1+x)**(period/12)) # get equivalent rate of fee for period
+            days = check_days_in_year(df, msg=False) # get days fo a year
+            days = days.mul(period/12).round().astype(int) # get dats for a period
+            return df.apply(lambda x: x.dropna().iloc[::days[x.name]] * fee[x.name]).fillna(0)
+        # add fees to value history
+        df_fee = df_val.copy()
+        df_fee.loc[:,:] = None
+        df_fee.update(calc_fee(df_val, sr_fee)) # get fee for every period
+        df_fee = df_fee.fillna(0).cumsum() # get history of fees
+        return df_val.sub(df_fee)
+
     
     @staticmethod
     def load_cost(file, path='.', col_uv='universe', col_ticker='ticker'):
@@ -3025,7 +3073,7 @@ class CostManager():
         load cost data of strategy, universe & ticker
         """
         try:
-            file = set_filename(file, 'csv') 
+            file = get_file_latest(file, path)
             df_cost = pd.read_csv(f'{path}/{file}', dtype={col_ticker:str}, comment='#')
             print(f'Cost data {file} loaded')
         except FileNotFoundError:
@@ -3046,7 +3094,7 @@ class CostManager():
             return None
 
         df_kw = df_kw.loc[df_kw[col_uv] == universe]
-        if len(df_kw) == 1: # same cost for all tickers
+        if (len(df_kw) == 1) and df_kw[col_ticker].isna().all(): # same cost for all tickers
             return df_kw[cols_cost].to_dict('records')[0]
         elif len(df_kw) > 1: # cost items are series of ticker to cost
             return df_kw.set_index(col_ticker)[cols_cost].to_dict('series')
@@ -5203,7 +5251,7 @@ class PortfolioManager():
     @staticmethod
     def check_cost(name, file, path='.'):
         """
-        name: universe name
+        name: universe name. set to None to check cost data regardless of universe
         """
         return CostManager.check_cost(file, path=path, universe=name)
 
@@ -5234,7 +5282,7 @@ class PortfolioManager():
         pf_names = self.check_portfolios(pf_names)
         if pf_names is None:
             return None
-        else: # cacl portfolio return for title
+        else: # calc portfolio return for title
             df = self._valuate(pf_names, end_date)
             sr = df['Total']
             title = format_rounded_string(sr['ROI'], sr['UGL'])
