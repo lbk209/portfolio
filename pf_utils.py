@@ -266,13 +266,17 @@ def set_filename(file, ext=None, default='test'):
 
 def save_dataframe(df, file, path='.', overwrite=False,
                    msg_succeed='file saved.',
-                   msg_fail='ERROR: failed to save as the file exists'):
+                   msg_fail='ERROR: failed to save as the file exists',
+                   **kwargs):
+    """
+    kwargs: kwargs for to_csv
+    """
     f = os.path.join(path, file)
     if os.path.exists(f) and not overwrite:
         print(msg_fail)
         return False
     else:
-        df.to_csv(f)    
+        df.to_csv(f, **kwargs)    
         print(msg_succeed)
         return True
         
@@ -405,9 +409,9 @@ def string_shortener(x, n=20, r=1, ellipsis="..."):
         return x
 
     if r == 1:
-        result = f"{x[-n:]}{ellipsis}"
+        result = f"{x[:n]}{ellipsis}"
     elif r == 0:
-        result = f"{ellipsis}{x[:n]}"
+        result = f"{ellipsis}{x[-n:]}"
     else:
         n1 = int(n * r)
         n2 = int(n * (1 - r))
@@ -622,7 +626,8 @@ class DataManager():
         """
         download df_prices by using FinanceDataReader
         n_years: int
-        tickers: None, 'selected', list of tickers
+        tickers: None for all in new universe, 'selected' for all in df_prices, 
+                 or list of tickers in new universe
         kwargs_download: args for krx. ex) interval=5, pause_duration=1, msg=False
         """
         start_date, end_date = DataManager.get_start_end_dates(start_date, end_date, 
@@ -687,15 +692,9 @@ class DataManager():
 
     def _get_tickers(self, tickers=None, **kwargs):
         """
-        tickers: None, 'selected' for all in price history, 
-                 list of tickers selected from universe
+        tickers: None for all in new universe, 'selected' for all in df_prices, 
+                 or list of tickers in new universe
         """
-        if isinstance(tickers, str) and (tickers.lower() == 'selected'):
-            if self.df_prices is None:
-                return print('ERROR: No selected tickers as no price exists')
-            else:
-                tickers = self.df_prices.columns.to_list()
-
         uv = self.universe.lower()
         if uv == 'kospi200':
             func = self._get_tickers_kospi200
@@ -786,12 +785,21 @@ class DataManager():
         
 
     def _check_tickers(self, security_names, tickers, msg=True):
+        """
+        get security_names for tickers, checking missing ones as well
+        tickers: None, 'selected' or list of tickers
+        """
+        # get ticker list for 'selected' before reset
+        if isinstance(tickers, str) and (tickers.lower() == 'selected'):
+            if self.df_prices is None:
+                print(f"WARNING: Load price data first for '{tickers}' option")
+                tickers = None
+            else:
+                tickers = self.df_prices.columns.to_list()
+                
         if tickers is not None:
             security_names = {k:v for k,v in security_names.items() if k in tickers}
-            out = [x for x in tickers if x not in security_names.keys()]
-            n_out = len(out)
-            if (n_out > 0) and msg:
-                print(f'WARNING: {n_out} tickers not exist in the universe')
+            _ = self._check_security_names(security_names)
         return security_names
         
 
@@ -895,20 +903,35 @@ class DataManager():
     
     def get_names(self, tickers=None, reset=False, **kwargs):
         """
+        tickers: None, 'selected' or list of tickers
+        reset: True to get security_names aftre resetting first
         kwargs: additional args for _get_tickers
         """
         security_names = self.security_names
-        if (tickers is None) and (self.df_prices is not None):
-            tickers = self.df_prices.columns.to_list()
         if reset or (security_names is None):
-            security_names = self._get_tickers(tickers=tickers, **kwargs)
+            security_names = self._get_tickers(tickers, **kwargs)
             if security_names is None:
                 return None
-            else:
-                self.security_names = security_names
+            else: # reset security_names
+                self.security_names = self._check_security_names(security_names)
         else:
-            security_names = self._check_tickers(security_names, tickers, msg=False)
+            security_names = self._check_tickers(security_names, tickers, msg=True)
         return SecurityDict(security_names, names=security_names)
+
+
+    def _check_security_names(self, security_names, update=True):
+        """
+        check if all tickers in security_names in price data
+        """
+        df_prices = self.df_prices
+        if df_prices is not None:
+            tickers = df_prices.columns
+            out = [x for x in tickers if x not in security_names.keys()]
+            n_out = len(out)
+            if n_out > 0:
+                print(f'WARNING: Update price data as {n_out} tickers not in universe')
+                security_names.update(dict(zip(out, out))) if update else None
+        return security_names
 
 
     def get_date_range(self, tickers=None, df_prices=None, return_intersection=False):
@@ -965,14 +988,21 @@ class DataManager():
         return self._convert_price_to_daily(confirm, cols)
 
 
-    def performance(self, metrics=None, sort_by=None, start_date=None, end_date=None):
-        df_prices = self.df_prices
+    def performance(self, tickers=None, metrics=None, adjust=False, 
+                    sort_by=None, start_date=None, end_date=None,
+                    fee=None, period_fee=3, percent_fee=True):
+
+        df_prices = self._get_prices(tickers=tickers, adjust=adjust, n_max=-1)
         if df_prices is None:
-            return print('ERROR')
+            return None
         else:
-            df_prices.loc[start_date:end_date]
+            df_prices = df_prices.loc[start_date:end_date]
+
+        if fee is not None:
+            df_prices = self._get_prices_after_fee(df_prices, fee, 
+                                                   period=period_fee, percent=percent_fee)
         
-        df_stat = performance_stats(df_prices, metrics=None)
+        df_stat = performance_stats(df_prices, metrics=None, align_period=False)
         df_stat = df_stat.T
         
         if metrics is None:
@@ -994,7 +1024,9 @@ class DataManager():
 
 
     def plot(self, tickers=None, adjust=False, n_max=5, 
-             figsize=(8,5), length=20, ratio=1):
+             fee=None, period_fee=3, percent_fee=True, compare_fee=True,
+             figsize=(8,5), length=20, ratio=1, 
+             lw=0.5):
         """
         compare tickers by plot
         tickers: list of tickers to plot
@@ -1002,15 +1034,40 @@ class DataManager():
         n_max: max num of tickers to plot
         length, ratio: see legend
         """
+        df_tickers = self._get_prices(tickers=tickers, adjust=adjust, n_max=n_max)
+        if df_tickers is None:
+            return None
+    
+        if fee is not None:
+            df_tf = self._get_prices_after_fee(df_tickers, fee, 
+                                               period=period_fee, percent=percent_fee)
+            df_tickers = df_tickers if compare_fee else df_tf
+    
+        fig, ax = plt.subplots(figsize=figsize)
+        ax = df_tickers.plot(ax=ax, lw=lw)
+    
+        clip = lambda x: string_shortener(x, n=length, r=ratio)
+        if self.security_names is not None:
+            l = [clip(self.security_names[x]) for x in ax.get_legend_handles_labels()[1]]
+            ax.legend(l)
+    
+        if compare_fee:
+            colors = {x: ax.get_lines()[i].get_color() for i,x in enumerate(df_tickers.columns)}
+            _ = df_tf.apply(lambda x: x.plot(c=colors[x.name], ls='--', lw=lw))
+               
+        return ax
+    
+    
+    def _get_prices(self, tickers=None, adjust=False, n_max=-1):
         df_prices = self.df_prices
         if df_prices is None:
-            return None
+            return print('ERROR')
         
         if isinstance(tickers, str):
             tickers = [tickers]
         
         tickers = self._check_var(tickers, self.df_prices.columns.to_list())
-        if len(tickers) > n_max:
+        if len(tickers) > n_max > 0:
             tickers = random.sample(tickers, n_max)
     
         df_tickers = df_prices[tickers]
@@ -1020,15 +1077,21 @@ class DataManager():
             df_tickers = df_tickers.apply(lambda x: x / x.loc[start] * 1000)
         else:
             start = dts.min()
-        df_tickers = df_tickers.loc[start:]        
-    
-        fig, ax = plt.subplots(figsize=figsize)
-        ax = df_tickers.plot(ax=ax)
-        clip = lambda x: string_shortener(x, n=length, r=ratio)
-        if self.security_names is not None:
-            l = [clip(self.security_names[x]) for x in ax.get_legend_handles_labels()[1]]
-            ax.legend(l)
-        return ax
+        return df_tickers.loc[start:]
+
+
+    def _get_prices_after_fee(self, df_prices, sr_fee, period=3, percent=True):
+        """
+        get df_prices after annual fee
+        sr_fee: dict or series of ticker to annual fee. rate
+        """
+        out = df_prices.columns.difference(sr_fee.index)
+        n = out.size
+        if n > 0:
+            print(f'WARNING: Fee of {n} tickers set to 0 as missing fee data')
+            sr = pd.Series(0, index=out)
+            sr_fee = pd.concat([sr_fee, sr])
+        return CostManager.get_history_with_fee(df_prices, sr_fee, period=period, percent=percent)
 
     
     @staticmethod
@@ -1643,7 +1706,7 @@ class FundDownloader():
                     col_uv='universe', col_ticker='ticker'):
         """
         universe: universe name. see keys of UNIVERSES
-        update: True to update the file with news cost data
+        update: True to update the file with new cost data
         """
         data_tickers = self.data_tickers
         if data_tickers is None:
@@ -1654,20 +1717,24 @@ class FundDownloader():
                    .fillna(0)
                    .assign(universe=universe)
                    .loc[:, [col_uv, *cols]])
-        if file:
-            file = set_filename(file, ext='csv')
-            fp = os.path.join(path, file)
-            if os.path.exists(fp):
-                if update:
-                    df = CostManager.load_cost(file, path)
-                    idx = [col_uv, col_ticker]
-                    df = df.set_index(idx)
-                    df = df.loc[~df.index.isin(df_cost.set_index(idx).index)]
-                    df_cost = pd.concat([df.reset_index(), df_cost])
-                else:
-                    return print(f'ERROR: {file} exists')
-            df_cost.to_csv(fp, index=False)
-            return print(f'{file} saved.')
+       
+        if file: # save cost data 
+            file = set_filename(file, 'csv')
+            if update: # update existing cost data
+                df = CostManager.load_cost(file, path)
+                if df is None:
+                    return None
+                idx = [col_uv, col_ticker]
+                df = df.set_index(idx)
+                df = df.loc[~df.index.isin(df_cost.set_index(idx).index)]
+                df_cost = pd.concat([df.reset_index(), df_cost])
+                # save as new file name
+                dt = datetime.today().strftime('%y%m%d')
+                file = get_filename(file, f'_{dt}', r"_\d+(?=\.\w+$)")
+            save_dataframe(df_cost, file, path, 
+                           msg_succeed=f'Cost data saved to {file}',
+                           index=False)
+            return None
         else:
             return df_cost
             
@@ -2019,7 +2086,7 @@ class PortfolioBuilder():
         return df_rec
 
 
-    def valuate(self, date=None, print_msg=False, cost_excluded=False, print_result=False):
+    def valuate(self, date=None, print_msg=False, cost_excluded=False):
         """
         calc date, buy/sell prices & portfolio value from self.record or self.df_rec
         """
@@ -2063,11 +2130,7 @@ class PortfolioBuilder():
              
         data = [date_ft, date, buy, sell, val, ugl, roi]
         index = ['start', 'date', 'buy', 'sell', 'value', 'UGL', 'ROI']
-        if print_result:
-            print(','.join(index))
-            print(','.join([str(x) for x in data]))
-        else:
-            return pd.Series(data, index=index)
+        return pd.Series(data, index=index)
 
 
     def transaction_pipeline(self, date=None, capital=10000000, commissions=0, 
@@ -2320,7 +2383,7 @@ class PortfolioBuilder():
 
 
     def view_record(self, n_latest=0, df_rec=None, nshares=False, value=False,
-                    weight_actual=True, msg=False, int_nshares=True):
+                    weight_actual=True, msg=True, int_nshares=True):
         """
         get 'n_latest' latest or oldest transaction record 
         nshares: True if num of shares for transaction & net, False if amount of tradings
@@ -2329,14 +2392,14 @@ class PortfolioBuilder():
         """
         if df_rec is None:
             df_rec = self._check_result(msg)
-        if df_rec is None:
-            return print('No transaction record imported')
+        if df_rec is None: # record is None or nshares-based to edit
+            return self.record # see _check_result for err msg
 
         if weight_actual:# add actual weights
             df_rec = self.insert_weight_actual(df_rec)
         
         if nshares or value:
-            df_prc = self._update_universe(df_rec, msg=msg)
+            df_prc = self._update_universe(df_rec, msg=False)
             df_prc = self.liquidation.set_price(df_prc)
 
         if value: # run before nshares
@@ -2475,7 +2538,7 @@ class PortfolioBuilder():
 
         
     def _calc_periodic_value(self, df_rec, df_prices, date=None, msg=False,
-                           col_val='value', col_end='end'):
+                             col_val='value', col_end='end'):
         """
         get record of transactions with values by asset 
          which is for CostManager._calc_fee_annual
@@ -2764,7 +2827,7 @@ class PortfolioBuilder():
         col_prc = self.cols_record['prc']
         if df_res[col_prc].notna().any(): 
             # seems like record saved as nshares for editing
-            return print(f'ERROR: Run update_record first after editing record')
+            print(f'ERROR: Run update_record first after editing record')
         
         # self.df_rec or self.record could be modified if not copied
         return df_res.copy() 
@@ -3012,43 +3075,51 @@ class CostManager():
         sr_fee = sr_fee.rename_axis(col_tkr).rename(name)
     
         df_val[col_rate] = (df_val.join(sr_fee)
+                            # year fee converted to fee for period of x[col_prd] days
                            .apply(lambda x: -1 + (1 + x[name]) ** (x[col_prd]/365), axis=1)
                            .fillna(0)) # fillna for missing tickers in sr_fee
-        return (df_val.apply(lambda x: x[col_val] * x[col_rate], axis=1)
+        return (df_val.apply(lambda x: x[col_val] * x[col_rate], axis=1) # amount of fee for period
                 .rename(name).swaplevel().sort_index())
+
+
+    @staticmethod
+    def get_history_with_fee(df_val, sr_fee, period=3, percent=True):
+        """
+        df_val: history of value or price such as DataManager.df_prices
+        sr_fee: dict or series of ticker to annual fee. rate
+        period: add fee every period of months
+        """
+        # calc fee every period
+        def calc_fee(df, fee, period=period, percent=percent):
+            fee = fee/100 if percent else fee
+            fee = fee.apply(lambda x: -1 + (1+x)**(period/12)) # get equivalent rate of fee for period
+            days = check_days_in_year(df, msg=False) # get days fo a year
+            days = days.mul(period/12).round().astype(int) # get dats for a period
+            return df.apply(lambda x: x.dropna().iloc[::days[x.name]] * fee[x.name]).fillna(0)
+        # add fees to value history
+        df_fee = df_val.copy()
+        df_fee.loc[:,:] = None
+        df_fee.update(calc_fee(df_val, sr_fee)) # get fee for every period
+        df_fee = df_fee.fillna(0).cumsum() # get history of fees
+        return df_val.sub(df_fee)
 
     
     @staticmethod
-    def load_cost(file, path='.', col_uv='universe', col_ticker='ticker', universes=None):
+    def load_cost(file, path='.', col_uv='universe', col_ticker='ticker'):
         """
         load cost data of strategy, universe & ticker
-        universes: list of universes defined
         """
         try:
-            file = set_filename(file, 'csv') 
+            file = get_file_latest(file, path)
             df_cost = pd.read_csv(f'{path}/{file}', dtype={col_ticker:str}, comment='#')
             print(f'Cost data {file} loaded')
         except FileNotFoundError:
             return print('ERROR: Failed to load')
-
-        # check if all the universes defined
-        if universes is not None:
-            out = df_cost.set_index(col_uv).index.unique().difference(universes)
-            if len(out) > 0:
-                out = ', '.join(out)
-                print(f'WARNING: No universe like {out} exist')
-                
-        # check duplication for col_uv & col_ticker as key
-        dupli = df_cost.duplicated([col_uv, col_ticker], keep=False)
-        if dupli.any(): # returning duplicates only
-            print('ERROR: Check duplicates')
-            df_cost = df_cost.loc[dupli]
-
         return df_cost
 
     
     @staticmethod
-    def get_cost(universe, file=None, path='.', 
+    def get_cost(universe, file, path='.', 
                  cols_cost=['buy', 'sell', 'fee', 'tax'],
                  col_uv='universe', col_ticker='ticker'):
         """
@@ -3060,12 +3131,53 @@ class CostManager():
             return None
 
         df_kw = df_kw.loc[df_kw[col_uv] == universe]
-        if len(df_kw) == 1: # same cost for all tickers
+        if (len(df_kw) == 1) and df_kw[col_ticker].isna().all(): # same cost for all tickers
             return df_kw[cols_cost].to_dict('records')[0]
         elif len(df_kw) > 1: # cost items are series of ticker to cost
             return df_kw.set_index(col_ticker)[cols_cost].to_dict('series')
         else:
             return print('WARNING: No cost data available')
+
+
+    @staticmethod
+    def check_cost(file, path='.', universe=None,
+                   col_uv='universe', col_ticker='ticker'):
+        """
+        check cost file and cost data for the universe
+        """
+        # load cost file
+        df_cst = CostManager.load_cost(file, path)
+        if df_cst is None:
+            return None
+    
+        # check cost data for given univese
+        if universe is not None:
+            # check if universe in cost data
+            df_cst_uv = df_cst.loc[df_cst[col_uv] == universe]
+            if len(df_cst_uv) == 0:
+                print(f'ERROR: No cost data for {universe} exists')
+                return df_cst
+            else:
+                df_cst = df_cst_uv
+    
+            # check missing tickers in cost data
+            tickers = df_cst[col_ticker]
+            if (len(tickers)>1) or tickers.notna().all():
+                dm = PortfolioManager.create_universe(universe) # instance of DataManager
+                if dm is None:
+                    return None
+                no_cost = dm.df_prices.columns.difference(tickers.to_list()).to_list()
+                n = len(no_cost)
+                if n > 0:
+                    print(f'ERROR: {n} tickers missing cost data')
+                    return no_cost
+    
+        # check duplication for col_uv & col_ticker as key
+        key = [col_uv, col_ticker]
+        dupli = df_cst.duplicated(key, keep=False)
+        if dupli.any():
+            print(f'ERROR: Check duplicates for {key}')
+            return df_cst.loc[dupli]
 
 
 
@@ -5047,7 +5159,7 @@ class PortfolioManager():
             pf_names = [pf_names]
 
         pf_names = self.check_portfolios(pf_names, loading=True)
-        if pf_names is None:
+        if len(pf_names) == 0:
             return None
             
         if reload:
@@ -5067,9 +5179,9 @@ class PortfolioManager():
         
 
     @staticmethod
-    def review(space=None):
+    def review(space=None, output=False):
         pfd = PortfolioData()
-        return pfd.review(space)
+        return pfd.review(space, output=output)
     
     @staticmethod
     def review_portfolio(pf_name, strategy=False, universe=False):
@@ -5167,8 +5279,18 @@ class PortfolioManager():
         return pb
 
     @staticmethod
-    def get_cost(name, file=None, path='.'):
-        return CostManager.get_cost(name, file=file, path=path)
+    def get_cost(name, file, path='.'):
+        """
+        name: universe name
+        """
+        return CostManager.get_cost(name, file, path=path)
+
+    @staticmethod
+    def check_cost(name, file, path='.'):
+        """
+        name: universe name. set to None to check cost data regardless of universe
+        """
+        return CostManager.check_cost(file, path=path, universe=name)
 
 
     def check_portfolios(self, pf_names=None, loading=False):
@@ -5180,8 +5302,14 @@ class PortfolioManager():
             pf_names = pf_all
         else:
             pf_names = [pf_names] if isinstance(pf_names, str) else pf_names
-            if len(set(pf_names)-set(pf_all)) > 0:
-                return print('ERROR: check portfolio names')
+            out = set(pf_names)-set(pf_all)
+            if len(out) > 0:
+                out = ', '.join(out)
+                print(f'ERROR: No portfolio such as {out}')
+                p = PortfolioManager.review('portfolio', output=True)
+                p =', '.join(p)
+                print(f'Portfolios available: {p}')
+                pf_names = list()
         return pf_names
 
     
@@ -5195,9 +5323,9 @@ class PortfolioManager():
         """
         # check portfolios
         pf_names = self.check_portfolios(pf_names)
-        if pf_names is None:
+        if len(pf_names) == 0:
             return None
-        else: # cacl portfolio return for title
+        else: # calc portfolio return for title
             df = self._valuate(pf_names, end_date)
             sr = df['Total']
             title = format_rounded_string(sr['ROI'], sr['UGL'])
@@ -5246,7 +5374,7 @@ class PortfolioManager():
         
     def valuate(self, pf_names=None, date=None):
         pf_names = self.check_portfolios(pf_names)
-        if pf_names is None:
+        if len(pf_names) == 0:
             return None
         else:
             return self._valuate(pf_names, date)
@@ -5290,7 +5418,7 @@ class PortfolioData():
         self.strategies = strategies
         self.universes = universes
 
-    def review(self, space=None):
+    def review(self, space=None, output=False):
         """
         get list of names of portfolios, strategies or universes
         space: universe, stragegy, portfolio
@@ -5302,7 +5430,7 @@ class PortfolioData():
             args = [self.strategies, 'Strategy']
         else: # default portfolio names
             args = [self.portfolios, 'Portfolio']
-        return self._print_items(*args)
+        return self._print_items(*args, output=output)
         
     def review_portfolio(self, name, strategy=False, universe=False):
         """
@@ -5348,13 +5476,15 @@ class PortfolioData():
         else:
             return self._get_item(name, self.universes)
 
-    def _print_items(self, items, space):
+    def _print_items(self, items, space, output=False):
         if items is None:
             return print(f'ERROR: No {space} set')
         else:
             names = items.keys()
-            print(f"{space}: {', '.join(names)}")
-            return names
+            if output:
+                return names
+            else:
+                return print(f"{space}: {', '.join(names)}")
         
     def _get_item(self, name, data):
         """
