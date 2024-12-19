@@ -626,7 +626,8 @@ class DataManager():
         """
         download df_prices by using FinanceDataReader
         n_years: int
-        tickers: None, 'selected', list of tickers
+        tickers: None for all in new universe, 'selected' for all in df_prices, 
+                 or list of tickers in new universe
         kwargs_download: args for krx. ex) interval=5, pause_duration=1, msg=False
         """
         start_date, end_date = DataManager.get_start_end_dates(start_date, end_date, 
@@ -691,15 +692,9 @@ class DataManager():
 
     def _get_tickers(self, tickers=None, **kwargs):
         """
-        tickers: None, 'selected' for all in price history, 
-                 list of tickers selected from universe
+        tickers: None for all in new universe, 'selected' for all in df_prices, 
+                 or list of tickers in new universe
         """
-        if isinstance(tickers, str) and (tickers.lower() == 'selected'):
-            if self.df_prices is None:
-                return print('ERROR: No selected tickers as no price exists')
-            else:
-                tickers = self.df_prices.columns.to_list()
-
         uv = self.universe.lower()
         if uv == 'kospi200':
             func = self._get_tickers_kospi200
@@ -790,12 +785,21 @@ class DataManager():
         
 
     def _check_tickers(self, security_names, tickers, msg=True):
+        """
+        get security_names for tickers, checking missing ones as well
+        tickers: None, 'selected' or list of tickers
+        """
+        # get ticker list for 'selected' before reset
+        if isinstance(tickers, str) and (tickers.lower() == 'selected'):
+            if self.df_prices is None:
+                print(f"WARNING: Load price data first for '{tickers}' option")
+                tickers = None
+            else:
+                tickers = self.df_prices.columns.to_list()
+                
         if tickers is not None:
             security_names = {k:v for k,v in security_names.items() if k in tickers}
-            out = [x for x in tickers if x not in security_names.keys()]
-            n_out = len(out)
-            if (n_out > 0) and msg:
-                print(f'WARNING: {n_out} tickers not exist in the universe')
+            _ = self._check_security_names(security_names)
         return security_names
         
 
@@ -899,20 +903,35 @@ class DataManager():
     
     def get_names(self, tickers=None, reset=False, **kwargs):
         """
+        tickers: None, 'selected' or list of tickers
+        reset: True to get security_names aftre resetting first
         kwargs: additional args for _get_tickers
         """
         security_names = self.security_names
-        if (tickers is None) and (self.df_prices is not None):
-            tickers = self.df_prices.columns.to_list()
         if reset or (security_names is None):
-            security_names = self._get_tickers(tickers=tickers, **kwargs)
+            security_names = self._get_tickers(tickers, **kwargs)
             if security_names is None:
                 return None
-            else:
-                self.security_names = security_names
+            else: # reset security_names
+                self.security_names = self._check_security_names(security_names)
         else:
-            security_names = self._check_tickers(security_names, tickers, msg=False)
+            security_names = self._check_tickers(security_names, tickers, msg=True)
         return SecurityDict(security_names, names=security_names)
+
+
+    def _check_security_names(self, security_names, update=True):
+        """
+        check if all tickers in security_names in price data
+        """
+        df_prices = self.df_prices
+        if df_prices is not None:
+            tickers = df_prices.columns
+            out = [x for x in tickers if x not in security_names.keys()]
+            n_out = len(out)
+            if n_out > 0:
+                print(f'WARNING: Update price data as {n_out} tickers not in universe')
+                security_names.update(dict(zip(out, out))) if update else None
+        return security_names
 
 
     def get_date_range(self, tickers=None, df_prices=None, return_intersection=False):
@@ -1006,7 +1025,8 @@ class DataManager():
 
     def plot(self, tickers=None, adjust=False, n_max=5, 
              fee=None, period_fee=3, percent_fee=True, compare_fee=True,
-             figsize=(8,5), length=20, ratio=1):
+             figsize=(8,5), length=20, ratio=1, 
+             lw=0.5):
         """
         compare tickers by plot
         tickers: list of tickers to plot
@@ -1024,7 +1044,7 @@ class DataManager():
             df_tickers = df_tickers if compare_fee else df_tf
     
         fig, ax = plt.subplots(figsize=figsize)
-        ax = df_tickers.plot(ax=ax)
+        ax = df_tickers.plot(ax=ax, lw=lw)
     
         clip = lambda x: string_shortener(x, n=length, r=ratio)
         if self.security_names is not None:
@@ -1033,7 +1053,7 @@ class DataManager():
     
         if compare_fee:
             colors = {x: ax.get_lines()[i].get_color() for i,x in enumerate(df_tickers.columns)}
-            _ = df_tf.apply(lambda x: x.plot(c=colors[x.name], ls='--'))
+            _ = df_tf.apply(lambda x: x.plot(c=colors[x.name], ls='--', lw=lw))
                
         return ax
     
