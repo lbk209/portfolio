@@ -1065,6 +1065,12 @@ class DataManager():
         get df_prices after annual fee
         sr_fee: dict or series of ticker to annual fee. rate
         """
+        out = df_prices.columns.difference(sr_fee.index)
+        n = out.size
+        if n > 0:
+            print(f'WARNING: Fee of {n} tickers set to 0 as missing fee data')
+            sr = pd.Series(0, index=out)
+            sr_fee = pd.concat([sr_fee, sr])
         return CostManager.get_history_with_fee(df_prices, sr_fee, period=period, percent=percent)
 
     
@@ -2060,7 +2066,7 @@ class PortfolioBuilder():
         return df_rec
 
 
-    def valuate(self, date=None, print_msg=False, cost_excluded=False, print_result=False):
+    def valuate(self, date=None, print_msg=False, cost_excluded=False):
         """
         calc date, buy/sell prices & portfolio value from self.record or self.df_rec
         """
@@ -2104,11 +2110,7 @@ class PortfolioBuilder():
              
         data = [date_ft, date, buy, sell, val, ugl, roi]
         index = ['start', 'date', 'buy', 'sell', 'value', 'UGL', 'ROI']
-        if print_result:
-            print(','.join(index))
-            print(','.join([str(x) for x in data]))
-        else:
-            return pd.Series(data, index=index)
+        return pd.Series(data, index=index)
 
 
     def transaction_pipeline(self, date=None, capital=10000000, commissions=0, 
@@ -2361,7 +2363,7 @@ class PortfolioBuilder():
 
 
     def view_record(self, n_latest=0, df_rec=None, nshares=False, value=False,
-                    weight_actual=True, msg=False, int_nshares=True):
+                    weight_actual=True, msg=True, int_nshares=True):
         """
         get 'n_latest' latest or oldest transaction record 
         nshares: True if num of shares for transaction & net, False if amount of tradings
@@ -2370,14 +2372,14 @@ class PortfolioBuilder():
         """
         if df_rec is None:
             df_rec = self._check_result(msg)
-        if df_rec is None:
-            return print('No transaction record imported')
+        if df_rec is None: # record is None or nshares-based to edit
+            return self.record # see _check_result for err msg
 
         if weight_actual:# add actual weights
             df_rec = self.insert_weight_actual(df_rec)
         
         if nshares or value:
-            df_prc = self._update_universe(df_rec, msg=msg)
+            df_prc = self._update_universe(df_rec, msg=False)
             df_prc = self.liquidation.set_price(df_prc)
 
         if value: # run before nshares
@@ -2805,7 +2807,7 @@ class PortfolioBuilder():
         col_prc = self.cols_record['prc']
         if df_res[col_prc].notna().any(): 
             # seems like record saved as nshares for editing
-            return print(f'ERROR: Run update_record first after editing record')
+            print(f'ERROR: Run update_record first after editing record')
         
         # self.df_rec or self.record could be modified if not copied
         return df_res.copy() 
@@ -5137,7 +5139,7 @@ class PortfolioManager():
             pf_names = [pf_names]
 
         pf_names = self.check_portfolios(pf_names, loading=True)
-        if pf_names is None:
+        if len(pf_names) == 0:
             return None
             
         if reload:
@@ -5157,9 +5159,9 @@ class PortfolioManager():
         
 
     @staticmethod
-    def review(space=None):
+    def review(space=None, output=False):
         pfd = PortfolioData()
-        return pfd.review(space)
+        return pfd.review(space, output=output)
     
     @staticmethod
     def review_portfolio(pf_name, strategy=False, universe=False):
@@ -5280,8 +5282,14 @@ class PortfolioManager():
             pf_names = pf_all
         else:
             pf_names = [pf_names] if isinstance(pf_names, str) else pf_names
-            if len(set(pf_names)-set(pf_all)) > 0:
-                return print('ERROR: check portfolio names')
+            out = set(pf_names)-set(pf_all)
+            if len(out) > 0:
+                out = ', '.join(out)
+                print(f'ERROR: No portfolio such as {out}')
+                p = PortfolioManager.review('portfolio', output=True)
+                p =', '.join(p)
+                print(f'Portfolios available: {p}')
+                pf_names = list()
         return pf_names
 
     
@@ -5295,7 +5303,7 @@ class PortfolioManager():
         """
         # check portfolios
         pf_names = self.check_portfolios(pf_names)
-        if pf_names is None:
+        if len(pf_names) == 0:
             return None
         else: # calc portfolio return for title
             df = self._valuate(pf_names, end_date)
@@ -5346,7 +5354,7 @@ class PortfolioManager():
         
     def valuate(self, pf_names=None, date=None):
         pf_names = self.check_portfolios(pf_names)
-        if pf_names is None:
+        if len(pf_names) == 0:
             return None
         else:
             return self._valuate(pf_names, date)
@@ -5390,7 +5398,7 @@ class PortfolioData():
         self.strategies = strategies
         self.universes = universes
 
-    def review(self, space=None):
+    def review(self, space=None, output=False):
         """
         get list of names of portfolios, strategies or universes
         space: universe, stragegy, portfolio
@@ -5402,7 +5410,7 @@ class PortfolioData():
             args = [self.strategies, 'Strategy']
         else: # default portfolio names
             args = [self.portfolios, 'Portfolio']
-        return self._print_items(*args)
+        return self._print_items(*args, output=output)
         
     def review_portfolio(self, name, strategy=False, universe=False):
         """
@@ -5448,13 +5456,15 @@ class PortfolioData():
         else:
             return self._get_item(name, self.universes)
 
-    def _print_items(self, items, space):
+    def _print_items(self, items, space, output=False):
         if items is None:
             return print(f'ERROR: No {space} set')
         else:
             names = items.keys()
-            print(f"{space}: {', '.join(names)}")
-            return names
+            if output:
+                return names
+            else:
+                return print(f"{space}: {', '.join(names)}")
         
     def _get_item(self, name, data):
         """
