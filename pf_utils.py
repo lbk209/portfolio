@@ -992,7 +992,7 @@ class DataManager():
                     sort_by=None, start_date=None, end_date=None,
                     fee=None, period_fee=3, percent_fee=True):
 
-        df_prices, _ = self._get_prices(tickers=tickers, n_max=-1)
+        df_prices = self._get_prices(tickers=tickers, n_max=-1)
         if df_prices is None:
             return None
         else:
@@ -1001,7 +1001,11 @@ class DataManager():
         if fee is not None:
             df_prices = self._get_prices_after_fee(df_prices, fee, 
                                                    period=period_fee, percent=percent_fee)
-        
+            
+        return self._performance(df_prices, metrics=metrics, sort_by=sort_by)
+
+
+    def _performance(self, df_prices, metrics=None, sort_by=None):
         df_stat = performance_stats(df_prices, metrics=None, align_period=False)
         df_stat = df_stat.T
         
@@ -1024,7 +1028,7 @@ class DataManager():
 
 
     def plot(self, tickers=None, start_date=None, end_date=None,
-             base=-1, n_max=5, 
+             base=-1, n_max=-1, 
              fee=None, period_fee=3, percent_fee=True, compare_fee=True,
              figsize=(8,5), length=20, ratio=1, 
              lw=1):
@@ -1035,13 +1039,16 @@ class DataManager():
         n_max: max num of tickers to plot
         length, ratio: see legend
         """
-        df_tickers, date_adj = self._get_prices(tickers=tickers, base=base, n_max=n_max)
+        df_tickers = self._get_prices(tickers=tickers, base=base, 
+                                      start_date=start_date, n_max=n_max)
         if df_tickers is None:
             return None
         else:
             df_tickers = df_tickers.loc[start_date:end_date]
     
-        if fee is not None:
+        if fee is None:
+            compare_fee = False # force to False as no fee provided for comparison
+        else:
             df_tf = self._get_prices_after_fee(df_tickers, fee, 
                                                period=period_fee, percent=percent_fee)
             df_tickers = df_tickers if compare_fee else df_tf
@@ -1058,22 +1065,20 @@ class DataManager():
             colors = {x: ax.get_lines()[i].get_color() for i,x in enumerate(df_tickers.columns)}
             _ = df_tf.apply(lambda x: x.plot(c=colors[x.name], ls='--', lw=lw))
             
-        kwa_line = dict(lw=0.5, c='grey', ls='--')
-        #ax.axvline(date_adj, **kwa_line) if date_adj is not None else None
-        if date_adj is None:
-            title = 'Total returns'    
-        else:
+        if base > 0:
             title = 'Total returns (adjusted for comparison)'
-            ax.axvline(date_adj, **kwa_line)
+        else:
+            title = 'Total returns'    
         ax.set_title(title)       
         return ax
     
     
-    def _get_prices(self, tickers=None, base=-1, n_max=-1):
+    def _get_prices(self, tickers=None, base=-1, start_date=None, n_max=-1):
         """
         return price data of tickers with date of adjustment for comparison
         n_max: num of random tickers from universe
         base: base value to adjust tickers
+        start_date: date to adjust
         """
         df_prices = self.df_prices
         if df_prices is None:
@@ -1089,11 +1094,13 @@ class DataManager():
         df_tickers = df_prices[tickers]
         dts = df_tickers.apply(lambda x: x.dropna().index.min())
         if base > 0:
-            dt_adj = dts.max()
+            dt_adj = df_tickers.loc[start_date:].index.min()
+            dt_max = dts.max() # min start date where all tickers have data 
+            dt_adj = dt_max if dt_adj < dt_max else dt_adj
             df_tickers = df_tickers.apply(lambda x: x / x.loc[dt_adj] * base)
         else:
-            dt_adj = None
-        return (df_tickers.loc[dts.min():], dt_adj)
+            dt_adj = dts.min() # drop dates of all None
+        return df_tickers.loc[dt_adj:] 
 
 
     def _get_prices_after_fee(self, df_prices, sr_fee, period=3, percent=True):
