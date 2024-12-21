@@ -1030,7 +1030,7 @@ class DataManager():
     def plot(self, tickers=None, start_date=None, end_date=None,
              base=-1, n_max=-1, 
              fee=None, period_fee=3, percent_fee=True, compare_fee=True,
-             figsize=(8,5), length=20, ratio=1, 
+             ax=None, figsize=(8,5), length=20, ratio=1, 
              lw=1):
         """
         compare tickers by plot
@@ -1052,8 +1052,9 @@ class DataManager():
             df_tf = self._get_prices_after_fee(df_tickers, fee, 
                                                period=period_fee, percent=percent_fee)
             df_tickers = df_tickers if compare_fee else df_tf
-    
-        fig, ax = plt.subplots(figsize=figsize)
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
         ax = df_tickers.plot(ax=ax, lw=lw)
     
         clip = lambda x: string_shortener(x, n=length, r=ratio)
@@ -1070,6 +1071,49 @@ class DataManager():
         else:
             title = 'Total returns'    
         ax.set_title(title)       
+        return ax
+
+
+    def plot_bar(self, metric='cagr', tickers=None, start_date=None, end_date=None, n_max=-1, 
+                 fee=None, period_fee=3, percent_fee=True, compare_fee=True,
+                 ax=None, figsize=(6,4), length=20, ratio=1,
+                 colors=None, alphas=[0.4, 0.8]):
+        df_tickers = self._get_prices(tickers=tickers, n_max=n_max)
+        if df_tickers is None:
+            return None
+        else:
+            df_tickers = df_tickers.loc[start_date:end_date]
+    
+        df_stat = self._performance(df_tickers, metrics=None, sort_by=None)
+        try:
+            df_stat = df_stat[metric]
+            df_stat = df_stat.to_frame() # for bar loop
+        except KeyError:
+            print(f'ERROR: No metric such as {metric}')
+        
+        if fee is not None:
+            df_tf = self._get_prices_after_fee(df_tickers, fee, 
+                                               period=period_fee, percent=percent_fee)
+            df_stat_f = self._performance(df_tf, metrics=None, sort_by=None)
+            df_stat_f = df_stat_f[metric].rename(f'{metric}(w/ fee)').to_frame()
+            if compare_fee:
+                df_stat = df_stat.join(df_stat_f)
+            else:
+                df_stat = df_stat_f
+    
+        if self.security_names is not None:
+            clip = lambda x: string_shortener(x, n=length, r=ratio)
+            df_stat.index = [clip(self.security_names[x]) for x in df_stat.index]
+    
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        cols = df_stat.columns.size
+        alphas = [max(alphas)] if cols == 1 else alphas
+        x = df_stat.index.to_list()
+        _ = [ax.bar(x, df_stat.iloc[:, i], color=colors, alpha=alphas[i]) for i in range(cols)]
+        #ax.tick_params(axis='x', labelrotation=45)
+        plt.setp(ax.get_xticklabels(), rotation=45, horizontalalignment='right')
+    
         return ax
     
     
