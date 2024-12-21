@@ -421,6 +421,55 @@ def string_shortener(x, n=20, r=1, ellipsis="..."):
     result = re.sub(r"([^a-zA-Z0-9\s])" + re.escape(ellipsis), f"{ellipsis}", result)  # Before the ellipsis
     result = re.sub(re.escape(ellipsis) + r"([^a-zA-Z0-9\s])", f"{ellipsis}", result)  # After the ellipsis
     return result
+
+
+def create_split_axes(figsize=(10, 6), vertical_split=True, 
+                      ratios=(3, 1), share_axis=False, space=0):
+    """
+    Creates a figure with two subplots arranged either vertically or horizontally.
+
+    Parameters:
+    -----------
+    figsize : tuple, optional
+        The size of the figure (width, height) in inches. Default is (10, 6).
+    vertical_split : bool, optional
+        If True, splits the figure vertically (stacked subplots).
+        If False, splits the figure horizontally (side-by-side subplots). Default is True.
+    ratios : tuple, optional
+        Ratios of the sizes of the two subplots. Default is (3, 1).
+    share_axis : bool, optional
+        If True, the axes will share either the x-axis (for vertical split) or the y-axis (for horizontal split).
+        Default is True.
+
+    Returns:
+    --------
+    tuple
+        A tuple containing the two subplot axes (ax1, ax2).
+
+    Example:
+    --------
+    >>> ax1, ax2 = create_split_axes(figsize=(12, 8), vertical_split=False, ratios=(2, 1), share_axis=False)
+    """
+    fig = plt.figure(figsize=figsize)
+    if vertical_split:
+        gs = GridSpec(2, 1, figure=fig, hspace=space, height_ratios=ratios)
+        sp1 = gs[:-1, :]
+        sp2 = gs[-1, :]
+    else:
+        gs = GridSpec(1, 2, figure=fig, wspace=space, width_ratios=ratios)
+        sp1 = gs[:, :-1]
+        sp2 = gs[:, -1]
+        
+    ax1 = fig.add_subplot(sp1)
+    ax2 = fig.add_subplot(sp2)
+    
+    if share_axis:
+        if vertical_split:
+            ax1.sharex(ax2)
+        else:
+            ax1.sharey(ax2)
+    
+    return (ax1, ax2)
     
 
 class SecurityDict(dict):
@@ -1045,22 +1094,25 @@ class DataManager():
             return None
         else:
             df_tickers = df_tickers.loc[start_date:end_date]
-    
+
         if fee is None:
             compare_fee = False # force to False as no fee provided for comparison
+            df_tf = None
         else:
             df_tf = self._get_prices_after_fee(df_tickers, fee, 
                                                period=period_fee, percent=percent_fee)
             df_tickers = df_tickers if compare_fee else df_tf
 
+        # rename legend if security_names exists
+        clip = lambda x: string_shortener(x, n=length, r=ratio)
+        if self.security_names is not None:
+            df_tickers.columns = [clip(self.security_names[x]) for x in df_tickers.columns]
+            if df_tf is not None:
+                df_tf.columns = df_tickers.columns 
+        
         if ax is None:
             fig, ax = plt.subplots(figsize=figsize)
         ax = df_tickers.plot(ax=ax, lw=lw)
-    
-        clip = lambda x: string_shortener(x, n=length, r=ratio)
-        if self.security_names is not None:
-            l = [clip(self.security_names[x]) for x in ax.get_legend_handles_labels()[1]]
-            ax.legend(l)
     
         if compare_fee:
             colors = {x: ax.get_lines()[i].get_color() for i,x in enumerate(df_tickers.columns)}
@@ -2818,12 +2870,8 @@ class PortfolioBuilder():
         """
         create axes for self.plot
         """
-        fig = plt.figure(figsize=(10,6))
-        gs = GridSpec(2, 1, figure=fig, hspace=0, height_ratios=height_ratios)
-        ax1 = fig.add_subplot(gs[:-1, :])
-        ax2 = fig.add_subplot(gs[-1, :])
-        _ = ax1.sharex(ax2) if sharex else None
-        return (ax1, ax2)
+        return create_split_axes(figsize=figsize, vertical_split=True, 
+                                 ratios=height_ratios, share_axis=sharex, space=0)
         
 
     def _plot_cashflow(self, ax, sr_cashflow_history, date=None, 
