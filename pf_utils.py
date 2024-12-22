@@ -1040,12 +1040,10 @@ class DataManager():
     def performance(self, tickers=None, metrics=None, 
                     sort_by=None, start_date=None, end_date=None,
                     fee=None, period_fee=3, percent_fee=True):
-
-        df_prices = self._get_prices(tickers=tickers, n_max=-1)
+        df_prices = self._get_prices(tickers=tickers, start_date=start_date, 
+                                      end_date=end_date, n_max=-1)
         if df_prices is None:
             return None
-        else:
-            df_prices = df_prices.loc[start_date:end_date]
 
         if fee is not None:
             df_prices = self._get_prices_after_fee(df_prices, fee, 
@@ -1076,11 +1074,35 @@ class DataManager():
         return df_stat
 
 
-    def plot(self, tickers=None, start_date=None, end_date=None,
+    def plot(self, tickers, start_date=None, end_date=None, metric='cagr', compare_fees=[True, True],
+             base=1000, fee=None, period_fee=3, percent_fee=True,
+             length=20, ratio=1,
+             figsize=(12,4), ratios=(7, 3)):
+        """
+        plot total returns of tickers and bar chart of metric
+        """
+        kw_tkrs = dict(tickers=tickers, start_date=start_date, end_date=end_date)
+        kw_fees = dict(fee=fee, period_fee=period_fee, percent_fee=percent_fee)
+        # create gridspec
+        ax1, ax2 = create_split_axes(figsize=figsize, ratios=ratios, vertical_split=False)
+        
+        # plot total returns
+        kw = dict(base=base, compare_fees=compare_fees[0], length=length, ratio=ratio)
+        ax1 = self.plot_return(ax=ax1, **kw_tkrs, **kw_fees, **kw)
+        
+        # plot bar chart of metric
+        colors = [ax1.get_lines()[i].get_color() for i, _ in enumerate(tickers)]
+        kw = dict(metric=metric, colors=colors, compare_fees=compare_fees[1], length=length, ratio=ratio)
+        ax2 = self.plot_bar(ax=ax2, **kw_tkrs, **kw_fees, **kw)
+        ax2.get_legend().remove()
+        ax2.yaxis.tick_right()
+        return None
+
+
+    def plot_return(self, tickers=None, start_date=None, end_date=None,
              base=-1, n_max=-1, 
-             fee=None, period_fee=3, percent_fee=True, compare_fee=True,
-             ax=None, figsize=(8,5), length=20, ratio=1, 
-             lw=1):
+             fee=None, period_fee=3, percent_fee=True, compare_fees=True,
+             ax=None, figsize=(8,5), lw=1, loc='upper left', length=20, ratio=1):
         """
         compare tickers by plot
         tickers: list of tickers to plot
@@ -1088,70 +1110,107 @@ class DataManager():
         n_max: max num of tickers to plot
         length, ratio: see legend
         """
-        df_tickers = self._get_prices(tickers=tickers, base=base, 
-                                      start_date=start_date, n_max=n_max)
+        df_tickers = self._get_prices(tickers=tickers, start_date=start_date, 
+                                      end_date=end_date, base=base, n_max=n_max)
         if df_tickers is None:
             return None
-        else:
-            df_tickers = df_tickers.loc[start_date:end_date]
 
+        title = 'Total returns'
         if fee is None:
-            compare_fee = False # force to False as no fee provided for comparison
+            compare_fees = False # force to False as no fee provided for comparison
             df_tf = None
         else:
-            df_tf = self._get_prices_after_fee(df_tickers, fee, 
-                                               period=period_fee, percent=percent_fee)
-            df_tickers = df_tickers if compare_fee else df_tf
+            df_tf = self._get_prices_after_fee(df_tickers, fee, period=period_fee, 
+                                               percent=percent_fee)
+            if not compare_fees:
+                df_tickers = df_tf.copy()
+                df_tf = None
+                title = 'Total returns after fees'
+        
+        ax = self._plot_return(df_tickers, df_tf, ax=ax, figsize=figsize, lw=lw, loc=loc,
+                        length=length, ratio=ratio)
+            
+        if base > 0:
+            title = f'{title} (adjusted for comparison)'
+        ax.set_title(title)       
+        return ax
+    
 
+    def _plot_return(self, df_prices, df_prices_compare=None,
+              ax=None, figsize=(8,5), lw=1, loc='upper left', length=20, ratio=1):
+        """
+        df_prices: price date of selected tickers
+        df_prices_compare: additional data to compare with df_prices such as price after fees
+         whose legend assumed same as df_prices
+        length, ratio: args for xtick labels 
+        """
+        security_names = self.security_names
         # rename legend if security_names exists
         clip = lambda x: string_shortener(x, n=length, r=ratio)
-        if self.security_names is not None:
-            df_tickers.columns = [clip(self.security_names[x]) for x in df_tickers.columns]
-            if df_tf is not None:
-                df_tf.columns = df_tickers.columns 
+        if security_names is not None:
+            df_prices.columns = [clip(security_names[x]) for x in df_prices.columns]
+            if df_prices_compare is None:
+                compare_fees = False
+            else:
+                compare_fees = True
+                df_prices_compare.columns = df_prices.columns 
         
         if ax is None:
             fig, ax = plt.subplots(figsize=figsize)
-        ax = df_tickers.plot(ax=ax, lw=lw)
-    
-        if compare_fee:
-            colors = {x: ax.get_lines()[i].get_color() for i,x in enumerate(df_tickers.columns)}
-            _ = df_tf.apply(lambda x: x.plot(c=colors[x.name], ls='--', lw=lw))
-            
-        if base > 0:
-            title = 'Total returns (adjusted for comparison)'
-        else:
-            title = 'Total returns'    
-        ax.set_title(title)       
+        ax = df_prices.plot(ax=ax, lw=lw)
+        
+        # add plot of df_prices_compare with same color as df_prices
+        legend = ax.get_legend_handles_labels()[1] # save legend before adding return after fees
+        if compare_fees: 
+            colors = {x: ax.get_lines()[i].get_color() for i,x in enumerate(df_prices.columns)}
+            _ = df_prices_compare.apply(lambda x: x.plot(c=colors[x.name], ls='--', lw=lw, ax=ax))
+        ax.legend(legend, loc=loc) # remove return after fees from legend
         return ax
 
 
     def plot_bar(self, metric='cagr', tickers=None, start_date=None, end_date=None, n_max=-1, 
-                 fee=None, period_fee=3, percent_fee=True, compare_fee=True,
+                 fee=None, period_fee=3, percent_fee=True, compare_fees=True,
                  ax=None, figsize=(6,4), length=20, ratio=1,
                  colors=None, alphas=[0.4, 0.8]):
-        df_tickers = self._get_prices(tickers=tickers, n_max=n_max)
+        df_tickers = self._get_prices(tickers=tickers, start_date=start_date, 
+                                      end_date=end_date, n_max=n_max)
         if df_tickers is None:
             return None
+
+        label = metric.upper()
+        if fee is None:
+            df_tf = None
+            labels = [label]
         else:
-            df_tickers = df_tickers.loc[start_date:end_date]
-    
-        df_stat = self._performance(df_tickers, metrics=None, sort_by=None)
-        try:
-            df_stat = df_stat[metric]
-            df_stat = df_stat.to_frame() # for bar loop
-        except KeyError:
-            print(f'ERROR: No metric such as {metric}')
-        
-        if fee is not None:
             df_tf = self._get_prices_after_fee(df_tickers, fee, 
                                                period=period_fee, percent=percent_fee)
-            df_stat_f = self._performance(df_tf, metrics=None, sort_by=None)
-            df_stat_f = df_stat_f[metric].rename(f'{metric}(w/ fee)').to_frame()
-            if compare_fee:
-                df_stat = df_stat.join(df_stat_f)
+            if compare_fees:
+                labels = [label, f'{label} after fees']
             else:
-                df_stat = df_stat_f
+                df_tickers = df_tf.copy()
+                df_tf = None
+                labels = [f'{label} after fees']
+                
+        return self._plot_bar(df_tickers, df_tf, metric=metric, labels=labels, 
+                              ax=ax, figsize=figsize, length=length, ratio=ratio,
+                              colors=colors, alphas=alphas)
+    
+    
+    def _plot_bar(self, df_prices, df_prices_compare=None, 
+                  metric='cagr', labels=['base', 'compare'], 
+                  ax=None, figsize=(6,4), length=20, ratio=1,
+                  colors=None, alphas=[0.4, 0.8]):
+        df_stat = self._performance(df_prices, metrics=None, sort_by=None)
+        try:
+            df_stat = df_stat[metric]
+            df_stat = df_stat.to_frame(labels[0]) # for bar loop
+        except KeyError:
+            print(f'ERROR: No metric such as {metric}')
+
+        if df_prices_compare is not None:
+            df_stat_f = self._performance(df_prices_compare, metrics=None, sort_by=None)
+            df_stat_f = df_stat_f[metric].to_frame(labels[1])
+            df_stat = df_stat.join(df_stat_f)
     
         if self.security_names is not None:
             clip = lambda x: string_shortener(x, n=length, r=ratio)
@@ -1165,32 +1224,34 @@ class DataManager():
         _ = [ax.bar(x, df_stat.iloc[:, i], color=colors, alpha=alphas[i]) for i in range(cols)]
         #ax.tick_params(axis='x', labelrotation=45)
         plt.setp(ax.get_xticklabels(), rotation=45, horizontalalignment='right')
-    
+        ax.set_title(f'{metric.upper()}')
+        ax.legend(df_stat.columns.to_list())
         return ax
+
     
-    
-    def _get_prices(self, tickers=None, base=-1, start_date=None, n_max=-1):
+    def _get_prices(self, tickers=None, start_date=None, end_date=None, base=-1, n_max=-1):
         """
         return price data of tickers with date of adjustment for comparison
         n_max: num of random tickers from universe
         base: base value to adjust tickers
-        start_date: date to adjust
+        start_date: date to adjust if base > 0
         """
         df_prices = self.df_prices
         if df_prices is None:
             return print('ERROR')
+        else:
+            df_prices = df_prices.loc[start_date:end_date]
         
         if isinstance(tickers, str):
             tickers = [tickers]
-        
         tickers = self._check_var(tickers, self.df_prices.columns.to_list())
         if len(tickers) > n_max > 0:
             tickers = random.sample(tickers, n_max)
     
         df_tickers = df_prices[tickers]
-        dts = df_tickers.apply(lambda x: x.dropna().index.min())
-        if base > 0:
-            dt_adj = df_tickers.loc[start_date:].index.min()
+        dts = df_tickers.apply(lambda x: x.dropna().index.min()) # start date of each tickers
+        if base > 0: # adjust price of tickers
+            dt_adj = df_tickers.index.min()
             dt_max = dts.max() # min start date where all tickers have data 
             dt_adj = dt_max if dt_adj < dt_max else dt_adj
             df_tickers = df_tickers.apply(lambda x: x / x.loc[dt_adj] * base)
