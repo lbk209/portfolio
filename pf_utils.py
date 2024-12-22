@@ -1091,11 +1091,13 @@ class DataManager():
         ax1 = self.plot_return(ax=ax1, **kw_tkrs, **kw_fees, **kw)
         
         # plot bar chart of metric
+        kw_tkrs.update({'start_date':mldate(ax1.get_xlim()[0])}) # update start date according to price adjustment
         colors = [ax1.get_lines()[i].get_color() for i, _ in enumerate(tickers)]
         kw = dict(metric=metric, colors=colors, compare_fees=compare_fees[1], length=length, ratio=ratio)
         ax2 = self.plot_bar(ax=ax2, **kw_tkrs, **kw_fees, **kw)
-        ax2.get_legend().remove()
-        ax2.yaxis.tick_right()
+        if ax2 is not None:
+            ax2.get_legend().remove()
+            ax2.yaxis.tick_right()
         return None
 
 
@@ -1205,7 +1207,7 @@ class DataManager():
             df_stat = df_stat[metric]
             df_stat = df_stat.to_frame(labels[0]) # for bar loop
         except KeyError:
-            print(f'ERROR: No metric such as {metric}')
+            return print(f'ERROR: No metric such as {metric}')
 
         if df_prices_compare is not None:
             df_stat_f = self._performance(df_prices_compare, metrics=None, sort_by=None)
