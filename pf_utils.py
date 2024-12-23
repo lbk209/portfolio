@@ -281,7 +281,7 @@ def save_dataframe(df, file, path='.', overwrite=False,
         return True
         
 
-def performance_stats(df_prices, metrics=None, sort_by=None, align_period=True, idx_dt=['start', 'end']):
+def performance_stats(df_prices, metrics=METRICS, sort_by=None, align_period=True, idx_dt=['start', 'end']):
     if isinstance(df_prices, pd.Series):
         df_prices = df_prices.to_frame()
 
@@ -2486,7 +2486,7 @@ class PortfolioBuilder():
         return ax  
     
     
-    def performance(self, metrics=None, sort_by=None):
+    def performance(self, metrics=METRICS, sort_by=None):
         """
         calc performance of ideal portfolio excluding slippage
         """
@@ -3538,9 +3538,7 @@ class BacktestManager():
 
     
     def _check_var(self, var_arg, var_self):
-        if var_arg is None:
-            var_arg = var_self
-        return var_arg
+        return var_self if var_arg is None else var_arg
 
     @staticmethod
     def check_weights(weights, dfs, none_weight_is_error=False):
@@ -4544,13 +4542,11 @@ class BayesianEstimator():
             freq = 'daily'
         return (n, freq)
 
+
+    def _check_var(self, arg, arg_self):
+        return arg_self if arg is None else arg
+
         
-    def _check_var(self, var_arg, var_self):
-        if var_arg is None:
-            var_arg = var_self
-        return var_arg
-
-
     def _calc_mean_return(self, df_prices, periods, days_in_year, annualize=True):
         scale = (days_in_year/periods) if annualize else 1
         return df_prices.apply(lambda x: x.pct_change(periods).dropna().mean() * scale)
