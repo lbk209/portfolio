@@ -281,7 +281,7 @@ def save_dataframe(df, file, path='.', overwrite=False,
         return True
         
 
-def performance_stats(df_prices, metrics=None, sort_by=None, align_period=True, idx_dt=['start', 'end']):
+def performance_stats(df_prices, metrics=METRICS, sort_by=None, align_period=True, idx_dt=['start', 'end']):
     if isinstance(df_prices, pd.Series):
         df_prices = df_prices.to_frame()
 
@@ -2486,7 +2486,7 @@ class PortfolioBuilder():
         return ax  
     
     
-    def performance(self, metrics=None, sort_by=None):
+    def performance(self, metrics=METRICS, sort_by=None):
         """
         calc performance of ideal portfolio excluding slippage
         """
@@ -3538,9 +3538,7 @@ class BacktestManager():
 
     
     def _check_var(self, var_arg, var_self):
-        if var_arg is None:
-            var_arg = var_self
-        return var_arg
+        return var_self if var_arg is None else var_arg
 
     @staticmethod
     def check_weights(weights, dfs, none_weight_is_error=False):
@@ -4516,7 +4514,7 @@ class BayesianEstimator():
         self.bayesian_data = None
 
 
-    def get_stats(self, metrics=None, sort_by=None, align_period=True, idx_dt=['start', 'end']):
+    def get_stats(self, metrics=None, sort_by=None, align_period=False, idx_dt=['start', 'end']):
         metrics = self._check_var(metrics, self.metrics)
         df_prices = self.df_prices
         return performance_stats(df_prices, metrics=metrics, sort_by=sort_by, align_period=align_period, idx_dt=idx_dt)
@@ -4544,40 +4542,34 @@ class BayesianEstimator():
             freq = 'daily'
         return (n, freq)
 
+
+    def _check_var(self, arg, arg_self):
+        return arg_self if arg is None else arg
+
         
-    def _check_var(self, var_arg, var_self):
-        if var_arg is None:
-            var_arg = var_self
-        return var_arg
-
-
-    def _calc_mean_return(self, df_prices, periods, days_in_year, annualize=True):
-        scale = (days_in_year/periods) if annualize else 1
-        return df_prices.apply(lambda x: x.pct_change(periods).dropna().mean() * scale)
+    def _calc_mean_return(self, df_prices, periods):
+        return df_prices.apply(lambda x: x.pct_change(periods).dropna().mean())
         
 
-    def _calc_volatility(self, df_prices, periods, days_in_year, annualize=True):
-        scale = (days_in_year/periods) ** .5 if annualize else 1
-        return df_prices.apply(lambda x: x.pct_change(periods).dropna().std() * scale)
+    def _calc_volatility(self, df_prices, periods):
+        return df_prices.apply(lambda x: x.pct_change(periods).dropna().std())
         
 
-    def _calc_sharpe(self, df_prices, periods, days_in_year, annualize=True, rf=0):
-        mean = self._calc_mean_return(df_prices, periods, 0, False)
-        std = self._calc_volatility(df_prices, periods, 0, False)
-        scale = (days_in_year/periods) ** .5 if annualize else 1
-        return (mean - rf) / std * scale
+    def _calc_sharpe(self, df_prices, periods, rf=0):
+        mean = self._calc_mean_return(df_prices, periods)
+        std = self._calc_volatility(df_prices, periods)
+        return (mean - rf) / std
 
 
-    def get_ref_val(self, freq='yearly', annualize=True, rf=0, align_period=False):
+    def get_ref_val(self, freq='yearly', rf=0, align_period=False):
         """
         get ref val for 
         """
         df_prices = self.df_prices
         if align_period:
             df_prices = self.align_period(df_prices, axis=0, fill_na=True)
-        days_in_year = self.days_in_year
         periods, freq = self.get_freq_days(freq)
-        args = [df_prices, periods, days_in_year, annualize]
+        args = [df_prices, periods]
         return {
             f'{freq}_mean': self._calc_mean_return(*args).to_dict(),
             f'{freq}_vol': self._calc_volatility(*args).to_dict(),
@@ -4585,10 +4577,9 @@ class BayesianEstimator():
         }
 
 
-    def bayesian_sample(self, freq='yearly', annualize=True, rf=0, align_period=False,
+    def bayesian_sample(self, freq='yearly', rf=0, align_period=False,
                         sample_draws=1000, sample_tune=1000, target_accept=0.9,
-                        multiplier_std=1000, 
-                        rate_nu = 29, normality_sharpe=True, debug_annualize=False):
+                        multiplier_std=1000, rate_nu = 29, normality_sharpe=True):
         """
         normality_sharpe: set to True if 
          -. You are making comparisons to Sharpe ratios calculated under the assumption of normality.
@@ -4596,20 +4587,18 @@ class BayesianEstimator():
         """
         days_in_year = self.days_in_year
         periods, freq = self.get_freq_days(freq)
-        factor_year = days_in_year/periods if annualize else 1
-
         df_prices = self.df_prices
         tickers = list(df_prices.columns)
         
         if align_period:
             df_prices = self.align_period(df_prices, axis=0, fill_na=True)
-            df_ret = df_prices.pct_change(periods).dropna() * factor_year
+            df_ret = df_prices.pct_change(periods).dropna()
             mean_prior = df_ret.mean()
             std_prior = df_ret.std()
             std_low = std_prior / multiplier_std
             std_high = std_prior * multiplier_std
         else:
-            ret_list = [df_prices[x].pct_change(periods).dropna() * factor_year for x in tickers]
+            ret_list = [df_prices[x].pct_change(periods).dropna() for x in tickers]
             mean_prior = [x.mean() for x in ret_list]
             std_prior = [x.std() for x in ret_list]
             std_low = [x / multiplier_std for x in std_prior]
@@ -4631,11 +4620,10 @@ class BayesianEstimator():
                 func = lambda x: dict(mu=mean[x], sigma=std[x], observed=ret_list[x])
                 returns = {i: pm.StudentT(f'{freq}_returns[{x}]', nu=nu, **func(i)) for i, x in enumerate(tickers)}
 
-            fy2 = 1 if debug_annualize else factor_year
-            pm.Deterministic(f'{freq}_mean', mean * fy2, dims='ticker')
-            pm.Deterministic(f'{freq}_vol', std * (fy2 ** .5), dims='ticker')
+            pm.Deterministic(f'{freq}_mean', mean, dims='ticker')
+            pm.Deterministic(f'{freq}_vol', std, dims='ticker')
             std_sr = std * pt.sqrt(nu / (nu - 2)) if normality_sharpe else std
-            sharpe = pm.Deterministic(f'{freq}_sharpe', ((mean-rf) / std_sr) * (fy2 ** .5), dims='ticker')
+            sharpe = pm.Deterministic(f'{freq}_sharpe', (mean-rf) / std_sr, dims='ticker')
             
             if num_tickers == 2:
                 #mean_diff = pm.Deterministic('mean diff', mean[0] - mean[1])
@@ -4649,7 +4637,7 @@ class BayesianEstimator():
                               progressbar=True)
             
         self.bayesian_data = {'trace':trace, 'coords':coords, 'align_period':align_period,
-                              'freq':freq, 'annualize':annualize, 'rf':rf}
+                              'freq':freq, 'rf':rf}
         return None
         
     
@@ -4668,12 +4656,11 @@ class BayesianEstimator():
             trace = self.bayesian_data['trace']
             coords = self.bayesian_data['coords']
             freq = self.bayesian_data['freq']
-            annualize = self.bayesian_data['annualize']
             rf = self.bayesian_data['rf']
             align_period = self.bayesian_data['align_period']
 
         if ref_val is None:
-            ref_val = self.get_ref_val(freq=freq, annualize=annualize, rf=rf, align_period=align_period)
+            ref_val = self.get_ref_val(freq=freq, rf=rf, align_period=align_period)
             col_name = list(coords.keys())[0]
             ref_val = {k: [{col_name:at, 'ref_val':rv} for at, rv in v.items()] for k,v in ref_val.items()}
         ref_val.update({'mean diff': [{'ref_val': 0}], 'sharpe diff': [{'ref_val': 0}]})
