@@ -1019,8 +1019,8 @@ class DataManager():
             # to makes sure outer join of datetime index 
             self.df_prices = (pd.concat([df_prices.drop(tickers, axis=1).unstack(), df.unstack()])
                               .unstack(0).ffill())
-            days_in_year = 365
-            print(f'REMINDER: {len(tickers)} equities converted to daily (days in year: {days_in_year})')
+            self.days_in_year = 365
+            print(f'REMINDER: {len(tickers)} equities converted to daily (days in year: {self.days_in_year})')
             print('Daily metrics in Performance statistics must be meaningless')
             return None
         else:
@@ -4500,7 +4500,7 @@ class BacktestManager():
 
 
 class BayesianEstimator():
-    def __init__(self, df_prices, days_in_year=252, metrics=METRICS):
+    def __init__(self, df_prices, days_in_year=252, metrics=METRICS, security_names=None):
         # df of tickers (tickers in columns) which of each might have its own periods.
         # the periods of all tickers will be aligned in every calculation.
         df_prices = df_prices.to_frame() if isinstance(df_prices, pd.Series) else df_prices
@@ -4512,9 +4512,24 @@ class BayesianEstimator():
         self.days_in_year = days_in_year
         self.metrics = metrics
         self.bayesian_data = None
+        self.security_names = security_names
 
+
+    @staticmethod
+    def create(file, path='.', **kwargs):
+        """
+        create instance from sampled
+        kwargs: kwargs of __init__
+        """
+        bayesian_data = BayesianEstimator._load(file, path)
+        df_prices = bayesian_data['data']
+        be = BayesianEstimator(df_prices, **kwargs)
+        be.bayesian_data = bayesian_data
+        return be
+        
 
     def get_stats(self, metrics=None, sort_by=None, align_period=False, idx_dt=['start', 'end']):
+        metrics = [metrics] if isinstance(metrics, str) else metrics
         metrics = self._check_var(metrics, self.metrics)
         df_prices = self.df_prices
         return performance_stats(df_prices, metrics=metrics, sort_by=sort_by, align_period=align_period, idx_dt=idx_dt)
@@ -4587,7 +4602,8 @@ class BayesianEstimator():
 
     def bayesian_sample(self, freq='1y', rf=0, align_period=False,
                         sample_draws=1000, sample_tune=1000, target_accept=0.9,
-                        multiplier_std=1000, rate_nu = 29, normality_sharpe=True):
+                        multiplier_std=1000, rate_nu = 29, normality_sharpe=True,
+                        file=None, path='.'):
         """
         normality_sharpe: set to True if 
          -. You are making comparisons to Sharpe ratios calculated under the assumption of normality.
@@ -4639,8 +4655,41 @@ class BayesianEstimator():
                               progressbar=True)
             
         self.bayesian_data = {'trace':trace, 'coords':coords, 'align_period':align_period, 
-                              'freq':freq, 'rf':rf}
+                              'freq':freq, 'rf':rf, 'data':df_prices}
+        if file:
+            self.save(file, path)
         return None
+
+
+    def save(self, file, path='.'):
+        """
+        save bayesian_data of bayesian_sample 
+        """
+        if self.bayesian_data is None:
+            return print('ERROR: run bayesian_sample first')
+    
+        file = set_filename(file, 'pkl')
+        f = os.path.join(path, file)
+        if os.path.exists(f):
+            return print(f'{f} exists')
+        with open(f, 'wb') as handle:
+            pickle.dump(self.bayesian_data, handle)
+        return print(f'{f} saved')
+
+                
+    @staticmethod
+    def _load(file, path='.'):
+        """
+        load bayesian_data of bayesian_sample 
+        """
+        file = set_filename(file, 'pkl')
+        f = os.path.join(path, file)
+        if not os.path.exists(f):
+            return print(f'{f} does not exist')
+        with open(f, 'rb') as handle:
+            bayesian_data = pickle.load(handle)
+        print(f'{f} loaded')
+        return bayesian_data
         
     
     def bayesian_summary(self, var_names=None, filter_vars='like', **kwargs):
@@ -4648,10 +4697,16 @@ class BayesianEstimator():
             return print('ERROR: run bayesian_sample first')
         else:
             trace = self.bayesian_data['trace']
-            return az.summary(trace, var_names=var_names, filter_vars=filter_vars, **kwargs)
+            df = az.summary(trace, var_names=var_names, filter_vars=filter_vars, **kwargs)
+            # split index to metric & ticker to make them new index
+            index = ['metric', 'ticker']
+            func = lambda x: re.match(r"(.*)\[(.*)\]", x).groups()
+            df[index] = df.apply(lambda x: func(x.name), axis=1, result_type='expand')
+            return df.set_index(index)
 
 
-    def plot_posterior(self, var_names=None, filter_vars='like', ref_val=None, **kwargs):
+    def plot_posterior(self, var_names=None, tickers=None, ref_val=None, 
+                       length=20, ratio=1, textsize=9, **kwargs):
         if self.bayesian_data is None:
             return print('ERROR: run bayesian_sample first')
         else:
@@ -4660,6 +4715,11 @@ class BayesianEstimator():
             freq = self.bayesian_data['freq']
             rf = self.bayesian_data['rf']
             align_period = self.bayesian_data['align_period']
+            security_names = self.security_names
+    
+        if tickers is not None:
+            tickers = [tickers] if isinstance(tickers, str) else tickers
+            coords = {'ticker': tickers}
     
         if ref_val is None:
             ref_val = self.get_ref_val(freq=freq, rf=rf, align_period=align_period)
@@ -4668,13 +4728,56 @@ class BayesianEstimator():
         ref_val.update({'ror': [{'ref_val': 0}], 
                         'mean diff': [{'ref_val': 0}], 'sharpe diff': [{'ref_val': 0}]})
     
-        _ = az.plot_posterior(trace, var_names=var_names, filter_vars=filter_vars,
-                              ref_val=ref_val, **kwargs)
+        axes = az.plot_posterior(trace, var_names=var_names, filter_vars='like', coords=coords,
+                                ref_val=ref_val, textsize=textsize, **kwargs)
+        n_r, n_c = axes.shape
+        for i in range(n_r):
+            for j in range(n_c):
+                ax = axes[i][j]
+                t = ax.get_title()
+                if t == '':
+                    continue
+                else:
+                    title = t.split('\n')[1]
+                if security_names is not None:
+                    clip = lambda x: string_shortener(x, n=length, r=ratio)
+                    title = clip(security_names[title])
+                ax.set_title(title, fontsize=textsize)
         #return ref_val
         return None
 
+
+    def plot_returns(self, tickers=None, num_samples=None, figsize=(10,3), xlim=(-0.4, 0.6),
+                     length=20, ratio=1):
+        security_names = self.security_names
+        var_names = ['ror', 'sharpe']
+        axes = create_split_axes(figsize=figsize, vertical_split=False, 
+                                 ratios=(1, 1), share_axis=False, space=0.05)
+        
+        axes = self._plot_compare(var_names, tickers=tickers, num_samples=num_samples, 
+                                  figsize=figsize, axes=axes)
+        if axes is None:
+            return None # see _plot_compare for err msg
+            
+        ax1, ax2 = axes
+        _ = ax1.set_title('Rate of Return')
+        _ = ax1.set_xlim(xlim)
+        _ = ax1.axvline(0, c='grey', lw=1, ls='--')
+        _ = ax1.get_legend().remove()
+        _ = ax2.set_title('Sharpe Ratio')
+
+        legend = ax2.get_legend_handles_labels()[1]
+        if security_names is not None:
+            clip = lambda x: string_shortener(x, n=length, r=ratio)
+            legend = [clip(security_names[x]) for x in legend]
+        _ = ax2.legend(legend, bbox_to_anchor=(1.0, 1.0), loc='upper left')
+        
+        _ = [ax.set_yticks([]) for ax in axes]
+        _ = [ax.set_ylabel(None) for ax in axes]
+        return axes
+
     
-    def plot_compare(self, var_names, sample=None, figsize=(6,5)):
+    def _plot_compare(self, var_names, tickers=None, num_samples=None, figsize=(6,5), axes=None):
         if self.bayesian_data is None:
             return print('ERROR: run bayesian_sample first')
         else:
@@ -4682,19 +4785,23 @@ class BayesianEstimator():
     
         if isinstance(var_names, str):
             var_names = [var_names]
+        if (tickers is not None) and isinstance(tickers, str):
+            tickers = [tickers]
             
-        stacked = az.extract(trace)
+        stacked = az.extract(trace, num_samples=num_samples)
         vn = [x for x in var_names if x not in stacked.keys()]
         if len(vn) > 0:
             v = ', '.join(var_names)
             return print(f'ERROR: Check if {v} exit')
-    
-        fig, axes = plt.subplots(1, len(var_names), figsize=figsize)
+
+        if axes is None:
+            fig, axes = plt.subplots(1, len(var_names), figsize=figsize)
         for i, v in enumerate(var_names):
             df = stacked[v].to_dataframe()
             df = (df[v].droplevel(['chain','draw'])
                        .reset_index().pivot(columns="ticker")
                        .droplevel(0, axis=1))
+            df = df[tickers] if tickers is not None else df
             _ = df.plot.kde(ax=axes[i])
         return axes
         
