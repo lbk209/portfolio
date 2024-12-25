@@ -281,7 +281,7 @@ def save_dataframe(df, file, path='.', overwrite=False,
         return True
         
 
-def performance_stats(df_prices, metrics=None, sort_by=None, align_period=True, idx_dt=['start', 'end']):
+def performance_stats(df_prices, metrics=METRICS, sort_by=None, align_period=True, idx_dt=['start', 'end']):
     if isinstance(df_prices, pd.Series):
         df_prices = df_prices.to_frame()
 
@@ -975,11 +975,10 @@ class DataManager():
         df_prices = self.df_prices
         if df_prices is not None:
             tickers = df_prices.columns
-            out = [x for x in tickers if x not in security_names.keys()]
+            out = [x for x in security_names.keys() if x not in tickers]
             n_out = len(out)
             if n_out > 0:
                 print(f'WARNING: Update price data as {n_out} tickers not in universe')
-                security_names.update(dict(zip(out, out))) if update else None
         return security_names
 
 
@@ -1019,8 +1018,8 @@ class DataManager():
             # to makes sure outer join of datetime index 
             self.df_prices = (pd.concat([df_prices.drop(tickers, axis=1).unstack(), df.unstack()])
                               .unstack(0).ffill())
-            days_in_year = 365
-            print(f'REMINDER: {len(tickers)} equities converted to daily (days in year: {days_in_year})')
+            self.days_in_year = 365
+            print(f'REMINDER: {len(tickers)} equities converted to daily (days in year: {self.days_in_year})')
             print('Daily metrics in Performance statistics must be meaningless')
             return None
         else:
@@ -2486,7 +2485,7 @@ class PortfolioBuilder():
         return ax  
     
     
-    def performance(self, metrics=None, sort_by=None):
+    def performance(self, metrics=METRICS, sort_by=None):
         """
         calc performance of ideal portfolio excluding slippage
         """
@@ -3538,9 +3537,7 @@ class BacktestManager():
 
     
     def _check_var(self, var_arg, var_self):
-        if var_arg is None:
-            var_arg = var_self
-        return var_arg
+        return var_self if var_arg is None else var_arg
 
     @staticmethod
     def check_weights(weights, dfs, none_weight_is_error=False):
@@ -4502,7 +4499,7 @@ class BacktestManager():
 
 
 class BayesianEstimator():
-    def __init__(self, df_prices, days_in_year=252, metrics=METRICS):
+    def __init__(self, df_prices, days_in_year=252, metrics=METRICS, security_names=None):
         # df of tickers (tickers in columns) which of each might have its own periods.
         # the periods of all tickers will be aligned in every calculation.
         df_prices = df_prices.to_frame() if isinstance(df_prices, pd.Series) else df_prices
@@ -4514,9 +4511,24 @@ class BayesianEstimator():
         self.days_in_year = days_in_year
         self.metrics = metrics
         self.bayesian_data = None
+        self.security_names = security_names
 
 
-    def get_stats(self, metrics=None, sort_by=None, align_period=True, idx_dt=['start', 'end']):
+    @staticmethod
+    def create(file, path='.', **kwargs):
+        """
+        create instance from sampled
+        kwargs: kwargs of __init__
+        """
+        bayesian_data = BayesianEstimator._load(file, path)
+        df_prices = bayesian_data['data']
+        be = BayesianEstimator(df_prices, **kwargs)
+        be.bayesian_data = bayesian_data
+        return be
+        
+
+    def get_stats(self, metrics=None, sort_by=None, align_period=False, idx_dt=['start', 'end']):
+        metrics = [metrics] if isinstance(metrics, str) else metrics
         metrics = self._check_var(metrics, self.metrics)
         df_prices = self.df_prices
         return performance_stats(df_prices, metrics=metrics, sort_by=sort_by, align_period=align_period, idx_dt=idx_dt)
@@ -4532,115 +4544,113 @@ class BayesianEstimator():
         return None
         
 
-    def get_freq_days(self, freq='daily'):
-        if freq == 'yearly':
-            n = self.days_in_year
-        elif freq == 'monthly':
-            n = round(self.days_in_year/12)
-        elif freq == 'weekly':
-            n = round(self.days_in_year/WEEKS_IN_YEAR)
-        else: # default daily
-            n = 1
-            freq = 'daily'
-        return (n, freq)
+    def get_freq_days(self, freq='1Y'):
+        n_t = BacktestManager.split_int_n_temporal(freq, 'M') # default month
+        if n_t is None:
+            return
+        else:
+            n, temporal = n_t        
+            
+        days_in_year = self.days_in_year
+        cond = lambda x, y: False if x is None else x[0].lower() == y[0].lower()
+        if cond(temporal, 'W'):
+            n *= round(days_in_year / WEEKS_IN_YEAR)
+        elif cond(temporal, 'M'):
+            n *= round(days_in_year / 12)
+        elif cond(temporal, 'Q'):
+            n *= round(days_in_year / 4)
+        elif cond(temporal, 'Y'):
+            n *= days_in_year
+        return n
+
+
+    def _check_var(self, arg, arg_self):
+        return arg_self if arg is None else arg
 
         
-    def _check_var(self, var_arg, var_self):
-        if var_arg is None:
-            var_arg = var_self
-        return var_arg
-
-
-    def _calc_mean_return(self, df_prices, periods, days_in_year, annualize=True):
-        scale = (days_in_year/periods) if annualize else 1
-        return df_prices.apply(lambda x: x.pct_change(periods).dropna().mean() * scale)
+    def _calc_mean_return(self, df_prices, periods):
+        return df_prices.apply(lambda x: x.pct_change(periods).dropna().mean())
         
 
-    def _calc_volatility(self, df_prices, periods, days_in_year, annualize=True):
-        scale = (days_in_year/periods) ** .5 if annualize else 1
-        return df_prices.apply(lambda x: x.pct_change(periods).dropna().std() * scale)
+    def _calc_volatility(self, df_prices, periods):
+        return df_prices.apply(lambda x: x.pct_change(periods).dropna().std())
         
 
-    def _calc_sharpe(self, df_prices, periods, days_in_year, annualize=True, rf=0):
-        mean = self._calc_mean_return(df_prices, periods, 0, False)
-        std = self._calc_volatility(df_prices, periods, 0, False)
-        scale = (days_in_year/periods) ** .5 if annualize else 1
-        return (mean - rf) / std * scale
+    def _calc_sharpe(self, df_prices, periods, rf=0):
+        mean = self._calc_mean_return(df_prices, periods)
+        std = self._calc_volatility(df_prices, periods)
+        return (mean - rf) / std
 
 
-    def get_ref_val(self, freq='yearly', annualize=True, rf=0, align_period=False):
+    def get_ref_val(self, freq='1y', rf=0, align_period=False):
         """
         get ref val for 
         """
         df_prices = self.df_prices
         if align_period:
             df_prices = self.align_period(df_prices, axis=0, fill_na=True)
-        days_in_year = self.days_in_year
-        periods, freq = self.get_freq_days(freq)
-        args = [df_prices, periods, days_in_year, annualize]
+        periods = self.get_freq_days(freq)
+        args = [df_prices, periods]
         return {
-            f'{freq}_mean': self._calc_mean_return(*args).to_dict(),
-            f'{freq}_vol': self._calc_volatility(*args).to_dict(),
-            f'{freq}_sharpe': self._calc_sharpe(*args).to_dict()
+            #'mean': self._calc_mean_return(*args).to_dict(),
+            #'std': self._calc_volatility(*args).to_dict(),
+            'ror': self._calc_mean_return(*args).to_dict(),
+            'sharpe': self._calc_sharpe(*args).to_dict(),
+            'cagr': self._calc_mean_return(df_prices, self.days_in_year).to_dict()
         }
 
 
-    def bayesian_sample(self, freq='yearly', annualize=True, rf=0, align_period=False,
+    def bayesian_sample(self, freq='1y', rf=0, align_period=False,
                         sample_draws=1000, sample_tune=1000, target_accept=0.9,
-                        multiplier_std=1000, 
-                        rate_nu = 29, normality_sharpe=True, debug_annualize=False):
+                        multiplier_std=1000, rate_nu = 29, normality_sharpe=True,
+                        file=None, path='.'):
         """
         normality_sharpe: set to True if 
          -. You are making comparisons to Sharpe ratios calculated under the assumption of normality.
          -. You want to account for the higher variability due to the heavy tails of the t-distribution.
         """
         days_in_year = self.days_in_year
-        periods, freq = self.get_freq_days(freq)
-        factor_year = days_in_year/periods if annualize else 1
-
+        periods = self.get_freq_days(freq)
         df_prices = self.df_prices
         tickers = list(df_prices.columns)
         
         if align_period:
             df_prices = self.align_period(df_prices, axis=0, fill_na=True)
-            df_ret = df_prices.pct_change(periods).dropna() * factor_year
+            df_ret = df_prices.pct_change(periods).dropna()
             mean_prior = df_ret.mean()
             std_prior = df_ret.std()
             std_low = std_prior / multiplier_std
             std_high = std_prior * multiplier_std
         else:
-            ret_list = [df_prices[x].pct_change(periods).dropna() * factor_year for x in tickers]
+            ret_list = [df_prices[x].pct_change(periods).dropna() for x in tickers]
             mean_prior = [x.mean() for x in ret_list]
             std_prior = [x.std() for x in ret_list]
             std_low = [x / multiplier_std for x in std_prior]
             std_high = [x * multiplier_std for x in std_prior]
-            returns = dict()
+            ror = dict()
         
-        num_tickers = len(tickers) # flag for comparisson of two tickers
         coords={'ticker': tickers}
-
         with pm.Model(coords=coords) as model:
             # nu: degree of freedom (normality parameter)
             nu = pm.Exponential('nu_minus_two', 1 / rate_nu, testval=4) + 2.
-            mean = pm.Normal('mean', mu=mean_prior, sigma=std_prior, dims='ticker')
-            std = pm.Uniform('vol', lower=std_low, upper=std_high, dims='ticker')
+            mean = pm.Normal('mu', mu=mean_prior, sigma=std_prior, dims='ticker')
+            std = pm.Uniform('sig', lower=std_low, upper=std_high, dims='ticker')
             
             if align_period:
-                returns = pm.StudentT(f'{freq}_returns', nu=nu, mu=mean, sigma=std, observed=df_ret)
+                ror = pm.StudentT('ror', nu=nu, mu=mean, sigma=std, observed=df_ret)
             else:
                 func = lambda x: dict(mu=mean[x], sigma=std[x], observed=ret_list[x])
-                returns = {i: pm.StudentT(f'{freq}_returns[{x}]', nu=nu, **func(i)) for i, x in enumerate(tickers)}
-
-            fy2 = 1 if debug_annualize else factor_year
-            pm.Deterministic(f'{freq}_mean', mean * fy2, dims='ticker')
-            pm.Deterministic(f'{freq}_vol', std * (fy2 ** .5), dims='ticker')
+                ror = {i: pm.StudentT(f'ror[{x}]', nu=nu, **func(i)) for i, x in enumerate(tickers)}
+    
+            #pm.Deterministic('mean', mean, dims='ticker')
+            #pm.Deterministic('std', std, dims='ticker')
             std_sr = std * pt.sqrt(nu / (nu - 2)) if normality_sharpe else std
-            sharpe = pm.Deterministic(f'{freq}_sharpe', ((mean-rf) / std_sr) * (fy2 ** .5), dims='ticker')
-            
-            if num_tickers == 2:
-                #mean_diff = pm.Deterministic('mean diff', mean[0] - mean[1])
-                #pm.Deterministic('effect size', mean_diff / (std[0] ** 2 + std[1] ** 2) ** .5 / 2)
-                sharpe_diff = pm.Deterministic('sharpe diff', sharpe[0] - sharpe[1])
+            ror = pm.Normal('ror', mu=mean, sigma=std_sr, dims='ticker')
+            sharpe = pm.Deterministic('sharpe', (mean-rf) / std_sr, dims='ticker')
+
+            years = periods/days_in_year
+            cagr = pm.Deterministic('cagr', (ror+1) ** (1/years) - 1, dims='ticker')
+            yearly_sharpe = pm.Deterministic('yearly_sharpe', sharpe * np.sqrt(1/years), dims='ticker')
     
             trace = pm.sample(draws=sample_draws, tune=sample_tune,
                               #chains=chains, cores=cores,
@@ -4648,9 +4658,42 @@ class BayesianEstimator():
                               #return_inferencedata=False, # TODO: what's for?
                               progressbar=True)
             
-        self.bayesian_data = {'trace':trace, 'coords':coords, 'align_period':align_period,
-                              'freq':freq, 'annualize':annualize, 'rf':rf}
+        self.bayesian_data = {'trace':trace, 'coords':coords, 'align_period':align_period, 
+                              'freq':freq, 'rf':rf, 'data':df_prices}
+        if file:
+            self.save(file, path)
         return None
+
+
+    def save(self, file, path='.'):
+        """
+        save bayesian_data of bayesian_sample 
+        """
+        if self.bayesian_data is None:
+            return print('ERROR: run bayesian_sample first')
+    
+        file = set_filename(file, 'pkl')
+        f = os.path.join(path, file)
+        if os.path.exists(f):
+            return print(f'{f} exists')
+        with open(f, 'wb') as handle:
+            pickle.dump(self.bayesian_data, handle)
+        return print(f'{f} saved')
+
+                
+    @staticmethod
+    def _load(file, path='.'):
+        """
+        load bayesian_data of bayesian_sample 
+        """
+        file = set_filename(file, 'pkl')
+        f = os.path.join(path, file)
+        if not os.path.exists(f):
+            return print(f'{f} does not exist')
+        with open(f, 'rb') as handle:
+            bayesian_data = pickle.load(handle)
+        print(f'{f} loaded')
+        return bayesian_data
         
     
     def bayesian_summary(self, var_names=None, filter_vars='like', **kwargs):
@@ -4658,31 +4701,113 @@ class BayesianEstimator():
             return print('ERROR: run bayesian_sample first')
         else:
             trace = self.bayesian_data['trace']
-            return az.summary(trace, var_names=var_names, filter_vars=filter_vars, **kwargs)
+            df = az.summary(trace, var_names=var_names, filter_vars=filter_vars, **kwargs)
+            # split index to metric & ticker to make them new index
+            index = ['metric', 'ticker']
+            func = lambda x: re.match(r"(.*)\[(.*)\]", x).groups()
+            df[index] = df.apply(lambda x: func(x.name), axis=1, result_type='expand')
+            return df.set_index(index)
 
 
-    def bayesian_plot(self, var_names=None, filter_vars='like', ref_val=None, **kwargs):
+    def plot_posterior(self, var_names=None, tickers=None, ref_val=None, 
+                       length=20, ratio=1, textsize=9, **kwargs):
         if self.bayesian_data is None:
             return print('ERROR: run bayesian_sample first')
         else:
             trace = self.bayesian_data['trace']
             coords = self.bayesian_data['coords']
             freq = self.bayesian_data['freq']
-            annualize = self.bayesian_data['annualize']
             rf = self.bayesian_data['rf']
             align_period = self.bayesian_data['align_period']
-
+            security_names = self.security_names
+    
+        if tickers is not None:
+            tickers = [tickers] if isinstance(tickers, str) else tickers
+            coords = {'ticker': tickers}
+    
         if ref_val is None:
-            ref_val = self.get_ref_val(freq=freq, annualize=annualize, rf=rf, align_period=align_period)
+            ref_val = self.get_ref_val(freq=freq, rf=rf, align_period=align_period)
             col_name = list(coords.keys())[0]
             ref_val = {k: [{col_name:at, 'ref_val':rv} for at, rv in v.items()] for k,v in ref_val.items()}
-        ref_val.update({'mean diff': [{'ref_val': 0}], 'sharpe diff': [{'ref_val': 0}]})
-
-        _ = az.plot_posterior(trace, var_names=var_names, filter_vars=filter_vars,
-                              ref_val=ref_val, **kwargs)
+        #ref_val.update({'ror': [{'ref_val': 0}], 'cagr': [{'ref_val': 0}]})
+    
+        axes = az.plot_posterior(trace, var_names=var_names, filter_vars='like', coords=coords,
+                                ref_val=ref_val, textsize=textsize, **kwargs)
+        n_r, n_c = axes.shape
+        for i in range(n_r):
+            for j in range(n_c):
+                ax = axes[i][j]
+                t = ax.get_title()
+                if t == '':
+                    continue
+                else:
+                    title = t.split('\n')[1]
+                if security_names is not None:
+                    clip = lambda x: string_shortener(x, n=length, r=ratio)
+                    title = clip(security_names[title])
+                ax.set_title(title, fontsize=textsize)
         #return ref_val
         return None
 
+
+    def plot_returns(self, tickers=None, num_samples=None, figsize=(10,3), xlim=(-0.4, 0.6),
+                     length=20, ratio=1, max_legend=99):
+        security_names = self.security_names
+        var_names = ['ror', 'sharpe']
+        axes = create_split_axes(figsize=figsize, vertical_split=False, 
+                                 ratios=(1, 1), share_axis=False, space=0.05)
+        
+        axes = self._plot_compare(var_names, tickers=tickers, num_samples=num_samples, 
+                                  figsize=figsize, axes=axes)
+        if axes is None:
+            return None # see _plot_compare for err msg
+            
+        ax1, ax2 = axes
+        _ = ax1.set_title('Rate of Return')
+        _ = ax1.set_xlim(xlim)
+        _ = ax1.axvline(0, c='grey', lw=1, ls='--')
+        _ = ax1.get_legend().remove()
+        _ = ax2.set_title('Sharpe Ratio')
+
+        legend = ax2.get_legend_handles_labels()[1]
+        if security_names is not None:
+            clip = lambda x: string_shortener(x, n=length, r=ratio)
+            legend = [clip(security_names[x]) for x in legend]
+        _ = ax2.legend(legend[:max_legend], bbox_to_anchor=(1.0, 1.0), loc='upper left')
+        
+        _ = [ax.set_yticks([]) for ax in axes]
+        _ = [ax.set_ylabel(None) for ax in axes]
+        return axes
+
+    
+    def _plot_compare(self, var_names, tickers=None, num_samples=None, figsize=(6,5), axes=None):
+        if self.bayesian_data is None:
+            return print('ERROR: run bayesian_sample first')
+        else:
+            trace = self.bayesian_data['trace']
+    
+        if isinstance(var_names, str):
+            var_names = [var_names]
+        if (tickers is not None) and isinstance(tickers, str):
+            tickers = [tickers]
+            
+        stacked = az.extract(trace, num_samples=num_samples)
+        vn = [x for x in var_names if x not in stacked.keys()]
+        if len(vn) > 0:
+            v = ', '.join(var_names)
+            return print(f'ERROR: Check if {v} exit')
+
+        if axes is None:
+            fig, axes = plt.subplots(1, len(var_names), figsize=figsize)
+        for i, v in enumerate(var_names):
+            df = stacked[v].to_dataframe()
+            df = (df[v].droplevel(['chain','draw'])
+                       .reset_index().pivot(columns="ticker")
+                       .droplevel(0, axis=1))
+            df = df[tickers] if tickers is not None else df
+            _ = df.plot.kde(ax=axes[i])
+        return axes
+        
 
     def plot_trace(self, var_names=None, filter_vars='like', legend=False, figsize=(12,6), **kwargs):
         if self.bayesian_data is None:
