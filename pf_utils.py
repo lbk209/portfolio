@@ -975,11 +975,10 @@ class DataManager():
         df_prices = self.df_prices
         if df_prices is not None:
             tickers = df_prices.columns
-            out = [x for x in tickers if x not in security_names.keys()]
+            out = [x for x in security_names.keys() if x not in tickers]
             n_out = len(out)
             if n_out > 0:
                 print(f'WARNING: Update price data as {n_out} tickers not in universe')
-                security_names.update(dict(zip(out, out))) if update else None
         return security_names
 
 
@@ -4593,10 +4592,11 @@ class BayesianEstimator():
         periods = self.get_freq_days(freq)
         args = [df_prices, periods]
         return {
-            'mean': self._calc_mean_return(*args).to_dict(),
-            'std': self._calc_volatility(*args).to_dict(),
-            #'ror': self._calc_mean_return(*args).to_dict(),
-            'sharpe': self._calc_sharpe(*args).to_dict()
+            #'mean': self._calc_mean_return(*args).to_dict(),
+            #'std': self._calc_volatility(*args).to_dict(),
+            'ror': self._calc_mean_return(*args).to_dict(),
+            'sharpe': self._calc_sharpe(*args).to_dict(),
+            'cagr': self._calc_mean_return(df_prices, self.days_in_year).to_dict()
         }
 
 
@@ -4647,6 +4647,10 @@ class BayesianEstimator():
             std_sr = std * pt.sqrt(nu / (nu - 2)) if normality_sharpe else std
             ror = pm.Normal('ror', mu=mean, sigma=std_sr, dims='ticker')
             sharpe = pm.Deterministic('sharpe', (mean-rf) / std_sr, dims='ticker')
+
+            years = periods/days_in_year
+            cagr = pm.Deterministic('cagr', (ror+1) ** (1/years) - 1, dims='ticker')
+            yearly_sharpe = pm.Deterministic('yearly_sharpe', sharpe * np.sqrt(1/years), dims='ticker')
     
             trace = pm.sample(draws=sample_draws, tune=sample_tune,
                               #chains=chains, cores=cores,
@@ -4725,8 +4729,7 @@ class BayesianEstimator():
             ref_val = self.get_ref_val(freq=freq, rf=rf, align_period=align_period)
             col_name = list(coords.keys())[0]
             ref_val = {k: [{col_name:at, 'ref_val':rv} for at, rv in v.items()] for k,v in ref_val.items()}
-        ref_val.update({'ror': [{'ref_val': 0}], 
-                        'mean diff': [{'ref_val': 0}], 'sharpe diff': [{'ref_val': 0}]})
+        #ref_val.update({'ror': [{'ref_val': 0}], 'cagr': [{'ref_val': 0}]})
     
         axes = az.plot_posterior(trace, var_names=var_names, filter_vars='like', coords=coords,
                                 ref_val=ref_val, textsize=textsize, **kwargs)
@@ -4748,7 +4751,7 @@ class BayesianEstimator():
 
 
     def plot_returns(self, tickers=None, num_samples=None, figsize=(10,3), xlim=(-0.4, 0.6),
-                     length=20, ratio=1):
+                     length=20, ratio=1, max_legend=99):
         security_names = self.security_names
         var_names = ['ror', 'sharpe']
         axes = create_split_axes(figsize=figsize, vertical_split=False, 
@@ -4770,7 +4773,7 @@ class BayesianEstimator():
         if security_names is not None:
             clip = lambda x: string_shortener(x, n=length, r=ratio)
             legend = [clip(security_names[x]) for x in legend]
-        _ = ax2.legend(legend, bbox_to_anchor=(1.0, 1.0), loc='upper left')
+        _ = ax2.legend(legend[:max_legend], bbox_to_anchor=(1.0, 1.0), loc='upper left')
         
         _ = [ax.set_yticks([]) for ax in axes]
         _ = [ax.set_ylabel(None) for ax in axes]
