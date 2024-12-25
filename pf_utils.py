@@ -1133,6 +1133,7 @@ class DataManager():
             
         if base > 0:
             title = f'{title} (adjusted for comparison)'
+            ax.axhline(base, c='grey', lw=0.5)
         ax.set_title(title)       
         return ax
     
@@ -1227,6 +1228,7 @@ class DataManager():
         plt.setp(ax.get_xticklabels(), rotation=45, horizontalalignment='right')
         ax.set_title(f'{metric.upper()}')
         ax.legend(df_stat.columns.to_list())
+        ax.axhline(0, c='grey', lw=0.5)
         return ax
 
     
@@ -4750,10 +4752,12 @@ class BayesianEstimator():
         return None
 
 
-    def plot_returns(self, tickers=None, num_samples=None, figsize=(10,3), xlim=(-0.4, 0.6),
-                     length=20, ratio=1, max_legend=99):
+    def plot_returns(self, tickers=None, num_samples=None, var_names=['cagr', 'yearly_sharpe'],
+                     figsize=(10,3), xlim=(-0.4, 0.6), length=20, ratio=1, max_legend=99):
+        """
+        var_names: ['ror', 'sharpe'] or ['cagr', 'yearly_sharpe']
+        """
         security_names = self.security_names
-        var_names = ['ror', 'sharpe']
         axes = create_split_axes(figsize=figsize, vertical_split=False, 
                                  ratios=(1, 1), share_axis=False, space=0.05)
         
@@ -4763,11 +4767,11 @@ class BayesianEstimator():
             return None # see _plot_compare for err msg
             
         ax1, ax2 = axes
-        _ = ax1.set_title('Rate of Return')
+        _ = ax1.set_title(var_names[0].upper())
         _ = ax1.set_xlim(xlim)
         _ = ax1.axvline(0, c='grey', lw=1, ls='--')
         _ = ax1.get_legend().remove()
-        _ = ax2.set_title('Sharpe Ratio')
+        _ = ax2.set_title(var_names[1].upper())
 
         legend = ax2.get_legend_handles_labels()[1]
         if security_names is not None:
