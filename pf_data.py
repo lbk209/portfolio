@@ -2,16 +2,16 @@ path_data = 'data'
 path_tran = 'transaction'
 
 # Universe: equity pool, price file, daily/monthly, ticker
-kwargs_dm = ['universe', 'file', 'tickers', 'daily'] # kwargs of DataManager
+kwargs_dm = ['universe', 'file', 'tickers', 'to_daily'] # kwargs of DataManager
 UNIVERSES = dict(
-    UV_K200 = ['kospi200', 'kospi200_prices', 'KRX/INDEX/STOCK/1028', True],
-    UV_KRX = ['krx', 'krx_prices', 'KOSPI,KOSDAQ', True],
-    UV_LIQ = ['krx', 'krx_liq_prices', 'KOSPI,KOSDAQ', True],
-    UV_WTR = ['etf', 'etfs_weather', 'ETF/KR', True],
-    UV_ETF = ['etf', 'etfs_all', 'ETF/KR', True],
-    UV_FUND = ['fund', 'funds_prices', 'funds_info', False],
+    UV_K200 = ['kospi200', 'kospi200_prices', 'KRX/INDEX/STOCK/1028', False],
+    UV_KRX = ['krx', 'krx_prices', 'KOSPI,KOSDAQ', False],
+    UV_LIQ = ['krx', 'krx_liq_prices', 'KOSPI,KOSDAQ', False],
+    UV_WTR = ['etf', 'etfs_weather', 'ETF/KR', False],
+    UV_ETF = ['etf', 'etfs_all', 'ETF/KR', False],
+    UV_FUND = ['fund', 'funds_prices', 'funds_info', True],
     #UV_FUND = ['fund', 'test_funds_prices', 'test_funds_info', False], # for testing
-    UV_FCTR = ['yahoo', 'etfs_factors', None, True]
+    UV_FCTR = ['yahoo', 'etfs_factors', None, False]
 )
 UNIVERSES = {k: {**dict(zip(kwargs_dm, v)), 'path':path_data} for k,v in UNIVERSES.items()}
 
