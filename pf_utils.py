@@ -627,12 +627,12 @@ class TimeTracker:
 class DataManager():
     def __init__(self, file=None, path='.', 
                  universe='kospi200', tickers='KRX/INDEX/STOCK/1028', 
-                 daily=True, days_in_year=12):
+                 to_daily=False, days_in_year=12):
         """
         universe: kospi200, etf, krx, fund, etc. only for getting tickers. see pf_data for more
         file: price history. set as kw for pf_data
         tickers: ticker for getting pool of tickers. can be a file name for tickers as well.
-        daily: set to False if price is monthly
+        to_daily: set to True if convert montly price to daily
         days_in_year: only for convert_to_daily
         """
         file = set_filename(file, 'csv') 
@@ -642,10 +642,10 @@ class DataManager():
         self.tickers = tickers
         self.security_names = None 
         self.df_prices = None
-        self.daily = daily
+        self.to_daily = to_daily
         self.days_in_year = days_in_year
         # update self.df_prices
-        self.upload(self.file_historical, get_names=True, convert_to_daily=not daily)
+        self.upload(self.file_historical, get_names=True, convert_to_daily=to_daily)
 
     
     def upload(self, file=None, path=None, get_names=False, convert_to_daily=False):
@@ -664,7 +664,7 @@ class DataManager():
         
         self.df_prices = df_prices
         self.get_names(reset=True) if get_names else None
-        self.convert_to_daily(True, self.days_in_year) if convert_to_daily and not self.daily else None
+        self.convert_to_daily(True, self.days_in_year) if convert_to_daily and self.to_daily else None
         return print('Price data loaded')
         
 
@@ -704,7 +704,7 @@ class DataManager():
             if not self.save(date=df_prices.index.max(), overwrite=overwrite):
                 return None
         # convert to daily after saving original monthly
-        self.convert_to_daily(True, self.days_in_year) if not self.daily else None
+        self.convert_to_daily(True, self.days_in_year) if self.to_daily else None
         return print('df_prices updated')
 
     
@@ -1147,10 +1147,11 @@ class DataManager():
         length, ratio: args for xtick labels 
         """
         security_names = self.security_names
-        # rename legend if security_names exists
-        clip = lambda x: string_shortener(x, n=length, r=ratio)
         if security_names is not None:
-            df_prices.columns = [clip(security_names[x]) for x in df_prices.columns]
+            # rename legend if security_names exists
+            clip = lambda x: string_shortener(x, n=length, r=ratio)
+            # add number to distinguish similar names such as those of same class fund
+            df_prices.columns = [f'{i+1}.{clip(security_names[x])}' for i,x in enumerate(df_prices.columns)]
             if df_prices_compare is None:
                 compare_fees = False
             else:
@@ -1163,6 +1164,7 @@ class DataManager():
         
         # add plot of df_prices_compare with same color as df_prices
         legend = ax.get_legend_handles_labels()[1] # save legend before adding return after fees
+        legend = [re.sub(r'^\d+\.\s*', '', x) for x in legend] # remove numbers added
         if compare_fees: 
             colors = {x: ax.get_lines()[i].get_color() for i,x in enumerate(df_prices.columns)}
             _ = df_prices_compare.apply(lambda x: x.plot(c=colors[x.name], ls='--', lw=lw, ax=ax))
@@ -1170,7 +1172,7 @@ class DataManager():
         return ax
 
 
-    def plot_bar(self, metric='cagr', tickers=None, start_date=None, end_date=None, n_max=-1, 
+    def plot_bar(self, tickers=None, start_date=None, end_date=None, metric='cagr', n_max=-1, 
                  fee=None, period_fee=3, percent_fee=True, compare_fees=True,
                  ax=None, figsize=(6,4), length=20, ratio=1,
                  colors=None, alphas=[0.4, 0.8]):
@@ -1213,10 +1215,11 @@ class DataManager():
             df_stat_f = self._performance(df_prices_compare, metrics=None, sort_by=None)
             df_stat_f = df_stat_f[metric].to_frame(labels[1])
             df_stat = df_stat.join(df_stat_f)
-    
-        if self.security_names is not None:
+
+        security_names = self.security_names
+        if security_names is not None:
             clip = lambda x: string_shortener(x, n=length, r=ratio)
-            df_stat.index = [clip(self.security_names[x]) for x in df_stat.index]
+            df_stat.index = [f'{i+1}.{clip(security_names[x])}' for i,x in enumerate(df_stat.index)]
     
         if ax is None:
             fig, ax = plt.subplots(figsize=figsize)
@@ -1227,7 +1230,9 @@ class DataManager():
         #ax.tick_params(axis='x', labelrotation=45)
         plt.setp(ax.get_xticklabels(), rotation=45, horizontalalignment='right')
         ax.set_title(f'{metric.upper()}')
-        ax.legend(df_stat.columns.to_list())
+        legend = df_stat.columns.to_list()
+        legend = [re.sub(r'^\d+\.\s*', '', x) for x in legend] # remove numbers added
+        ax.legend(legend)
         ax.axhline(0, c='grey', lw=0.5)
         return ax
 
