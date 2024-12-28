@@ -39,20 +39,29 @@ app.layout = html.Div([
 )
 def update_price_data(group):
     base = 1000
-    col_prc = 'price'
-    df = df_prc.loc[group, col_prc].unstack('ticker')
-    dt = df.apply(lambda x: x[x.notna()].index.min()).max()
-    df = df.apply(lambda x: x / x.loc[dt] * base)
-    return df.to_dict('records')
+    cols = df_prc.columns
+    data = {'columns':cols}
+    start = None
+    for col in cols:
+        df = df_prc.loc[group, col].unstack('ticker')
+        if start is None:
+            start = df.apply(lambda x: x[x.notna()].index.min()).max()
+            data.update({'index': df.index})
+        df = df.apply(lambda x: x / x.loc[start] * base)
+        data.update({col: df.to_dict('records')})
+    return data
 
 @app.callback(
     Output('return-plot', 'figure'),
     Input('price-data', 'data'),
 )
 def update_return_plot(data):
-    df = pd.DataFrame(data)
-    df = df.apply(lambda x: x.dropna().iloc[-1]/x.dropna().iloc[0]-1)
-    fig = px.bar(df)
+    df_ret = pd.DataFrame()
+    for col in data['columns']:
+        df = pd.DataFrame(data[col])
+        df = df.apply(lambda x: x.dropna().iloc[-1]/x.dropna().iloc[0]-1).to_frame(col)
+        df_ret = pd.concat([df_ret, df], axis=1)
+    fig = px.bar(df_ret, barmode='group')
     return fig
 
 @app.callback(
@@ -60,7 +69,7 @@ def update_return_plot(data):
     Input('price-data', 'data'),
 )
 def update_price_plot(data):
-    df = pd.DataFrame(data)
+    df = pd.DataFrame(data['price'], index=data['index'])
     fig = px.line(df)
     return fig
 
