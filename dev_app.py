@@ -6,7 +6,7 @@ import dash_daq as daq
 
 
 # Load data
-file = 'fund_241228.csv'
+file = 'fund_241229.csv'
 path = 'pages'
 df_prc = pd.read_csv(
     f'{path}/{file}',
@@ -73,51 +73,97 @@ app.layout = dbc.Container([
     Output('price-data', 'data'),
     Input('group-dropdown', 'value'),
 )
-def update_price_data(group):
-    base = 1000
+def update_price_data(group, base=1000):
+    """
+    process data and save to dcc.Store
+    """
     cols = df_prc.columns
-    data = {'columns':cols}
+    data = {'columns':cols, 'default':dict(), 'compare':dict()}
+    
     start = None
     for col in cols:
         df = df_prc.loc[group, col].unstack('ticker')
+        data['default'].update({
+            col: {
+                'price': df.to_dict('records'), 
+                'index': df.index
+            }
+        })
+        
         if start is None:
             start = df.apply(lambda x: x[x.notna()].index.min()).max()
-            data.update({'index': df.index})
-        df = df.apply(lambda x: x / x.loc[start] * base)
-        data.update({col: df.to_dict('records')})
+        df = df.apply(lambda x: x / x.loc[start] * base).loc[start:]
+        data['compare'].update({
+            col: {
+                'price': df.to_dict('records'), 
+                'index': df.index
+            }
+        })
     return data
-
-
-@app.callback(
-    Output('return-plot', 'figure'),
-    Input('price-data', 'data'),
-)
-def update_return_plot(data):
-    df_ret = pd.DataFrame()
-    for col in data['columns']:
-        df = pd.DataFrame(data[col])
-        df = df.apply(lambda x: x.dropna().iloc[-1]/x.dropna().iloc[0]-1).to_frame(col)
-        df_ret = pd.concat([df_ret, df], axis=1)
-    fig = px.bar(df_ret, barmode='group')
-    return fig
 
 
 @app.callback(
     Output('price-plot', 'figure'),
     Input('price-data', 'data'),
     Input('cost-boolean-switch', 'on'),
+    Input('compare-boolean-switch', 'on')
 )
-def update_price_plot(data, cost):
+def update_price_plot(data, cost, compare):
     cols = data['columns']
+    title = '펀드 가격 추이'
     if cost:
         col = cols[1]
-        title = '펀드 가치 (비용 고려)'
+        title_cost = '비용 고려'
     else:
         col = cols[0]
-        title = '펀드 가치'
-    df = pd.DataFrame(data[col], index=data['index'])
-    fig = px.line(df, title=title)
+        title_cost = None
+
+    if compare:
+        k = 'compare'
+        title_comp = '상대 가격'
+    else:
+        k = 'default'
+        title_comp = '각 최종 결산 기준'
+
+    title = f'{title} ({title_comp}'
+    title = f'{title}, {title_cost})' if title_cost else f'{title})'
+    dat = data[k][col]
+    df = pd.DataFrame(dat['price'], index=dat['index'])
+    fig = px.line(df, title=title, height=300)
     return fig
+
+
+@app.callback(
+    Output('return-plot', 'figure'),
+    Input('price-data', 'data'),
+    Input('cost-boolean-switch', 'on'),
+    Input('compare-boolean-switch', 'on')
+)
+def update_return_plot(data, cost, compare, date_format='%Y-%m-%d'):
+    cols = data['columns']
+    # reset opacity of selected price data
+    sel = cols[1] if cost else cols[0]
+    if compare:
+        dat = data['compare']
+        dates = pd.Index(dat[sel]['index'])
+        dates = pd.to_datetime(dates)
+        dt0 = dates.min().strftime(date_format)
+        dt1 = dates.max().strftime(date_format)
+        title = f'펀드 수익률 ({dt0} ~ {dt1})'
+    else:
+        dat = data['default'] 
+        title = '펀드 수익률 (각 설정일 기준)'
+
+    df_ret = pd.DataFrame()
+    for col in cols:
+        prc = dat[col]['price']
+        df = pd.DataFrame(prc)
+        df = df.apply(lambda x: x.dropna().iloc[-1]/x.dropna().iloc[0]-1).to_frame(col)
+        df_ret = pd.concat([df_ret, df], axis=1)
+    fig = px.bar(df_ret, title=title, barmode='group', opacity=0.3)
+    fig.update_traces(marker_opacity=1, marker_line_color="black", selector={"name": sel})
+    return fig
+
 
 # Run the app
 if __name__ == '__main__':
