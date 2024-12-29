@@ -1,6 +1,9 @@
 from dash import Dash, html, dcc, callback, Output, Input
 import pandas as pd
 import plotly.express as px
+import dash_bootstrap_components as dbc
+import dash_daq as daq
+
 
 # Load data
 file = 'fund_241228.csv'
@@ -17,21 +20,54 @@ default_group = 2030
 groups = [{'label': f'TDF{x}', 'value': x} for x in groups]
 
 # Initialize the Dash app
-app = Dash(__name__)
+external_stylesheets = [dbc.themes.CERULEAN]
+app = Dash(__name__, external_stylesheets=external_stylesheets)
 
-app.layout = html.Div([
-    dcc.Dropdown(
-        id='group-dropdown',
-        options=groups,
-        value=default_group,  # Default value
-        clearable=False,
-        style={'width': '50%'}
+app.layout = dbc.Container([
+    dbc.Row([
+        dbc.Col(
+            dcc.Dropdown(
+                id='group-dropdown',
+                options=groups,
+                value=default_group,
+                clearable=False,
+            ),
+            width=3  # Adjust width as needed
+        ),
+        dbc.Col(
+                daq.BooleanSwitch(
+                    id='compare-boolean-switch',
+                    on=False
+                ),
+                width="auto"),
+        dbc.Col(
+                daq.BooleanSwitch(
+                    id='cost-boolean-switch',
+                    on=False
+                ),
+                width="auto"),
+        ], 
+        justify="center",  # Centers the row's content horizontally
+        align="center", # Centers the row's content vertically
+        className="mb-3" # Bootstrap margin-bottom class
+        #style={'margin-bottom': '20px'}  # Adds space below the dropdown row
     ),
-    dcc.Graph(id='return-plot'),
-    dcc.Graph(id='price-plot'),
+    dbc.Row(dcc.Graph(id='price-plot')),
+    dbc.Row(dcc.Graph(id='return-plot')),
     # Store DataFrame in JSON format
-    dcc.Store(id='price-data')
+    dcc.Store(id='price-data'),
+    dbc.Tooltip(
+        '상대 비교',
+        target='compare-boolean-switch',
+        placement='bottom'
+    ),
+    dbc.Tooltip(
+        '비용 고려',
+        target='cost-boolean-switch',
+        placement='bottom'
+    )
 ])
+
 
 @app.callback(
     Output('price-data', 'data'),
@@ -51,6 +87,7 @@ def update_price_data(group):
         data.update({col: df.to_dict('records')})
     return data
 
+
 @app.callback(
     Output('return-plot', 'figure'),
     Input('price-data', 'data'),
@@ -64,13 +101,22 @@ def update_return_plot(data):
     fig = px.bar(df_ret, barmode='group')
     return fig
 
+
 @app.callback(
     Output('price-plot', 'figure'),
     Input('price-data', 'data'),
+    Input('cost-boolean-switch', 'on'),
 )
-def update_price_plot(data):
-    df = pd.DataFrame(data['price'], index=data['index'])
-    fig = px.line(df)
+def update_price_plot(data, cost):
+    cols = data['columns']
+    if cost:
+        col = cols[1]
+        title = '펀드 가치 (비용 고려)'
+    else:
+        col = cols[0]
+        title = '펀드 가치'
+    df = pd.DataFrame(data[col], index=data['index'])
+    fig = px.line(df, title=title)
     return fig
 
 # Run the app
