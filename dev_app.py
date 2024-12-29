@@ -70,7 +70,7 @@ app.layout = dbc.Container([
 
 
 def get_group_data(group, col, start=None, base=1000):
-    df = df_prc.loc[group, col].unstack('ticker')
+    df = df_prc.loc[group, col].unstack('ticker').sort_index()
     default = {
         'price': df.to_dict('records'),
         'index': df.index.tolist(),
