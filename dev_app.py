@@ -69,6 +69,21 @@ app.layout = dbc.Container([
 ])
 
 
+def get_group_data(group, col, start=None, base=1000):
+    df = df_prc.loc[group, col].unstack('ticker').sort_index()
+    default = {
+        'price': df.to_dict('records'),
+        'index': df.index.tolist(),
+    }
+    start = df.apply(lambda x: x[x.notna()].index.min()).max() if start is None else start
+    normalized_df = df.apply(lambda x: x / x.loc[start] * base).loc[start:]
+    compare = {
+        'price': normalized_df.to_dict('records'),
+        'index': normalized_df.index.tolist(),
+    }
+    return {'default': default, 'compare': compare}, start
+
+
 @app.callback(
     Output('price-data', 'data'),
     Input('group-dropdown', 'value'),
@@ -82,24 +97,26 @@ def update_price_data(group, base=1000):
     
     start = None
     for col in cols:
-        df = df_prc.loc[group, col].unstack('ticker')
-        data['default'].update({
-            col: {
-                'price': df.to_dict('records'), 
-                'index': df.index
-            }
-        })
-        
-        if start is None:
-            start = df.apply(lambda x: x[x.notna()].index.min()).max()
-        df = df.apply(lambda x: x / x.loc[start] * base).loc[start:]
-        data['compare'].update({
-            col: {
-                'price': df.to_dict('records'), 
-                'index': df.index
-            }
-        })
+        col_data, start = get_group_data(group, col, start, base)
+        data['default'][col] = col_data['default']
+        data['compare'][col] = col_data['compare']
     return data
+
+
+def get_title(title, compare, cost):
+    if compare:
+        title_comp = '상대 가격'
+    else:
+        title_comp = '각 최종 결산 기준'
+
+    if cost:
+        title_cost = '비용 고려'
+    else:
+        title_cost = None
+
+    title = f'{title} ({title_comp}'
+    title = f'{title}, {title_cost})' if title_cost else f'{title})'
+    return title
 
 
 @app.callback(
@@ -110,27 +127,12 @@ def update_price_data(group, base=1000):
 )
 def update_price_plot(data, cost, compare):
     cols = data['columns']
-    title = '펀드 가격 추이'
-    if cost:
-        col = cols[1]
-        title_cost = '비용 고려'
-    else:
-        col = cols[0]
-        title_cost = None
-
-    if compare:
-        k = 'compare'
-        title_comp = '상대 가격'
-    else:
-        k = 'default'
-        title_comp = '각 최종 결산 기준'
-
-    title = f'{title} ({title_comp}'
-    title = f'{title}, {title_cost})' if title_cost else f'{title})'
-    dat = data[k][col]
+    col = cols[1] if cost else cols[0]
+    kind = 'compare' if compare else 'default'
+    dat = data[kind][col]
     df = pd.DataFrame(dat['price'], index=dat['index'])
-    fig = px.line(df, title=title, height=300)
-    return fig
+    title = get_title('펀드 가격 추이', compare, cost)
+    return px.line(df, title=title, height=300)
 
 
 @app.callback(
