@@ -4552,7 +4552,14 @@ class BayesianEstimator():
         
 
     def get_freq_days(self, freq='1Y'):
-        n_t = BacktestManager.split_int_n_temporal(freq, 'M') # default month
+        """
+        freq: str or int
+        """
+        if isinstance(freq, str):
+            # split freq to int & unit
+            n_t = BacktestManager.split_int_n_temporal(freq, 'M') # default month
+        else: # return int regardless of unit
+            return freq
         if n_t is None:
             return
         else:
@@ -4591,7 +4598,7 @@ class BayesianEstimator():
 
     def get_ref_val(self, freq='1y', rf=0, align_period=False):
         """
-        get ref val for 
+        get ref val for plot_posterior
         """
         df_prices = self.df_prices
         if align_period:
@@ -4718,6 +4725,9 @@ class BayesianEstimator():
 
     def plot_posterior(self, var_names=None, tickers=None, ref_val=None, 
                        length=20, ratio=1, textsize=9, **kwargs):
+        """
+        ref_val: None, float or 'default'
+        """
         if self.bayesian_data is None:
             return print('ERROR: run bayesian_sample first')
         else:
@@ -4732,7 +4742,7 @@ class BayesianEstimator():
             tickers = [tickers] if isinstance(tickers, str) else tickers
             coords = {'ticker': tickers}
     
-        if ref_val is None:
+        if ref_val == 'default':
             ref_val = self.get_ref_val(freq=freq, rf=rf, align_period=align_period)
             col_name = list(coords.keys())[0]
             ref_val = {k: [{col_name:at, 'ref_val':rv} for at, rv in v.items()] for k,v in ref_val.items()}
