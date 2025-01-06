@@ -2378,16 +2378,30 @@ class PortfolioBuilder():
             return self._calc_value_history(df_rec, name=self.name, msg=True)
 
 
-    def get_cash_history(self, cost_excluded=False):
+    def get_cash_history(self, cost_excluded=False, cumsum=True, date_actual=False):
         """
         get history of buy and sell prices
+        cumsum: set to False to check buy & sell for each transaction date
         """
         df_rec = self._check_result()
         if df_rec is None:
             return None
         else:
             cost = None if cost_excluded else self.cost
-            return self._calc_cashflow_history(df_rec, cost)
+            df_cf = self._calc_cashflow_history(df_rec, cost)
+    
+        if not cumsum:
+            df = df_cf.diff(1)
+            df.update(df_cf, overwrite=False) # fill first date
+            df_cf = df.astype(int)
+
+        if date_actual:
+            col_dttr = self.cols_record['dttr']
+            col_tkr = self.cols_record['tkr']
+            df_cf[col_dttr]=df_rec[col_dttr].droplevel(col_tkr).drop_duplicates()
+            df_cf = df_cf.set_index(col_dttr)
+        
+        return df_cf
 
 
     def get_profit_history(self, result='ROI', roi_log=False, msg=True, cost_excluded=False):
