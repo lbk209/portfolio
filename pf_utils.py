@@ -4764,7 +4764,11 @@ class BayesianEstimator():
     
         axes = az.plot_posterior(trace, var_names=var_names, filter_vars='like', coords=coords,
                                 ref_val=ref_val, textsize=textsize, **kwargs)
-        n_r, n_c = axes.shape
+        if len(axes.shape) == 1:
+            n_r, n_c = 1, axes.shape[0] # axes.shape is tuple such as (5,)
+            axes = [axes]
+        else:
+            n_r, n_c = axes.shape
         for i in range(n_r):
             for j in range(n_c):
                 ax = axes[i][j]
@@ -4774,17 +4778,20 @@ class BayesianEstimator():
                 else:
                     title = t.split('\n')[1]
                 if security_names is not None:
-                    clip = lambda x: string_shortener(x, n=length, r=ratio)
-                    title = clip(security_names[title])
+                    #func = lambda x: string_shortener(x, n=length, r=ratio)
+                    # break title every length. ratio is depricated then
+                    func = lambda x: '\n'.join([x[i:i+length] for i in range(0, len(x), length)])
+                    title = func(security_names[title])
                 ax.set_title(title, fontsize=textsize)
         #return ref_val
         return None
 
 
     def plot_returns(self, tickers=None, num_samples=None, var_names=['cagr', 'yearly_sharpe'],
-                     figsize=(10,3), xlim=(-0.4, 0.6), length=20, ratio=1, max_legend=99):
+                     figsize=(10,3), xlims=None, length=20, ratio=1, max_legend=99):
         """
         var_names: ['ror', 'sharpe'] or ['cagr', 'yearly_sharpe']
+        xlims: list of xlim for ax1 & ax2. ex) [(-1,1),None]
         """
         security_names = self.security_names
         axes = create_split_axes(figsize=figsize, vertical_split=False, 
@@ -4795,9 +4802,9 @@ class BayesianEstimator():
         if axes is None:
             return None # see _plot_compare for err msg
             
+        _ = [ax.set_xlim(x) for ax, x in zip(axes, xlims)] if isinstance(xlims, list) else None
         ax1, ax2 = axes
         _ = ax1.set_title(var_names[0].upper())
-        _ = ax1.set_xlim(xlim)
         _ = ax1.axvline(0, c='grey', lw=1, ls='--')
         _ = ax1.get_legend().remove()
         _ = ax2.set_title(var_names[1].upper())
