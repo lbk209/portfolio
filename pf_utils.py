@@ -14,6 +14,8 @@ import warnings
 import seaborn as sns
 import yfinance as yf
 import requests
+import plotly.express as px
+import plotly.graph_objects as go
 
 from datetime import datetime, timedelta
 from datetime import date as datetime_date
@@ -26,6 +28,7 @@ from tqdm import tqdm
 from matplotlib.dates import num2date, date2num, ConciseDateConverter
 from matplotlib.gridspec import GridSpec
 from numbers import Number
+from scipy.stats import gaussian_kde
 
 from pf_data import PORTFOLIOS, STRATEGIES, UNIVERSES
 from pf_custom import (AlgoSelectKRatio, AlgoRunAfter, calc_kratio, AlgoSelectIDiscrete, 
@@ -4622,7 +4625,7 @@ class BayesianEstimator():
         return {
             #'mean': self._calc_mean_return(*args).to_dict(),
             #'std': self._calc_volatility(*args).to_dict(),
-            'ror': self._calc_mean_return(*args).to_dict(),
+            'total_return': self._calc_mean_return(*args).to_dict(),
             'sharpe': self._calc_sharpe(*args).to_dict(),
             'cagr': self._calc_mean_return(df_prices, self.days_in_year).to_dict()
         }
@@ -4740,12 +4743,20 @@ class BayesianEstimator():
                     return (x, None)
             df[index] = df.apply(lambda x: func(x.name), axis=1, result_type='expand')
             return df.loc[df['ticker'].notna()].set_index(index)
+
+
+    def plot_posterior(self, *args, plotly=True, **kwargs):
+        if plotly:
+            return self._plot_posterior_plotly(*args,  **kwargs)
+        else:
+            return self._plot_posterior_plotly(*args,  **kwargs)
     
 
-    def plot_posterior(self, var_names=None, tickers=None, ref_val=None, 
+    def _plot_posterior(self, var_names=None, tickers=None, ref_val=None, 
                        length=20, ratio=1, textsize=9, **kwargs):
         """
         ref_val: None, float or 'default'
+        kwargs: additional kwa for az.plot_posterior
         """
         if self.bayesian_data is None:
             return print('ERROR: run bayesian_sample first')
@@ -4792,6 +4803,97 @@ class BayesianEstimator():
         return None
 
 
+    def _plot_posterior_plotly(self, var_name='total_return', tickers=None, n_points=200):
+        if self.bayesian_data is None:
+            return print('ERROR: run bayesian_sample first')
+        else:
+            trace = self.bayesian_data['trace']
+            coords = self.bayesian_data['coords']
+            security_names = self.security_names
+    
+        if tickers is not None:
+            tickers = [tickers] if isinstance(tickers, str) else tickers
+            coords = {'ticker': tickers}
+        
+        # Load posterior data
+        posterior = trace.posterior
+        
+        # Average over the chain dimension, keep the draw dimension
+        averaged_data = posterior[var_name].sel(**coords).mean(dim="chain")
+        
+        # Convert to a DataFrame for Plotly
+        df_dst = (averaged_data.stack(sample=["draw"])  # Combine draw dimension into a single index
+                  .to_pandas()  # Convert to pandas DataFrame
+                  .T)
+        
+        # Example: KDE computation for the DataFrame
+        kde_data = []  # To store results
+        x_values = np.linspace(df_dst.min().min(), df_dst.max().max(), n_points)  # Define global x range
+        
+        for ticker in df_dst.columns:
+            ticker_samples = df_dst[ticker].values  # Extract samples for the ticker
+            
+            # Compute KDE
+            kde = gaussian_kde(ticker_samples)
+            density = kde(x_values)  # Compute density for the range
+            
+            # Store results in a DataFrame
+            kde_data.append(pd.DataFrame({ticker: density}, index=x_values))
+        
+        # Combine all KDE data into a single DataFrame
+        df_dst = pd.concat(kde_data, axis=1)
+    
+        # Calculate the HDI for each ticker
+        hdi_lines = self.calculate_hdi(df_dst)
+    
+        # Plot using Plotly
+        fig = px.line(df_dst, 
+                      title=f"Density of {var_name.upper()}",
+        )
+    
+        # Get the color mapping of each ticker from the plot
+        colors = {trace.name: trace.line.color for trace in fig.data}
+    
+        # Add horizontal hdi_lines as scatter traces with line thickness, transparency, and markers
+        for tkr, vals in hdi_lines.items():
+            fig.add_trace(go.Scatter(
+                x=vals['x'], y=vals['y'],
+                mode="lines+markers",            # Draw lines with markers
+                line=dict(color=colors[tkr], width=5),  # Adjust thickness, dash style, and transparency
+                marker=dict(size=10, symbol='line-ns-open', color=colors[tkr]),  # Customize marker style
+                opacity=0.3, 
+                legendgroup=tkr,                 # Group with the corresponding data
+                showlegend=False                 # Do not display in the legend
+            ))
+    
+        # Show plot
+        fig.show()
+
+
+    def calculate_hdi(self, df_density, interval=0.94):
+        """
+        Function to calculate the 94% HDI for each Ticker
+        """
+        hdi_results = dict()  # To store results
+        df_density = df_density.sort_index()
+        
+        for ticker in df_density.columns:
+            sr_d = df_density[ticker]
+            
+            # Normalize density to sum to 1 (probability distribution)
+            sr_cd = sr_d.cumsum() / sr_d.sum()
+        
+            # Find the values where cumulative density is within the desired interval (94% HDI)
+            lower = sr_cd.loc[sr_cd >= (1 - interval) / 2].index[0]
+            upper = sr_cd.loc[sr_cd <= 1 - (1 - interval) / 2].index[-1]
+            
+            hdi_results[ticker] = {
+                'x': [lower, upper], 
+                'y':[sr_d.loc[lower], sr_d.loc[lower]]
+            }
+        return hdi_results
+    
+        
     def plot_returns(self, tickers=None, num_samples=None, var_names=['total_return', 'sharpe'],
                      figsize=(10,3), xlims=None, length=20, ratio=1, max_legend=99):
         """
