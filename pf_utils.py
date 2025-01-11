@@ -4803,7 +4803,8 @@ class BayesianEstimator():
         return None
 
 
-    def _plot_posterior_plotly(self, var_name='total_return', tickers=None, n_points=200):
+    def _plot_posterior_plotly(self, var_name='total_return', tickers=None, 
+                               n_points=200, hdi_prob=0.94):
         if self.bayesian_data is None:
             return print('ERROR: run bayesian_sample first')
         else:
@@ -4844,16 +4845,26 @@ class BayesianEstimator():
         df_dst = pd.concat(kde_data, axis=1)
     
         # Calculate the HDI for each ticker
-        hdi_lines = self.calculate_hdi(df_dst)
+        hdi_lines = self.calculate_hdi(df_dst, hdi_prob)
     
         # Plot using Plotly
-        fig = px.line(df_dst, 
-                      title=f"Density of {var_name.upper()}",
+        title=f"Density of {var_name.upper()} (with {hdi_prob:.0%} Interval)"
+        fig = px.line(df_dst, title=title)
+        fig.update_layout(
+            xaxis=dict(title=var_name),
+            yaxis=dict(
+                title='',             # Remove y-axis title (label)
+                showticklabels=False  # Hide y-tick labels
+            ),
+            legend=dict(title='')
         )
-    
+        
         # Get the color mapping of each ticker from the plot
         colors = {trace.name: trace.line.color for trace in fig.data}
-    
+        # update trace name after colors creation
+        if security_names is not None:
+            fig.for_each_trace(lambda x: x.update(name=security_names[x.name]))
+     
         # Add horizontal hdi_lines as scatter traces with line thickness, transparency, and markers
         for tkr, vals in hdi_lines.items():
             fig.add_trace(go.Scatter(
@@ -4870,7 +4881,7 @@ class BayesianEstimator():
         fig.show()
 
 
-    def calculate_hdi(self, df_density, interval=0.94):
+    def calculate_hdi(self, df_density, hdi_prob=0.94):
         """
         Function to calculate the 94% HDI for each Ticker
         """
@@ -4883,9 +4894,9 @@ class BayesianEstimator():
             # Normalize density to sum to 1 (probability distribution)
             sr_cd = sr_d.cumsum() / sr_d.sum()
         
-            # Find the values where cumulative density is within the desired interval (94% HDI)
-            lower = sr_cd.loc[sr_cd >= (1 - interval) / 2].index[0]
-            upper = sr_cd.loc[sr_cd <= 1 - (1 - interval) / 2].index[-1]
+            # Find the values where cumulative density is within the desired interval
+            lower = sr_cd.loc[sr_cd >= (1 - hdi_prob) / 2].index[0]
+            upper = sr_cd.loc[sr_cd <= 1 - (1 - hdi_prob) / 2].index[-1]
             
             hdi_results[ticker] = {
                 'x': [lower, upper], 
