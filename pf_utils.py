@@ -4805,19 +4805,20 @@ class BayesianEstimator():
 
     def _plot_posterior_plotly(self, var_name='total_return', tickers=None, 
                                n_points=200, hdi_prob=0.94):
+        """
+        plot density with plotly
+        """
         if self.bayesian_data is None:
-            return print('ERROR: run bayesian_sample first')
+            print('ERROR: run bayesian_sample first')
         else:
-            trace = self.bayesian_data['trace']
+            posterior = self.bayesian_data['trace']
             coords = self.bayesian_data['coords']
+            posterior = posterior.posterior
             security_names = self.security_names
-    
+        
         if tickers is not None:
             tickers = [tickers] if isinstance(tickers, str) else tickers
             coords = {'ticker': tickers}
-        
-        # Load posterior data
-        posterior = trace.posterior
         
         # Average over the chain dimension, keep the draw dimension
         averaged_data = posterior[var_name].sel(**coords).mean(dim="chain")
@@ -4843,10 +4844,10 @@ class BayesianEstimator():
         
         # Combine all KDE data into a single DataFrame
         df_dst = pd.concat(kde_data, axis=1)
-    
+        
         # Calculate the HDI for each ticker
         hdi_lines = self.calculate_hdi(df_dst, hdi_prob)
-    
+        
         # Plot using Plotly
         title=f"Density of {var_name.upper()} (with {hdi_prob:.0%} Interval)"
         fig = px.line(df_dst, title=title)
@@ -4856,6 +4857,7 @@ class BayesianEstimator():
                 title='',             # Remove y-axis title (label)
                 showticklabels=False  # Hide y-tick labels
             ),
+            hovermode = 'x unified',
             legend=dict(title='')
         )
         
@@ -4864,7 +4866,7 @@ class BayesianEstimator():
         # update trace name after colors creation
         if security_names is not None:
             fig.for_each_trace(lambda x: x.update(name=security_names[x.name]))
-     
+        
         # Add horizontal hdi_lines as scatter traces with line thickness, transparency, and markers
         for tkr, vals in hdi_lines.items():
             fig.add_trace(go.Scatter(
@@ -4876,7 +4878,14 @@ class BayesianEstimator():
                 legendgroup=tkr,                 # Group with the corresponding data
                 showlegend=False                 # Do not display in the legend
             ))
-    
+            
+        #fig.update_traces(hovertemplate="%{fullData.name}<extra></extra>")
+        for trace in fig.data:
+            if trace.showlegend:
+                trace.update(hovertemplate="%{fullData.name}<extra></extra>")  # Keep trace name
+            else:
+                trace.update(hoverinfo='skip')  # Exclude from hover text
+        
         # Show plot
         fig.show()
 
