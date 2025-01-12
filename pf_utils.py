@@ -79,6 +79,30 @@ def valuate_bond(face, rate, year, ytm, n_pay=1):
     return vc + face/(1+r_discount)**(year*n_pay)
 
 
+def calculate_hdi(df_density, hdi_prob=0.94):
+    """
+    Function to calculate the 94% HDI for each Ticker
+    """
+    hdi_results = dict()  # To store results
+    df_density = df_density.sort_index()
+    
+    for ticker in df_density.columns:
+        sr_d = df_density[ticker]
+        
+        # Normalize density to sum to 1 (probability distribution)
+        sr_cd = sr_d.cumsum() / sr_d.sum()
+    
+        # Find the values where cumulative density is within the desired interval
+        lower = sr_cd.loc[sr_cd >= (1 - hdi_prob) / 2].index[0]
+        upper = sr_cd.loc[sr_cd <= 1 - (1 - hdi_prob) / 2].index[-1]
+        
+        hdi_results[ticker] = {
+            'x': [lower, upper], 
+            'y':[sr_d.loc[lower], sr_d.loc[lower]]
+        }
+    return hdi_results
+
+
 def get_date_range(dfs, symbol_name=None, return_intersection=False):
     """
     get datetime range of each ticker (columns) or datetime index of intersection
@@ -4846,7 +4870,7 @@ class BayesianEstimator():
         df_dst = pd.concat(kde_data, axis=1)
         
         # Calculate the HDI for each ticker
-        hdi_lines = self.calculate_hdi(df_dst, hdi_prob)
+        hdi_lines = calculate_hdi(df_dst, hdi_prob)
         
         # Plot using Plotly
         title=f"Density of {var_name.upper()} (with {hdi_prob:.0%} Interval)"
@@ -4888,30 +4912,6 @@ class BayesianEstimator():
         
         # Show plot
         fig.show()
-
-
-    def calculate_hdi(self, df_density, hdi_prob=0.94):
-        """
-        Function to calculate the 94% HDI for each Ticker
-        """
-        hdi_results = dict()  # To store results
-        df_density = df_density.sort_index()
-        
-        for ticker in df_density.columns:
-            sr_d = df_density[ticker]
-            
-            # Normalize density to sum to 1 (probability distribution)
-            sr_cd = sr_d.cumsum() / sr_d.sum()
-        
-            # Find the values where cumulative density is within the desired interval
-            lower = sr_cd.loc[sr_cd >= (1 - hdi_prob) / 2].index[0]
-            upper = sr_cd.loc[sr_cd <= 1 - (1 - hdi_prob) / 2].index[-1]
-            
-            hdi_results[ticker] = {
-                'x': [lower, upper], 
-                'y':[sr_d.loc[lower], sr_d.loc[lower]]
-            }
-        return hdi_results
     
         
     def plot_returns(self, tickers=None, num_samples=None, var_names=['total_return', 'sharpe'],

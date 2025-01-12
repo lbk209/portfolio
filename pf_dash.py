@@ -2,8 +2,14 @@ from dash import Dash, html, dcc, Output, Input
 import dash_bootstrap_components as dbc
 import dash_daq as daq
 import pandas as pd
+import numpy as np
 import plotly.express as px
-import random
+import plotly.graph_objects as go
+import random, pickle
+from scipy.stats import gaussian_kde
+
+from pf_utils import calculate_hdi
+
 
 # Initialize the Dash app
 external_stylesheets = [dbc.themes.CERULEAN, 
@@ -14,7 +20,7 @@ external_stylesheets = [dbc.themes.CERULEAN,
 
 def get_data(df, start=None, base=1000):
     """
-    Preprocess data to make it JSON-serializable and store it in a JavaScript variable
+    Preprocess data to make it JSON-serializable and to store it in a JavaScript variable by update_price_data
     """
     default = {
         'price': df.to_dict('records'),
@@ -186,6 +192,128 @@ def update_return_plot(data, cost, compare, months_in_year=12,
     })
     
     return fig
+
+
+def get_inference(file, path, var_name='total_return', n_points=200, hdi_prob=0.94):
+    """
+    file: inference data file
+    """
+    f = f'{path}/{file}'
+    with open(f, 'rb') as handle:
+        data = pickle.load(handle)
+
+    posterior = data['trace'].posterior
+    coords = data['coords']
+    
+    # Average over the chain dimension, keep the draw dimension
+    averaged_data = posterior[var_name].sel(**coords).mean(dim="chain")
+    
+    # Convert to a DataFrame for Plotly
+    df_dst = (averaged_data.stack(sample=["draw"])  # Combine draw dimension into a single index
+              .to_pandas()  # Convert to pandas DataFrame
+              .T)
+    
+    # Example: KDE computation for the DataFrame
+    kde_data = []  # To store results
+    x_values = np.linspace(df_dst.min().min(), df_dst.max().max(), n_points)  # Define global x range
+    
+    for ticker in df_dst.columns:
+        ticker_samples = df_dst[ticker].values  # Extract samples for the ticker
+        
+        # Compute KDE
+        kde = gaussian_kde(ticker_samples)
+        density = kde(x_values)  # Compute density for the range
+        
+        # Store results in a DataFrame
+        kde_data.append(pd.DataFrame({ticker: density}, index=x_values))
+    
+    # Combine all KDE data into a single DataFrame
+    df_dst = pd.concat(kde_data, axis=1)
+    
+    # Calculate the HDI for each ticker
+    hdi_lines = calculate_hdi(df_dst, hdi_prob)
+
+    #return df_dst, hdi_lines
+    return {
+        'density': {
+            'price': df_dst.to_dict('records'),
+            'index': df_dst.index.tolist()
+        },
+        'interval': hdi_lines,
+        'hdi_prob': hdi_prob,
+        'var_name': var_name
+    }
+        
+
+def update_inference_data(tickers, data_inf, option_all='all', n_default=5):
+    df_dst = data_inf['density']
+    df_dst = pd.DataFrame(df_dst['price'], index=df_dst['index'])
+    hdi_lines = data_inf['interval']
+    if len(tickers) == 0:
+        tickers = df_dst.columns.to_list()
+        if len(tickers) > n_default:
+            tickers = random.sample(tickers, n_default)
+
+    if option_all not in tickers: 
+        df_dst = df_dst[tickers]
+        hdi_lines = {k:v for k,v in hdi_lines.items() if k in tickers}
+    
+    return {
+        'density': {
+            'price': df_dst.to_dict('records'),
+            'index': df_dst.index.tolist()
+        },
+        'interval': hdi_lines,
+        'hdi_prob': data_inf['hdi_prob'],
+        'var_name': data_inf['var_name']
+    }
+
+
+def update_inference_plot(data, fund_name=None):
+    var_name = data['var_name']
+    hdi_prob = data['hdi_prob']
+    hdi_lines = data['interval']
+    df_dst = data['density']
+    df_dst = pd.DataFrame(df_dst['price'], index=df_dst['index'])
+    
+    title=f"Density of {var_name.upper()} (with {hdi_prob:.0%} Interval)"
+    fig = px.line(df_dst, title=title)
+    fig.update_layout(
+        xaxis=dict(title=var_name),
+        yaxis=dict(
+            title='',             # Remove y-axis title (label)
+            showticklabels=False  # Hide y-tick labels
+        ),
+        hovermode = 'x unified',
+        legend=dict(title='')
+    )
+    
+    # Get the color mapping of each ticker from the plot
+    colors = {trace.name: trace.line.color for trace in fig.data}
+    # update trace name after colors creation
+    if fund_name is not None:
+        fig.for_each_trace(lambda x: x.update(name=fund_name[x.name]))
+    
+    # Add horizontal hdi_lines as scatter traces with line thickness, transparency, and markers
+    for tkr, vals in hdi_lines.items():
+        fig.add_trace(go.Scatter(
+            x=vals['x'], y=vals['y'],
+            mode="lines+markers",            # Draw lines with markers
+            line=dict(color=colors[tkr], width=5),  # Adjust thickness, dash style, and transparency
+            marker=dict(size=10, symbol='line-ns-open', color=colors[tkr]),  # Customize marker style
+            opacity=0.3, 
+            legendgroup=tkr,                 # Group with the corresponding data
+            showlegend=False                 # Do not display in the legend
+        ))
+        
+    #fig.update_traces(hovertemplate="%{fullData.name}<extra></extra>")
+    for trace in fig.data:
+        if trace.showlegend:
+            trace.update(hovertemplate="%{fullData.name}<extra></extra>")  # Keep trace name
+        else:
+            trace.update(hoverinfo='skip')  # Exclude from hover text
+    
+    return fig.show()
 
 
 def create_app(data_prc, options, option_all='All', fund_name=None,
