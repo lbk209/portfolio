@@ -194,7 +194,8 @@ def update_return_plot(data, cost, compare, months_in_year=12,
     return fig
 
 
-def get_inference(file, path, var_name='total_return', n_points=200, hdi_prob=0.94):
+def get_inference(file, path, var_name='total_return', n_points=200, hdi_prob=0.94,
+                  error=0.999):
     """
     file: inference data file
     """
@@ -229,16 +230,18 @@ def get_inference(file, path, var_name='total_return', n_points=200, hdi_prob=0.
     
     # Combine all KDE data into a single DataFrame
     df_dst = pd.concat(kde_data, axis=1)
+    # remove small number of density
+    xlims = calculate_hdi(df_dst, error)
+    cond = lambda x: (x.index > xlims[x.name]['x'][0]) & (x.index < xlims[x.name]['x'][1])
+    df_dst = df_dst.apply(lambda x: x.loc[cond(x)])
     
     # Calculate the HDI for each ticker
     hdi_lines = calculate_hdi(df_dst, hdi_prob)
 
     #return df_dst, hdi_lines
     return {
-        'density': {
-            'price': df_dst.to_dict('records'),
-            'index': df_dst.index.tolist()
-        },
+        'density': df_dst.to_dict('records'),
+        'x': df_dst.index.tolist(),
         'interval': hdi_lines,
         'hdi_prob': hdi_prob,
         'var_name': var_name
@@ -246,8 +249,7 @@ def get_inference(file, path, var_name='total_return', n_points=200, hdi_prob=0.
         
 
 def update_inference_data(tickers, data_inf, option_all='all', n_default=5):
-    df_dst = data_inf['density']
-    df_dst = pd.DataFrame(df_dst['price'], index=df_dst['index'])
+    df_dst = pd.DataFrame(data_inf['density'], index=data_inf['x'])
     hdi_lines = data_inf['interval']
     if len(tickers) == 0:
         tickers = df_dst.columns.to_list()
@@ -259,10 +261,8 @@ def update_inference_data(tickers, data_inf, option_all='all', n_default=5):
         hdi_lines = {k:v for k,v in hdi_lines.items() if k in tickers}
     
     return {
-        'density': {
-            'price': df_dst.to_dict('records'),
-            'index': df_dst.index.tolist()
-        },
+        'density': df_dst.to_dict('records'),
+        'x': df_dst.index.tolist(),
         'interval': hdi_lines,
         'hdi_prob': data_inf['hdi_prob'],
         'var_name': data_inf['var_name']
@@ -273,8 +273,7 @@ def update_inference_plot(data, fund_name=None):
     var_name = data['var_name']
     hdi_prob = data['hdi_prob']
     hdi_lines = data['interval']
-    df_dst = data['density']
-    df_dst = pd.DataFrame(df_dst['price'], index=df_dst['index'])
+    df_dst = pd.DataFrame(data['density'], index=data['x'])
     
     title=f"Density of {var_name.upper()} (with {hdi_prob:.0%} Interval)"
     fig = px.line(df_dst, title=title)
