@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-import random, pickle
+import pickle
 from scipy.stats import gaussian_kde
 
 from pf_utils import calculate_hdi
@@ -290,6 +290,9 @@ def update_inference_plot(data, fund_name=None):
     
     # Get the color mapping of each ticker from the plot
     colors = {trace.name: trace.line.color for trace in fig.data}
+    hover_text = {trace.name: hdi_lines[trace.name]['x'] for trace in fig.data}
+    hover_text = {k: f'{v[0]:.3f} ~ {v[1]:.3f}' for k,v in hover_text.items()}
+    
     # update trace name after colors creation
     if fund_name is not None:
         fig.for_each_trace(lambda x: x.update(name=fund_name[x.name]))
@@ -306,10 +309,10 @@ def update_inference_plot(data, fund_name=None):
             showlegend=False                 # Do not display in the legend
         ))
         
-    #fig.update_traces(hovertemplate="%{fullData.name}<extra></extra>")
     for trace in fig.data:
         if trace.showlegend:
-            trace.update(hovertemplate="%{fullData.name}<extra></extra>")  # Keep trace name
+            text = hover_text[trace.legendgroup]
+            trace.update(hovertemplate=f"{text} {trace.name}<extra></extra>")
         else:
             trace.update(hoverinfo='skip')  # Exclude from hover text
     
