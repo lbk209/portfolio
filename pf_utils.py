@@ -4771,9 +4771,9 @@ class BayesianEstimator():
 
     def plot_posterior(self, *args, plotly=True, **kwargs):
         if plotly:
-            return self._plot_posterior_plotly(*args,  **kwargs)
+            return self._plot_posterior_plotly(*args, **kwargs)
         else:
-            return self._plot_posterior_plotly(*args,  **kwargs)
+            return self._plot_posterior(*args, **kwargs)
     
 
     def _plot_posterior(self, var_names=None, tickers=None, ref_val=None, 
@@ -4828,7 +4828,7 @@ class BayesianEstimator():
 
 
     def _plot_posterior_plotly(self, var_name='total_return', tickers=None, 
-                               n_points=200, hdi_prob=0.94):
+                               n_points=200, hdi_prob=0.94, error=0.9999):
         """
         plot density with plotly
         """
@@ -4871,6 +4871,10 @@ class BayesianEstimator():
         
         # Calculate the HDI for each ticker
         hdi_lines = calculate_hdi(df_dst, hdi_prob)
+        # remove small number of density
+        xlims = calculate_hdi(df_dst, error)
+        cond = lambda x: (x.index > xlims[x.name]['x'][0]) & (x.index < xlims[x.name]['x'][1])
+        df_dst = df_dst.apply(lambda x: x.loc[cond(x)])
         
         # Plot using Plotly
         title=f"Density of {var_name.upper()} (with {hdi_prob:.0%} Interval)"
