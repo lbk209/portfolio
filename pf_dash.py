@@ -59,17 +59,14 @@ def update_tickers(tickers, options, option_all='all'):
     return options
 
 
-def update_price_data(tickers, data_prc, base=1000, option_all='all', n_default=5):
+def update_price_data(tickers, data_prc, base=1000, option_all='all'):
     """
     process data and save to dcc.Store
     """
     fees = list(data_prc.keys())
     data_p = {k:v for k,v in data_prc.items()}
-    # update data_p with tickers
     if len(tickers) == 0:
-        tickers = data_prc[fees[0]].columns.to_list()
-        if len(tickers) > n_default:
-            tickers = random.sample(tickers, n_default)
+        return None
     
     for fee in fees:
         df = data_prc[fee] if option_all in tickers else data_prc[fee].loc[:, tickers]
@@ -251,13 +248,11 @@ def get_inference(file, path, var_name='total_return', tickers=None,
     }
         
 
-def update_inference_data(tickers, data_inf, option_all='all', n_default=5):
+def update_inference_data(tickers, data_inf, option_all='all'):
     df_dst = pd.DataFrame(data_inf['density'], index=data_inf['x'])
     hdi_lines = data_inf['interval']
     if len(tickers) == 0:
-        tickers = df_dst.columns.to_list()
-        if len(tickers) > n_default:
-            tickers = random.sample(tickers, n_default)
+        return None
 
     if option_all not in tickers: 
         df_dst = df_dst[tickers]
@@ -273,6 +268,9 @@ def update_inference_data(tickers, data_inf, option_all='all', n_default=5):
 
 
 def update_inference_plot(data, fund_name=None):
+    if data is None:
+        return px.line()
+    
     var_name = data['var_name']
     hdi_prob = data['hdi_prob']
     hdi_lines = data['interval']
@@ -319,7 +317,7 @@ def update_inference_plot(data, fund_name=None):
 
 
 def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
-               option_all='All', n_default=5, base=1000,
+               option_all='All', base=1000,
                title="Managed Funds", height=500, legend=False, length=20,
                external_stylesheets=external_stylesheets,
                debug=False):
@@ -342,10 +340,10 @@ def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
     
     # tabs
     tabs_contents = [
-        dbc.Tab(dcc.Graph(id='price-plot'), label='가격'),
-        dbc.Tab(dcc.Graph(id='return-plot'), label='수익률'),
+        dbc.Tab(dcc.Graph(id='price-plot'), label='가격', tab_id='tab-1'),
+        dbc.Tab(dcc.Graph(id='return-plot'), label='수익률', tab_id='tab-2'),
     ]
-    tabs = dbc.Tabs(tabs_contents)
+    tabs = dbc.Tabs(tabs_contents, id='tabs')
     
     # layout
     app.layout = dbc.Container([
@@ -408,7 +406,7 @@ def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
         """
         process data and save to dcc.Store
         """
-        return update_price_data(tickers, data_prc, base=base, option_all=option_all, n_default=n_default)
+        return update_price_data(tickers, data_prc, base=base, option_all=option_all)
         
     
     @app.callback(
@@ -441,6 +439,7 @@ def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
                         print(f"ERROR: tab '{new_tab.label}' already exits")
                         return False
                     else:
+                        new_tab.tab_id = f'tab-{len(labels)+1}'
                         row.children.children.append(new_tab)
                         return True
     app.add_tab = add_tab
@@ -449,7 +448,7 @@ def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
 
 
 def add_density_plot(app, file=None, path=None, tickers=None, fund_name=None,
-                     n_points=500, error=0.999, option_all='All', n_default=5):
+                     n_points=500, error=0.999, option_all='All'):
     data_inf = get_inference(file, path, tickers=tickers, n_points=n_points, error=error)
 
     # update layout of the app
@@ -465,6 +464,21 @@ def add_density_plot(app, file=None, path=None, tickers=None, fund_name=None,
     )
 
     @app.callback(
+        Output('cost-boolean-switch', 'on'),
+        Output('compare-boolean-switch', 'on'),
+        Input("tabs", "active_tab"),
+        Input('cost-boolean-switch', 'on'),
+        Input('compare-boolean-switch', 'on')
+        
+    )
+    def switch_tab(at, cost, compare):
+        if at == new_tab.tab_id:
+            return (True, False)
+        else:
+            return (cost, compare)
+
+    
+    @app.callback(
         Output('density-data', 'data'),
         Input('ticker-dropdown', 'value')
     )
@@ -472,7 +486,7 @@ def add_density_plot(app, file=None, path=None, tickers=None, fund_name=None,
         """
         process data and save to dcc.Store
         """
-        return update_inference_data(tickers, data_inf, option_all=option_all, n_default=n_default)
+        return update_inference_data(tickers, data_inf, option_all=option_all)
         
     
     @app.callback(
@@ -481,3 +495,4 @@ def add_density_plot(app, file=None, path=None, tickers=None, fund_name=None,
     )
     def _update_inference_plot(data):
         return update_inference_plot(data, fund_name)
+        
