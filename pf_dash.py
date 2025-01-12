@@ -194,8 +194,8 @@ def update_return_plot(data, cost, compare, months_in_year=12,
     return fig
 
 
-def get_inference(file, path, var_name='total_return', n_points=200, hdi_prob=0.94,
-                  error=0.999):
+def get_inference(file, path, var_name='total_return', tickers=None,
+                  n_points=200, hdi_prob=0.94, error=0.999):
     """
     file: inference data file
     """
@@ -204,7 +204,10 @@ def get_inference(file, path, var_name='total_return', n_points=200, hdi_prob=0.
         data = pickle.load(handle)
 
     posterior = data['trace'].posterior
-    coords = data['coords']
+    if tickers is None:
+        coords = data['coords']
+    else:
+        coords = {'ticker': tickers}
     
     # Average over the chain dimension, keep the draw dimension
     averaged_data = posterior[var_name].sel(**coords).mean(dim="chain")
@@ -312,15 +315,26 @@ def update_inference_plot(data, fund_name=None):
         else:
             trace.update(hoverinfo='skip')  # Exclude from hover text
     
-    return fig.show()
+    return fig
 
 
-def create_app(data_prc, options, option_all='All', fund_name=None,
-               n_default=5, base=1000,
+def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
+               option_all='All', n_default=5, base=1000,
                title="Managed Funds", height=500, legend=False, length=20,
                external_stylesheets=external_stylesheets,
                debug=False):
 
+    if tickers is None:
+        tickers = df_prices.columns.to_list()
+    data_prc = {
+        'before fees':df_prices[tickers], 
+        'after fees':df_prices_fees[tickers]
+    }
+
+    # create dropdown options
+    options = [{'label':v, 'value':v} for v in tickers]
+    if fund_name is not None:
+        options = [{**x, 'title':fund_name[x['value']], 'search':fund_name[x['value']]} for x in options]
     dropdown_option = [{'label':option_all, 'value':option_all}]
     dropdown_option += options
 
@@ -417,5 +431,53 @@ def create_app(data_prc, options, option_all='All', fund_name=None,
         return update_return_plot(data, cost, compare, date_format='%Y-%m-%d', 
                                   fund_name=fund_name, height=height, length=length)
 
+
+    def add_tab(new_tab):
+        for row in app.layout.children:
+            if isinstance(row, dbc.Row):
+                if isinstance(row.children, dbc.Tabs):
+                    labels = [x.label for x in row.children.children]
+                    if new_tab.label in labels:
+                        print(f"ERROR: tab '{new_tab.label}' already exits")
+                        return False
+                    else:
+                        row.children.children.append(new_tab)
+                        return True
+    app.add_tab = add_tab
     
-    return app.run_server(debug=debug)
+    return app
+
+
+def add_density_plot(app, file=None, path=None, tickers=None, fund_name=None,
+                     n_points=500, error=0.999, option_all='All', n_default=5):
+    data_inf = get_inference(file, path, tickers=tickers, n_points=n_points, error=error)
+
+    # update layout of the app
+    new_tab = dbc.Tab(dcc.Graph(id='density-plot'), label='추정')
+
+    # Locate the Row containing Tabs and append the new Tab
+    if not app.add_tab(new_tab):
+        return None # see add_tab for err msg
+        
+    # Add density-data Store to the layout
+    app.layout.children.append(
+        dcc.Store(id='density-data')
+    )
+
+    @app.callback(
+        Output('density-data', 'data'),
+        Input('ticker-dropdown', 'value')
+    )
+    def _update_inference_data(tickers):
+        """
+        process data and save to dcc.Store
+        """
+        return update_inference_data(tickers, data_inf, option_all=option_all, n_default=n_default)
+        
+    
+    @app.callback(
+        Output('density-plot', 'figure'),
+        Input('density-data', 'data')
+    )
+    def _update_inference_plot(data):
+        return update_inference_plot(data, fund_name)
