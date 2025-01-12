@@ -2,8 +2,14 @@ from dash import Dash, html, dcc, Output, Input
 import dash_bootstrap_components as dbc
 import dash_daq as daq
 import pandas as pd
+import numpy as np
 import plotly.express as px
-import random
+import plotly.graph_objects as go
+import random, pickle
+from scipy.stats import gaussian_kde
+
+from pf_utils import calculate_hdi
+
 
 # Initialize the Dash app
 external_stylesheets = [dbc.themes.CERULEAN, 
@@ -14,7 +20,7 @@ external_stylesheets = [dbc.themes.CERULEAN,
 
 def get_data(df, start=None, base=1000):
     """
-    Preprocess data to make it JSON-serializable and store it in a JavaScript variable
+    Preprocess data to make it JSON-serializable and to store it in a JavaScript variable by update_price_data
     """
     default = {
         'price': df.to_dict('records'),
@@ -188,12 +194,147 @@ def update_return_plot(data, cost, compare, months_in_year=12,
     return fig
 
 
-def create_app(data_prc, options, option_all='All', fund_name=None,
-               n_default=5, base=1000,
+def get_inference(file, path, var_name='total_return', tickers=None,
+                  n_points=200, hdi_prob=0.94, error=0.999):
+    """
+    file: inference data file
+    """
+    f = f'{path}/{file}'
+    with open(f, 'rb') as handle:
+        data = pickle.load(handle)
+
+    posterior = data['trace'].posterior
+    if tickers is None:
+        coords = data['coords']
+    else:
+        coords = {'ticker': tickers}
+    
+    # Average over the chain dimension, keep the draw dimension
+    averaged_data = posterior[var_name].sel(**coords).mean(dim="chain")
+    
+    # Convert to a DataFrame for Plotly
+    df_dst = (averaged_data.stack(sample=["draw"])  # Combine draw dimension into a single index
+              .to_pandas()  # Convert to pandas DataFrame
+              .T)
+    
+    # Example: KDE computation for the DataFrame
+    kde_data = []  # To store results
+    x_values = np.linspace(df_dst.min().min(), df_dst.max().max(), n_points)  # Define global x range
+    
+    for ticker in df_dst.columns:
+        ticker_samples = df_dst[ticker].values  # Extract samples for the ticker
+        
+        # Compute KDE
+        kde = gaussian_kde(ticker_samples)
+        density = kde(x_values)  # Compute density for the range
+        
+        # Store results in a DataFrame
+        kde_data.append(pd.DataFrame({ticker: density}, index=x_values))
+    
+    # Combine all KDE data into a single DataFrame
+    df_dst = pd.concat(kde_data, axis=1)
+    # remove small number of density
+    xlims = calculate_hdi(df_dst, error)
+    cond = lambda x: (x.index > xlims[x.name]['x'][0]) & (x.index < xlims[x.name]['x'][1])
+    df_dst = df_dst.apply(lambda x: x.loc[cond(x)])
+    
+    # Calculate the HDI for each ticker
+    hdi_lines = calculate_hdi(df_dst, hdi_prob)
+
+    #return df_dst, hdi_lines
+    return {
+        'density': df_dst.to_dict('records'),
+        'x': df_dst.index.tolist(),
+        'interval': hdi_lines,
+        'hdi_prob': hdi_prob,
+        'var_name': var_name
+    }
+        
+
+def update_inference_data(tickers, data_inf, option_all='all', n_default=5):
+    df_dst = pd.DataFrame(data_inf['density'], index=data_inf['x'])
+    hdi_lines = data_inf['interval']
+    if len(tickers) == 0:
+        tickers = df_dst.columns.to_list()
+        if len(tickers) > n_default:
+            tickers = random.sample(tickers, n_default)
+
+    if option_all not in tickers: 
+        df_dst = df_dst[tickers]
+        hdi_lines = {k:v for k,v in hdi_lines.items() if k in tickers}
+    
+    return {
+        'density': df_dst.to_dict('records'),
+        'x': df_dst.index.tolist(),
+        'interval': hdi_lines,
+        'hdi_prob': data_inf['hdi_prob'],
+        'var_name': data_inf['var_name']
+    }
+
+
+def update_inference_plot(data, fund_name=None):
+    var_name = data['var_name']
+    hdi_prob = data['hdi_prob']
+    hdi_lines = data['interval']
+    df_dst = pd.DataFrame(data['density'], index=data['x'])
+    
+    title=f"Density of {var_name.upper()} (with {hdi_prob:.0%} Interval)"
+    fig = px.line(df_dst, title=title)
+    fig.update_layout(
+        xaxis=dict(title=var_name),
+        yaxis=dict(
+            title='',             # Remove y-axis title (label)
+            showticklabels=False  # Hide y-tick labels
+        ),
+        hovermode = 'x unified',
+        legend=dict(title='')
+    )
+    
+    # Get the color mapping of each ticker from the plot
+    colors = {trace.name: trace.line.color for trace in fig.data}
+    # update trace name after colors creation
+    if fund_name is not None:
+        fig.for_each_trace(lambda x: x.update(name=fund_name[x.name]))
+    
+    # Add horizontal hdi_lines as scatter traces with line thickness, transparency, and markers
+    for tkr, vals in hdi_lines.items():
+        fig.add_trace(go.Scatter(
+            x=vals['x'], y=vals['y'],
+            mode="lines+markers",            # Draw lines with markers
+            line=dict(color=colors[tkr], width=5),  # Adjust thickness, dash style, and transparency
+            marker=dict(size=10, symbol='line-ns-open', color=colors[tkr]),  # Customize marker style
+            opacity=0.3, 
+            legendgroup=tkr,                 # Group with the corresponding data
+            showlegend=False                 # Do not display in the legend
+        ))
+        
+    #fig.update_traces(hovertemplate="%{fullData.name}<extra></extra>")
+    for trace in fig.data:
+        if trace.showlegend:
+            trace.update(hovertemplate="%{fullData.name}<extra></extra>")  # Keep trace name
+        else:
+            trace.update(hoverinfo='skip')  # Exclude from hover text
+    
+    return fig
+
+
+def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
+               option_all='All', n_default=5, base=1000,
                title="Managed Funds", height=500, legend=False, length=20,
                external_stylesheets=external_stylesheets,
                debug=False):
 
+    if tickers is None:
+        tickers = df_prices.columns.to_list()
+    data_prc = {
+        'before fees':df_prices[tickers], 
+        'after fees':df_prices_fees[tickers]
+    }
+
+    # create dropdown options
+    options = [{'label':v, 'value':v} for v in tickers]
+    if fund_name is not None:
+        options = [{**x, 'title':fund_name[x['value']], 'search':fund_name[x['value']]} for x in options]
     dropdown_option = [{'label':option_all, 'value':option_all}]
     dropdown_option += options
 
@@ -290,5 +431,53 @@ def create_app(data_prc, options, option_all='All', fund_name=None,
         return update_return_plot(data, cost, compare, date_format='%Y-%m-%d', 
                                   fund_name=fund_name, height=height, length=length)
 
+
+    def add_tab(new_tab):
+        for row in app.layout.children:
+            if isinstance(row, dbc.Row):
+                if isinstance(row.children, dbc.Tabs):
+                    labels = [x.label for x in row.children.children]
+                    if new_tab.label in labels:
+                        print(f"ERROR: tab '{new_tab.label}' already exits")
+                        return False
+                    else:
+                        row.children.children.append(new_tab)
+                        return True
+    app.add_tab = add_tab
     
-    return app.run_server(debug=debug)
+    return app
+
+
+def add_density_plot(app, file=None, path=None, tickers=None, fund_name=None,
+                     n_points=500, error=0.999, option_all='All', n_default=5):
+    data_inf = get_inference(file, path, tickers=tickers, n_points=n_points, error=error)
+
+    # update layout of the app
+    new_tab = dbc.Tab(dcc.Graph(id='density-plot'), label='추정')
+
+    # Locate the Row containing Tabs and append the new Tab
+    if not app.add_tab(new_tab):
+        return None # see add_tab for err msg
+        
+    # Add density-data Store to the layout
+    app.layout.children.append(
+        dcc.Store(id='density-data')
+    )
+
+    @app.callback(
+        Output('density-data', 'data'),
+        Input('ticker-dropdown', 'value')
+    )
+    def _update_inference_data(tickers):
+        """
+        process data and save to dcc.Store
+        """
+        return update_inference_data(tickers, data_inf, option_all=option_all, n_default=n_default)
+        
+    
+    @app.callback(
+        Output('density-plot', 'figure'),
+        Input('density-data', 'data')
+    )
+    def _update_inference_plot(data):
+        return update_inference_plot(data, fund_name)
