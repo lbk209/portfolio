@@ -1,0 +1,31 @@
+/* General label styling */
+.tab-label {
+    position: relative; /* Make the label position relative so the badge can be absolutely positioned inside it */
+    /*padding-right: 1.5rem;*/ /* Add space to the right of the label to make room for the badge */
+}
+
+/* Badge styling for tabs with the 'new-badge-label' class */
+.tab-label.new-badge-label::after {
+    content: "New"; 
+    background-color: #0d6efd; /* Bootstrap primary color when tab is active */
+    color: white; /* Text color of the badge */
+    font-size: 0.6rem; /* Font size for the text inside the badge */
+    font-weight: bold; /* Make the text inside the badge bold */
+    padding: 0.1rem 0.2rem; /* Add some padding inside the badge to make the text more readable */
+    border-radius: 1rem; /* Make the badge corners rounded (pill shape) */
+    
+    /* Positioning the badge in the top-right corner of the label */
+    position: absolute; /* Absolute positioning relative to the parent element (label) */
+    top: 0; /* Align the badge to the top of the label */
+    right: 10%; /* Align the badge to the right of the label */
+    
+    /* Adjust the position of the badge to make it "float" outside the corner */
+    transform: translate(50%, -50%); /* Move the badge to the top-right outside the label */
+    
+    text-align: center; /* Center the text inside the badge */
+}
+
+.tab-label.active.new-badge-label::after {
+    background-color: white; /* bootstrap info color */
+    color: #0d6efd;
+}

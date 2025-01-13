@@ -340,8 +340,8 @@ def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
     dropdown_option += options
 
     app = Dash(__name__, title=title, external_stylesheets=external_stylesheets)
-    
-    # tabs
+
+   # tabs
     tabs_contents = [
         dbc.Tab(dcc.Graph(id='price-plot'), label='가격', tab_id='tab-1'),
         dbc.Tab(dcc.Graph(id='return-plot'), label='수익률', tab_id='tab-2'),
@@ -455,7 +455,8 @@ def add_density_plot(app, file=None, path=None, tickers=None, fund_name=None,
     data_inf = get_inference(file, path, tickers=tickers, n_points=n_points, error=error)
 
     # update layout of the app
-    new_tab = dbc.Tab(dcc.Graph(id='density-plot'), label='추정')
+    new_tab = dbc.Tab(dcc.Graph(id='density-plot'), label='추정', 
+                      label_class_name="tab-label new-badge-label") # add new badge
 
     # Locate the Row containing Tabs and append the new Tab
     if not app.add_tab(new_tab):
