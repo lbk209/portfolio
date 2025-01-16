@@ -2730,7 +2730,7 @@ class PortfolioBuilder():
         return SecurityDict(s, names=s)
 
 
-    def _calc_cashflow_history(self, record, cost=None):
+    def _calc_cashflow_history(self, record, cost=None, total=True):
         """
         Returns df of cumulative buy and sell prices at each transaction.
         """
@@ -2738,7 +2738,7 @@ class PortfolioBuilder():
         df_rec = self.view_record(0, df_rec=record, nshares=False, value=True, 
                                   weight_actual=False, msg=False, int_nshares=False)
         cm = CostManager(df_rec, self.cols_record, self.date_format)
-        return cm.calc_cashflow_history(cost=cost)
+        return cm.calc_cashflow_history(cost=cost, total=total)
     
 
     def _update_universe(self, df_rec, msg=False):
@@ -2765,7 +2765,8 @@ class PortfolioBuilder():
         else:
             return df_prices
 
-        
+
+    # TODO: error if df_rec from self.view_record(... value=True)
     def _calc_periodic_value(self, df_rec, df_prices, date=None, msg=False,
                              col_val='value', col_end='end'):
         """
@@ -2930,21 +2931,23 @@ class PortfolioBuilder():
                 .loc[:, cols.insert(i+1, col_wgta)])
 
 
-    def _calc_value_history(self, df_rec, end_date=None, name=None, msg=False):
+    def _calc_value_history(self, df_rec, end_date=None, name=None, msg=False, total=True):
         """
         calc historical of portfolio value from transaction
         end_date: calc value from 1st transaction of df_rec to end_date.
         name: name of output series
         """
         cols_record = self.cols_record
+        col_date = cols_record['date']
         col_rat = cols_record['rat']
         col_net = cols_record['net']
         end = datetime.today() if end_date is None else end_date
-        sr_ttl = pd.Series()
+        sr_ttl = None
         dates_trs = df_rec.index.get_level_values(0).unique()
         # update price data with df_rec
         df_universe = self._update_universe(df_rec, msg=msg)
         df_universe = self.liquidation.set_price(df_universe)
+        df_universe = df_universe.rename_axis(col_date)
         # get number of shares
         sr_nshares = self._get_nshares(df_rec, df_universe, cols_record, int_nshares=False)
         sr_nshares = sr_nshares[col_net]
@@ -2963,17 +2966,22 @@ class PortfolioBuilder():
             rat_i.loc[start] = df_rec.loc[start, col_rat]
             # calc combined security value history from prv transaction (start) to current (end) 
             sr_i = (df_c.div(rat_i, fill_value=1) # trading price
-                    .apply(lambda x: x*n_tickers.loc[x.name]).sum(axis=1)) # x.name: index name
+                        .apply(lambda x: x*n_tickers.loc[x.name])) # x.name: index name
             # concat histories        
-            sr_ttl = pd.concat([sr_ttl, sr_i])
+            sr_ttl = sr_i if sr_ttl is None else pd.concat([sr_ttl, sr_i])
             end = start - pd.DateOffset(days=1)
-    
-        if len(sr_ttl) > 0:
-            # sort by date
-            sr = sr_ttl.astype(int).sort_index()
-            return sr if name is None else sr.rename(name)
-        else:
+        
+        if sr_ttl is None:
             return print('ERROR: no historical')
+        else:
+            sr_ttl = sr_ttl.sort_index()
+        
+        if total:
+            sr_ttl = sr_ttl.fillna(0).sum(axis=1).astype(int)
+        else:
+            sr_ttl = sr_ttl.stack().dropna().astype(int)
+        
+        return sr_ttl if name is None else sr_ttl.rename(name)
 
 
     def _plot_get_axes(self, figsize=(10,6), height_ratios=(3, 1), sharex=True):
@@ -3153,33 +3161,44 @@ class CostManager():
         
     
     def calc_cashflow_history(self, date=None, percent=True,
-                              cost=dict(buy=0.00363960, sell=0.00363960, tax=0.18, fee=0)):
+                              cost=dict(buy=0.00363960, sell=0.00363960, tax=0.18, fee=0),
+                              total=True):
         """
         calc net buy & sell prices at each transaction date
         cost: dict of cost items
+        total: set to False to get histories of individual tickers
         """
         df_rec = self.df_rec
         if df_rec is None:
             return None
         else:
             cols_record = self.cols_record
-        
-        df_cf = CostManager._calc_cashflow_history(df_rec, cols_record)
+            col_date = cols_record['date']
+            col_tkr = cols_record['tkr']
+    
+        # force to total to calc df_net
+        df_cf = CostManager._calc_cashflow_history(df_rec, cols_record, total=False)
         df_cf = df_cf.loc[:date]
         if cost is None: # cashflow without cost
-            return df_cf
-            
+            return df_cf.groupby(col_date).sum() if total else df_cf
+    
         # calc cost
         df_cost = self.calc_cost(date=date, percent=percent, **cost)
-        df_cost = df_cost.groupby('date').sum().rename(columns={'buy':'cost_buy'})
+        df_cost = df_cost.rename(columns={'buy':'cost_buy'})
         df_cost['cost_sell'] = df_cost['sell'] + df_cost['fee'] + df_cost['tax']
-        df_cost = df_cost[['cost_buy', 'cost_sell']].cumsum()
+        df_cost = df_cost[['cost_buy', 'cost_sell']]
+        df_cost = df_cost.unstack(col_tkr).cumsum().ffill().stack()
         
         # calc net cashflow
-        df_net = df_cf.join(df_cost, how='outer').ffill()
+        df_net = df_cf.join(df_cost, how='outer')
         df_net['buy']  = df_net['buy'] + df_net['cost_buy']
         df_net['sell']  = df_net['sell'] - df_net['cost_sell']
-        return df_net[['buy', 'sell']]
+        df_net = df_net[['buy', 'sell']]
+    
+        if total: 
+            df_net = df_net.groupby(col_date).sum()
+    
+        return df_net
 
 
     def calc_cost(self, date=None, buy=0, sell=0, tax=0, fee=0, percent=True):
@@ -3234,18 +3253,24 @@ class CostManager():
 
 
     @staticmethod
-    def _calc_cashflow_history(df_rec, cols_record):
+    def _calc_cashflow_history(df_rec, cols_record, total=True):
         """
         Returns df of cumulative buy and sell prices at each transaction.
+        total: set to False to get histories of individual tickers
         """
         col_trs = cols_record['trs']
+        col_tkr = cols_record['tkr']
         col_date = cols_record['date']
-        
-        df = df_rec.loc[df_rec[col_trs]>0]
-        df_cf = df[col_trs].groupby(col_date).sum().cumsum().to_frame('buy')
-        df = df_rec.loc[df_rec[col_trs]<0]
-        df_sell = df[col_trs].groupby(col_date).sum().cumsum().mul(-1)
-        return df_cf.join(df_sell.rename('sell'), how='outer').ffill().fillna(0)
+        col_cf = 'cf'
+    
+        sr_tr = df_rec.apply(lambda x: 'buy' if x[col_trs]>0 else 
+                             ('sell' if x[col_trs]<0 else None), axis=1)
+        df_cf = (df_rec.assign(**{col_cf: sr_tr}).dropna(subset=col_cf)
+                       .pivot(columns=col_cf, values=col_trs).abs().sort_index())
+        if total: 
+            return df_cf.groupby(col_date).sum().cumsum() 
+        else:
+            return df_cf.unstack(col_tkr).cumsum().ffill().stack().fillna(0)
 
 
     @staticmethod
@@ -3278,6 +3303,7 @@ class CostManager():
                          col_val='value', col_end='end'):
         """
         calc annual fee
+        df_rec: should have col_val & col_end. see _calc_periodic_value
         sr_fee: dict or series of ticker to annual fee. rate
         """
         col_tkr = cols_record['tkr']
