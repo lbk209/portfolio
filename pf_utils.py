@@ -2348,6 +2348,38 @@ class PortfolioBuilder():
         return pd.Series(data, index=index)
 
 
+    def _join_cashflow_by_ticker(self, sr_val, df_cf, sr_ugl, sr_roi):
+        """
+        Merge cashflow history (based on transaction records) with value history (based on price changes).
+        sr_val, df_cf, sr_ugl: data by date & ticker
+        """
+        cols_record = self.cols_record
+        col_date = cols_record['date']
+        col_tkr = cols_record['tkr']
+        col_val = 'value'
+        
+        index = None
+        dates_cf = df_cf.index.get_level_values(col_date).unique()
+        dt_prv = dates_cf[0]
+        for dt in dates_cf[1:]:
+            tkrs = df_cf.loc[dt].index
+            dts = sr_val.loc[dt_prv:dt].index.get_level_values(col_date).unique()
+            idx = pd.MultiIndex.from_product([dts, tkrs])
+            if index is None:
+                index = idx
+            else:
+                index = index.append(idx)
+            dt_prv = dt
+        
+        dts = sr_val.loc[dt:].index.get_level_values(col_date).unique()
+        if len(dts) > 0:
+            idx = pd.MultiIndex.from_product([dts, tkrs])
+            index = index.append(idx)
+        
+        return (pd.DataFrame(index=index).join(df_cf).join(sr_val.rename(col_val))
+                .join(sr_ugl).join(sr_roi).groupby(col_tkr).ffill())
+
+
     def transaction_pipeline(self, date=None, capital=10000000, commissions=0, 
                              record=None, save=False, nshares=False, **kw_liq):
         """
@@ -3029,23 +3061,29 @@ class PortfolioBuilder():
         sr_val: output of _calc_value_history
         result: ROI, UGL or None
         """
-        df = (sr_val.to_frame(col_val)
-              .join(df_cashflow_history, how='outer')
-              .ffill().fillna(0))
+        col_tkr = self.cols_record['tkr']
+        conds = [col_tkr in df.index.names for df in [sr_val, df_cashflow_history]]
+        if sum(conds) == 1: # both of sr_val & df_cashflow_history be total or by tickers
+            return print('ERROR') 
+        else: 
+            sr_his = sr_val.to_frame(col_val).join(df_cashflow_history, how='outer')
         
+        sr_his = sr_his.groupby(col_tkr) if sum(conds) == 2 else sr_his
+        sr_his = sr_his.ffill().fillna(0)
+    
         result = result.upper()
         if result == 'ROI':
             ratio = lambda x: (x[col_val] + x[col_sell]) / x[col_buy]
             m = 100 if roi_percent else 1
             if roi_log:
-                df = df.apply(lambda x: np.log(ratio(x)), axis=1).mul(m)
+                sr_his = sr_his.apply(lambda x: np.log(ratio(x)), axis=1).mul(m)
             else:
-                df = df.apply(lambda x: ratio(x) - 1, axis=1).mul(m)
+                sr_his = sr_his.apply(lambda x: ratio(x) - 1, axis=1).mul(m)
         elif result == 'UGL': # unrealized gain/loss
-            df = df.apply(lambda x: x[col_val] + x[col_sell] - x[col_buy], axis=1)
+            sr_his = sr_his.apply(lambda x: x[col_val] + x[col_sell] - x[col_buy], axis=1)
         else:
             pass # return df of col_val, col_sell and col_buy
-        return df
+        return sr_his.rename(result.lower())
         
 
     def _check_result(self, msg=True):
@@ -3261,12 +3299,18 @@ class CostManager():
         col_trs = cols_record['trs']
         col_tkr = cols_record['tkr']
         col_date = cols_record['date']
+        col_buy = 'buy'
+        col_sell = 'sell'
         col_cf = 'cf'
     
-        sr_tr = df_rec.apply(lambda x: 'buy' if x[col_trs]>0 else 
-                             ('sell' if x[col_trs]<0 else None), axis=1)
+        sr_tr = df_rec.apply(lambda x: col_buy if x[col_trs]>0 else 
+                             (col_sell if x[col_trs]<0 else None), axis=1)
         df_cf = (df_rec.assign(**{col_cf: sr_tr}).dropna(subset=col_cf)
                        .pivot(columns=col_cf, values=col_trs).abs().sort_index())
+        
+        if col_sell not in df_cf.columns:
+            df_cf[col_sell] = 0
+        
         if total: 
             return df_cf.groupby(col_date).sum().cumsum() 
         else:
