@@ -2301,22 +2301,29 @@ class PortfolioBuilder():
         return df_rec
 
 
-    def valuate(self, date=None, print_msg=False, cost_excluded=False):
+    def valuate(self, date=None, print_msg=False, cost_excluded=False, total=True):
         """
         calc date, buy/sell prices & portfolio value from self.record or self.df_rec
+        date: date, None, 'all'
         """
-        date_format = self.date_format
-        
         # get latest record
         df_rec = self._check_result(print_msg)
         if df_rec is None:
             return None
-        
-        # update price data by adding tickers not in the universe if existing
-        df_prices = self._update_universe(df_rec, msg=print_msg)
-        df_prices = self.liquidation.set_price(df_prices)
     
+        if isinstance(date, str) and date.lower() == 'all':
+            date = None
+            history = True
+        else:
+            history = False
+    
+        date_format = self.date_format
+        col_date = self.cols_record['date']
+        
         # check date by price data
+        df_prices = self._update_universe(df_rec, msg=print_msg)
+        # update price data by adding tickers not in the universe if existing
+        df_prices = self.liquidation.set_price(df_prices)
         date = df_prices.loc[:date].index.max() # works even if date None
         date_ft = df_rec.index.get_level_values(0).min()
         if date_ft > date:
@@ -2330,22 +2337,26 @@ class PortfolioBuilder():
         df_rec = df_rec.loc[:date]
         date_lt = df_rec.index.get_level_values(0).max()
         
+        # calc value
+        sr_val = self._calc_value_history(df_rec, date, self.name, msg=False, total=total)
         # buy & sell prices to date.
         cost = None if cost_excluded else self.cost
-        cf = self._calc_cashflow_history(df_rec, cost).sort_index().iloc[-1].astype(int)
-        sell, buy = cf['sell'], cf['buy']
-        # calc value
-        val = self._calc_value_history(df_rec, date, self.name, msg=False).sort_index().iloc[-1]
-        # calc roi & unrealized gain/loss
-        ugl = val + sell - buy
-        roi = ugl / buy
-        if print_msg:
-            s = format_rounded_string(roi, ugl)
-            print(s, f' ({date})')
-             
-        data = [date_ft, date, buy, sell, val, ugl, roi]
-        index = ['start', 'date', 'buy', 'sell', 'value', 'UGL', 'ROI']
-        return pd.Series(data, index=index)
+        df_cf = self._calc_cashflow_history(df_rec, cost, total=total)
+    
+        # calc profit
+        sr_ugl, sr_roi = [self._calc_profit(sr_val, df_cf, result=x, roi_percent=False) for x in ['UGL', 'ROI']]
+        
+        if total:
+            df_m = df_cf.join(sr_val.rename('value'), how='right').join(sr_ugl).ffill().join(sr_roi).ffill()
+        else:
+            df_m = self._join_cashflow_by_ticker(sr_val, df_cf, sr_ugl, sr_roi)
+        df_m = df_m.dropna(how='all')
+    
+        if not history:
+            start = df_m.index.get_level_values(col_date).min().strftime(date_format)
+            print(f'Result from {start} to {date}')
+            df_m = df_m.loc[date]
+        return df_m
 
 
     def _join_cashflow_by_ticker(self, sr_val, df_cf, sr_ugl, sr_roi):
@@ -2360,21 +2371,19 @@ class PortfolioBuilder():
         
         index = None
         dates_cf = df_cf.index.get_level_values(col_date).unique()
-        dt_prv = dates_cf[0]
+        dt_prv = dates_cf[0] # dt for no for-loop
+        tkrs = df_cf.loc[dt_prv].index # tkrs for no for-loop
         for dt in dates_cf[1:]:
             tkrs = df_cf.loc[dt].index
             dts = sr_val.loc[dt_prv:dt].index.get_level_values(col_date).unique()
             idx = pd.MultiIndex.from_product([dts, tkrs])
-            if index is None:
-                index = idx
-            else:
-                index = index.append(idx)
+            index = idx if index is None else index.append(idx)
             dt_prv = dt
-        
-        dts = sr_val.loc[dt:].index.get_level_values(col_date).unique()
+        # get dates after last cashflow
+        dts = sr_val.loc[dt_prv + pd.DateOffset(days=1):].index.get_level_values(col_date).unique()
         if len(dts) > 0:
             idx = pd.MultiIndex.from_product([dts, tkrs])
-            index = index.append(idx)
+            index = idx if index is None else index.append(idx)
         
         return (pd.DataFrame(index=index).join(df_cf).join(sr_val.rename(col_val))
                 .join(sr_ugl).join(sr_roi).groupby(col_tkr).ffill())
@@ -2482,7 +2491,7 @@ class PortfolioBuilder():
         return sr_prf
 
     
-    def plot(self, start_date=None, end_date=None, 
+    def plot(self, start_date=None, end_date=None, total=True,
              figsize=(10,6), legend=True, height_ratios=(3,1), loc='upper left',
              msg_cr=True, roi=True, roi_log=False, cashflow=True, cost_excluded=False):
         """
@@ -2491,31 +2500,25 @@ class PortfolioBuilder():
         df_rec = self._check_result(msg_cr)
         if df_rec is None:
             return None
-            
-        col_net = 'Net'
+        col_value = 'value'
         col_sell = 'sell'
-        sr_val = self._calc_value_history(df_rec, name=self.name, msg=True).rename(col_net)
-        if (sr_val is None) or (len(sr_val)==1):
-            return print('ERROR: need more data to plot')
-
-        cost = None if cost_excluded else self.cost
-        df_cf = self._calc_cashflow_history(df_rec, cost) # cashflow
-        res_prf = 'ROI' if roi else 'UGL'
-        sr_prf = self._calc_profit(sr_val, df_cf, result=res_prf, roi_log=roi_log) # profit
+        col_roi = 'roi'
+        col_ugl = 'ugl'
     
-        # total: value + sell price
-        sr_ttl = (df_cf.join(sr_val, how='right').ffill()
-                  .apply(lambda x: x[col_net] + x[col_sell], axis=1))
-    
+        df_res = self.valuate(date='all', total=total, cost_excluded=cost_excluded)
         func = lambda x: x.loc[start_date:end_date]
-        sr_ttl = func(sr_ttl)
-        sr_val = func(sr_val)
-        sr_prf = func(sr_prf)
-        
-       # set title
-        sr = self.valuate(end_date, print_msg=False, cost_excluded=cost_excluded)
-        title = format_rounded_string(sr['ROI'], sr['UGL'])
-        title = f"{title} ({sr['date']})"
+        df_res = func(df_res)
+    
+        sr_ttl = df_res.apply(lambda x: x[col_sell] + x[col_value], axis=1)
+        sr_val = df_res[col_value]
+        res_prf = col_roi if roi else col_ugl
+        sr_prf = df_res[res_prf]
+    
+        # set title
+        end_date = df_res.index.max().strftime(self.date_format)
+        sr = df_res.loc[end_date]
+        title = format_rounded_string(sr[col_roi], sr[col_ugl])
+        title = f"{title} ({end_date})"
             
         # plot historical of portfolio value
         ax1, ax2 = self._plot_get_axes(figsize=figsize, height_ratios=height_ratios)
@@ -2531,7 +2534,7 @@ class PortfolioBuilder():
         ax1.set_ylabel('Value')
         
         # plot profit history
-        ax1t = sr_prf.plot(ax=ax1.twinx(), label=res_prf, lw=1, color='orange')
+        ax1t = sr_prf.plot(ax=ax1.twinx(), label=res_prf.upper(), lw=1, color='orange')
         ax1t.set_ylabel('Return On Investment (%)' if roi else 'Unrealized Gain/Loss')
         # set env for the twins
         _ = set_matplotlib_twins(ax1, ax1t, legend=legend, loc=loc)
