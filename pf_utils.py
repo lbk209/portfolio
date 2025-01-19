@@ -2371,22 +2371,18 @@ class PortfolioBuilder():
         
         index = None
         dates_cf = df_cf.index.get_level_values(col_date).unique()
-        dt_prv = dates_cf[0] # dt for no for-loop
-        tkrs = df_cf.loc[dt_prv].index # tkrs for no for-loop
-        for dt in dates_cf[1:]:
-            tkrs = df_cf.loc[dt].index
-            dts = sr_val.loc[dt_prv:dt].index.get_level_values(col_date).unique()
+        end = sr_val.index.get_level_values(col_date).max()
+        for start in dates_cf.sort_values(ascending=False):
+            dts = sr_val.loc[start:end].index.get_level_values(col_date).unique()
+            if dts.size == 0: # end date is smaller tha start
+                continue
+            tkrs = df_cf.loc[start].index
             idx = pd.MultiIndex.from_product([dts, tkrs])
             index = idx if index is None else index.append(idx)
-            dt_prv = dt
-        # get dates after last cashflow
-        dts = sr_val.loc[dt_prv + pd.DateOffset(days=1):].index.get_level_values(col_date).unique()
-        if len(dts) > 0:
-            idx = pd.MultiIndex.from_product([dts, tkrs])
-            index = idx if index is None else index.append(idx)
-        
+            end = start - pd.DateOffset(days=1)
+       
         return (pd.DataFrame(index=index).join(df_cf).join(sr_val.rename(col_val))
-                .join(sr_ugl).join(sr_roi).groupby(col_tkr).ffill())
+                .join(sr_ugl).join(sr_roi).groupby(col_tkr).ffill().sort_index())
 
 
     def transaction_pipeline(self, date=None, capital=10000000, commissions=0, 
@@ -3025,8 +3021,8 @@ class PortfolioBuilder():
         """
         return create_split_axes(figsize=figsize, vertical_split=True, 
                                  ratios=height_ratios, share_axis=sharex, space=0)
-        
 
+    
     def _plot_cashflow(self, ax, sr_cashflow_history, date=None, 
                        label='Cash Flows', alpha=0.4, color='g'):
         sr_cashflow_history = sr_cashflow_history.loc[:date]
