@@ -2371,22 +2371,18 @@ class PortfolioBuilder():
         
         index = None
         dates_cf = df_cf.index.get_level_values(col_date).unique()
-        dt_prv = dates_cf[0] # dt for no for-loop
-        tkrs = df_cf.loc[dt_prv].index # tkrs for no for-loop
-        for dt in dates_cf[1:]:
-            tkrs = df_cf.loc[dt].index
-            dts = sr_val.loc[dt_prv:dt].index.get_level_values(col_date).unique()
+        end = sr_val.index.get_level_values(col_date).max()
+        for start in dates_cf.sort_values(ascending=False):
+            dts = sr_val.loc[start:end].index.get_level_values(col_date).unique()
+            if dts.size == 0: # end date is smaller tha start
+                continue
+            tkrs = df_cf.loc[start].index
             idx = pd.MultiIndex.from_product([dts, tkrs])
             index = idx if index is None else index.append(idx)
-            dt_prv = dt
-        # get dates after last cashflow
-        dts = sr_val.loc[dt_prv + pd.DateOffset(days=1):].index.get_level_values(col_date).unique()
-        if len(dts) > 0:
-            idx = pd.MultiIndex.from_product([dts, tkrs])
-            index = idx if index is None else index.append(idx)
-        
+            end = start - pd.DateOffset(days=1)
+       
         return (pd.DataFrame(index=index).join(df_cf).join(sr_val.rename(col_val))
-                .join(sr_ugl).join(sr_roi).groupby(col_tkr).ffill())
+                .join(sr_ugl).join(sr_roi).groupby(col_tkr).ffill().sort_index())
 
 
     def transaction_pipeline(self, date=None, capital=10000000, commissions=0, 
@@ -2493,44 +2489,44 @@ class PortfolioBuilder():
     
     def plot(self, start_date=None, end_date=None, total=True,
              figsize=(10,6), legend=True, height_ratios=(3,1), loc='upper left',
-             msg_cr=True, roi=True, roi_log=False, cashflow=True, cost_excluded=False):
+             roi=True, roi_log=False, cashflow=True, cost_excluded=False):
         """
         plot total, net and profit histories of portfolio
         """
-        df_rec = self._check_result(msg_cr)
-        if df_rec is None:
+        df_all = self.valuate(date='all', total=total, cost_excluded=cost_excluded)
+        if df_all is None:
             return None
+        
+        func = lambda x: x.loc[start_date:end_date]
+        df_all = func(df_all)
+        start_date, end_date = get_date_minmax(df_all, self.date_format)
+        
         col_value = 'value'
         col_sell = 'sell'
         col_roi = 'roi'
         col_ugl = 'ugl'
     
-        df_res = self.valuate(date='all', total=total, cost_excluded=cost_excluded)
-        func = lambda x: x.loc[start_date:end_date]
-        df_res = func(df_res)
-    
-        sr_ttl = df_res.apply(lambda x: x[col_sell] + x[col_value], axis=1)
-        sr_val = df_res[col_value]
+        sr_ttl = df_all.apply(lambda x: x[col_sell] + x[col_value], axis=1)
+        sr_val = df_all[col_value]
         res_prf = col_roi if roi else col_ugl
-        sr_prf = df_res[res_prf]
+        sr_prf = df_all[res_prf]
     
         # set title
-        end_date = df_res.index.max().strftime(self.date_format)
-        sr = df_res.loc[end_date]
+        sr = df_all.loc[end_date]
         title = format_rounded_string(sr[col_roi], sr[col_ugl])
         title = f"{title} ({end_date})"
             
         # plot historical of portfolio value
-        ax1, ax2 = self._plot_get_axes(figsize=figsize, height_ratios=height_ratios)
+        if cashflow:
+            ax1, ax2 = self._plot_get_axes(figsize=figsize, height_ratios=height_ratios)
+        else:
+            _, ax1 = plt.subplots(figsize=figsize)
+            
         line_ttl = {'c':'darkgray', 'ls':'--'}
         _ = sr_ttl.plot(ax=ax1, label='Total', title=title, figsize=figsize, **line_ttl)
         _ = sr_val.plot(ax=ax1, c=line_ttl['c'])
         ax1.fill_between(sr_ttl.index, sr_ttl, ax1.get_ylim()[0], facecolor=line_ttl['c'], alpha=0.1)
         ax1.fill_between(sr_val.index, sr_val, ax1.get_ylim()[0], facecolor=line_ttl['c'], alpha=0.2)
-    
-        # plot vline for transaction dates
-        dates_trs = func(df_rec).index.get_level_values(0).unique()
-        ax1.vlines(dates_trs, 0, 1, transform=ax1.get_xaxis_transform(), lw=0.5, color='gray')
         ax1.set_ylabel('Value')
         
         # plot profit history
@@ -2542,10 +2538,14 @@ class PortfolioBuilder():
         ax1t.margins(0)
         
         # plot cashflow
+        # you might use df_all to plot cashflow if transaction vlines not necessary 
         if cashflow:
+            df_rec = self._check_result(False)
+            # plot vline for transaction dates
+            dates_trs = func(df_rec).index.get_level_values(0).unique()
+            ax1.vlines(dates_trs, 0, 1, transform=ax1.get_xaxis_transform(), lw=0.5, color='gray')
             # set slice for record with a single transaction
-            start, end = get_date_minmax(sr_val)
-            ax2 = self.plot_cashflow(df_rec=df_rec, start_date=start, end_date=end, 
+            ax2 = self.plot_cashflow(df_rec=df_rec, start_date=start_date, end_date=end_date, 
                                      cost_excluded=cost_excluded, ax=ax2)
         return None
 
@@ -3025,8 +3025,8 @@ class PortfolioBuilder():
         """
         return create_split_axes(figsize=figsize, vertical_split=True, 
                                  ratios=height_ratios, share_axis=sharex, space=0)
-        
 
+    
     def _plot_cashflow(self, ax, sr_cashflow_history, date=None, 
                        label='Cash Flows', alpha=0.4, color='g'):
         sr_cashflow_history = sr_cashflow_history.loc[:date]
