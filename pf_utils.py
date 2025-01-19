@@ -2371,22 +2371,18 @@ class PortfolioBuilder():
         
         index = None
         dates_cf = df_cf.index.get_level_values(col_date).unique()
-        dt_prv = dates_cf[0] # dt for no for-loop
-        tkrs = df_cf.loc[dt_prv].index # tkrs for no for-loop
-        for dt in dates_cf[1:]:
-            tkrs = df_cf.loc[dt].index
-            dts = sr_val.loc[dt_prv:dt].index.get_level_values(col_date).unique()
+        end = sr_val.index.get_level_values(col_date).max()
+        for start in dates_cf.sort_values(ascending=False):
+            dts = sr_val.loc[start:end].index.get_level_values(col_date).unique()
+            if dts.size == 0: # end date is smaller tha start
+                continue
+            tkrs = df_cf.loc[start].index
             idx = pd.MultiIndex.from_product([dts, tkrs])
             index = idx if index is None else index.append(idx)
-            dt_prv = dt
-        # get dates after last cashflow
-        dts = sr_val.loc[dt_prv + pd.DateOffset(days=1):].index.get_level_values(col_date).unique()
-        if len(dts) > 0:
-            idx = pd.MultiIndex.from_product([dts, tkrs])
-            index = idx if index is None else index.append(idx)
-        
+            end = start - pd.DateOffset(days=1)
+       
         return (pd.DataFrame(index=index).join(df_cf).join(sr_val.rename(col_val))
-                .join(sr_ugl).join(sr_roi).groupby(col_tkr).ffill())
+                .join(sr_ugl).join(sr_roi).groupby(col_tkr).ffill().sort_index())
 
 
     def transaction_pipeline(self, date=None, capital=10000000, commissions=0, 
@@ -2493,30 +2489,31 @@ class PortfolioBuilder():
     
     def plot(self, start_date=None, end_date=None, total=True,
              figsize=(10,6), legend=True, height_ratios=(3,1), loc='upper left',
-             msg_cr=True, roi=True, roi_log=False, cashflow=True, cost_excluded=False):
+             msg=True, roi=True, roi_log=False, cost_excluded=False):
         """
         plot total, net and profit histories of portfolio
         """
-        df_rec = self._check_result(msg_cr)
-        if df_rec is None:
+        df_all = self.valuate(date='all', total=total, cost_excluded=cost_excluded, print_msg=msg)
+        if df_all is None:
             return None
+        
         col_value = 'value'
+        col_buy = 'sell'
         col_sell = 'sell'
         col_roi = 'roi'
         col_ugl = 'ugl'
     
-        df_res = self.valuate(date='all', total=total, cost_excluded=cost_excluded)
         func = lambda x: x.loc[start_date:end_date]
-        df_res = func(df_res)
-    
-        sr_ttl = df_res.apply(lambda x: x[col_sell] + x[col_value], axis=1)
-        sr_val = df_res[col_value]
+        df_all = func(df_all)
+        start_date, end_date = get_date_minmax(df_all, self.date_format)
+        
+        sr_ttl = df_all.apply(lambda x: x[col_sell] + x[col_value], axis=1)
+        sr_val = df_all[col_value]
         res_prf = col_roi if roi else col_ugl
-        sr_prf = df_res[res_prf]
+        sr_prf = df_all[res_prf]
     
         # set title
-        end_date = df_res.index.max().strftime(self.date_format)
-        sr = df_res.loc[end_date]
+        sr = df_all.loc[end_date]
         title = format_rounded_string(sr[col_roi], sr[col_ugl])
         title = f"{title} ({end_date})"
             
@@ -2529,6 +2526,7 @@ class PortfolioBuilder():
         ax1.fill_between(sr_val.index, sr_val, ax1.get_ylim()[0], facecolor=line_ttl['c'], alpha=0.2)
     
         # plot vline for transaction dates
+        df_rec = self._check_result(False) # get transaction dates only
         dates_trs = func(df_rec).index.get_level_values(0).unique()
         ax1.vlines(dates_trs, 0, 1, transform=ax1.get_xaxis_transform(), lw=0.5, color='gray')
         ax1.set_ylabel('Value')
@@ -2542,30 +2540,22 @@ class PortfolioBuilder():
         ax1t.margins(0)
         
         # plot cashflow
-        if cashflow:
-            # set slice for record with a single transaction
-            start, end = get_date_minmax(sr_val)
-            ax2 = self.plot_cashflow(df_rec=df_rec, start_date=start, end_date=end, 
-                                     cost_excluded=cost_excluded, ax=ax2)
+        df_cf = df_all[[col_buy, col_sell]]
+        _ = self._plot_cashflow(df_cf, start_date=start_date, end_date=end_date, ax=ax2)
         return None
 
 
-    def plot_cashflow(self, df_rec=None, start_date=None, end_date=None, cost_excluded=False,
-                      ax=None, figsize=(8,2), alpha=0.4, colors=('r', 'g'),
-                      labels=['Buy', 'Sell'], loc='upper left'):
+    def plot_cashflow(self, df_rec=None, **kwargs):
+        """
+        see _plot_cashflow for kwargs
+        """
         df_rec = self._check_result() if df_rec is None else df_rec
         if df_rec is None:
             return None
 
         cost = None if cost_excluded else self.cost
         df_cf = self._calc_cashflow_history(df_rec, cost)
-        df_cf = self._plot_cashflow_slice(df_cf, start_date, end_date)
-        if ax is None:
-            _, ax = plt.subplots(figsize=figsize)
-        kw = lambda i: {'label':labels[i], 'color':colors[i]}
-        _ = [self._plot_cashflow(ax, df_cf[x], end_date, **kw(i)) for i, x in enumerate(df_cf.columns)]
-        ax.legend(loc=loc)
-        return ax  
+        return self._plot_cashflow(df_cf, **kwargs)
     
     
     def performance(self, metrics=METRICS, sort_by=None):
@@ -3025,9 +3015,21 @@ class PortfolioBuilder():
         """
         return create_split_axes(figsize=figsize, vertical_split=True, 
                                  ratios=height_ratios, share_axis=sharex, space=0)
+
+    
+    def _plot_cashflow(self, df_cf=None, start_date=None, end_date=None, 
+                      ax=None, figsize=(8,2), colors=('r', 'g'),
+                      labels=['Buy', 'Sell'], loc='upper left'):
+        df_cf = self._plot_cashflow_slice(df_cf, start_date, end_date)
+        if ax is None:
+            _, ax = plt.subplots(figsize=figsize)
+        kw = lambda i: {'label':labels[i], 'color':colors[i]}
+        _ = [self._plot_cashflow_decorated(ax, df_cf[x], end_date, **kw(i)) for i, x in enumerate(df_cf.columns)]
+        ax.legend(loc=loc)
+        return ax  
         
 
-    def _plot_cashflow(self, ax, sr_cashflow_history, date=None, 
+    def _plot_cashflow_decorated(self, ax, sr_cashflow_history, date=None, 
                        label='Cash Flows', alpha=0.4, color='g'):
         sr_cashflow_history = sr_cashflow_history.loc[:date]
         df_cf = sr_cashflow_history.rename('y').rename_axis('x1').reset_index()
