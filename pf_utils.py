@@ -5917,7 +5917,7 @@ class PortfolioManager():
         return pf_names
 
     
-    def plot(self, pf_names=None, start_date=None, end_date=None, roi=True,
+    def plot(self, start_date=None, end_date=None, pf_names=None, roi=True,
              figsize=(10,5), legend=True, colors = plt.cm.Spectral,
              col_val='value', col_sell='sell', col_buy='buy'):
         """
@@ -5975,39 +5975,51 @@ class PortfolioManager():
         ax1.margins(0)
         ax2.margins(0)
         
+
+    def summary(self, date=None, pf_names=None,
+                col_total='TOTAL', r_start='start', r_date='end', 
+                r_roi='roi', r_ugl='ugl', r_buy='buy'):
         
-    def valuate(self, pf_names=None, date=None):
         pf_names = self.check_portfolios(pf_names)
         if len(pf_names) == 0:
             return None
-        else:
-            return self._valuate(pf_names, date)
-
-
-    def _valuate(self, pf_names, date):
-        """
-        return evaluation summary df the portfolios in pf_names
-        pf_names: list of portfolio names
-        """
-        col_total = 'Total'
-        r_start, r_date, r_roi, r_ugl, r_buy = ('start', 'end', 'roi', 'ugl', 'buy')
-        df_res = None
-        no_res = []
-        for name in pf_names:
-            pf = self.portfolios[name]
-            sr = pf.valuate(date=date, print_msg=False)
-            if sr is None:
-                no_res.append(name)
-            else:
-                df_res = sr.to_frame(name) if df_res is None else df_res.join(sr.rename(name)) 
+    
+        df_res = self._valuate(date, pf_names)
         # set total
         df_res[col_total] = [df_res.loc[r_start].min(), df_res.loc[r_date].max(), 
                              *df_res.iloc[2:].sum(axis=1).to_list()]
         df_ttl = df_res[col_total]
         df_res.loc[r_roi, col_total] = df_ttl[r_ugl] / df_ttl[r_buy]
-        if no_res is not None:
-            df_res[no_res] = None
+        idx_int = df_res.index.difference([r_start, r_date, r_roi])
+        # cast to int
+        df_res.loc[idx_int] = df_res.loc[idx_int].astype(int)
         return df_res
+
+
+    def _valuate(self, date, pf_names):
+        """
+        return evaluation summary df the portfolios in pf_names
+        pf_names: list of portfolio names
+        """
+        col_pf = 'portfolio'
+        df_all = None
+        no_res = []
+        for name in pf_names:
+            pf = self.portfolios[name]
+            df = pf.valuate(date=date, print_msg=False, total=True)
+            if df is None:
+                no_res.append(name)
+            else:
+                if date == 'all':
+                    df = df.assign(**{col_pf:name}).set_index(col_pf, append=True)
+                    axis = 0
+                else:
+                    df = df.to_frame(name)
+                    axis = 1
+                df_all = df if df_all is None else pd.concat([df_all, df], axis=axis) 
+    
+        df_all = df_all.sort_index() if date == 'all' else df_all
+        return df_all
 
 
 
