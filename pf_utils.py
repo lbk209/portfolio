@@ -2310,13 +2310,13 @@ class PortfolioBuilder():
         df_rec = self._check_result(print_msg)
         if df_rec is None:
             return None
-    
+
         if isinstance(date, str) and date.lower() == 'all':
             date = None
             history = True
         else:
             history = False
-    
+
         date_format = self.date_format
         col_date = self.cols_record['date']
         
@@ -2342,16 +2342,16 @@ class PortfolioBuilder():
         # buy & sell prices to date.
         cost = None if cost_excluded else self.cost
         df_cf = self._calc_cashflow_history(df_rec, cost, total=total)
-    
+
         # calc profit
-        sr_ugl, sr_roi = [self._calc_profit(sr_val, df_cf, result=x, roi_percent=False) for x in ['UGL', 'ROI']]
+        df_pnl = self._calc_profit(sr_val, df_cf, result='all', roi_percent=False)
         
         if total:
-            df_m = df_cf.join(sr_val.rename('value'), how='right').join(sr_ugl).ffill().join(sr_roi).ffill()
+            df_m = df_cf.join(sr_val.rename('value'), how='right').join(df_pnl).ffill()
         else:
-            df_m = self._join_cashflow_by_ticker(sr_val, df_cf, sr_ugl, sr_roi)
+            df_m = self._join_cashflow_by_ticker(sr_val, df_cf, df_pnl)
         df_m = df_m.dropna(how='all')
-    
+
         if not history:
             start = df_m.index.get_level_values(col_date).min().strftime(date_format)
             sr = pd.Series([start, date], index=['start', 'end'])
@@ -2360,10 +2360,10 @@ class PortfolioBuilder():
         return df_m
 
 
-    def _join_cashflow_by_ticker(self, sr_val, df_cf, sr_ugl, sr_roi):
+    def _join_cashflow_by_ticker(self, sr_val, df_cf, df_pnl):
         """
         Merge cashflow history (based on transaction records) with value history (based on price changes).
-        sr_val, df_cf, sr_ugl: data by date & ticker
+        sr_val, df_cf, df_pnl: data by date & ticker
         """
         cols_record = self.cols_record
         col_date = cols_record['date']
@@ -2383,7 +2383,7 @@ class PortfolioBuilder():
             end = start - pd.DateOffset(days=1)
        
         return (pd.DataFrame(index=index).join(df_cf).join(sr_val.rename(col_val))
-                .join(sr_ugl).join(sr_roi).groupby(col_tkr).ffill()
+                .join(df_pnl).groupby(col_tkr).ffill()
                 # DO NOT drop col_val of None to include the cashflow of all tickers in history
                 #.dropna(subset=col_val) 
                 .sort_index())
@@ -2472,23 +2472,22 @@ class PortfolioBuilder():
         return df_cf
 
 
-    def get_profit_history(self, result='ROI', roi_log=False, msg=True, cost_excluded=False):
+    def get_profit_history(self, result='ROI', total=True, cost_excluded=False, 
+                           roi_log=False, msg=True):
         """
         get history of profit/loss
         result: 'ROI', 'UGL' or 'all'
         """
-        df_rec = self._check_result(msg)
-        if df_rec is None:
+        df_all = self.valuate(date='all', total=total, cost_excluded=cost_excluded)
+        if df_all is None:
             return None
-            
-        sr_val = self._calc_value_history(df_rec, name=self.name, msg=msg)
-        if (sr_val is None) or (len(sr_val)==1):
-            return print('ERROR: need more data to plot')
-
-        cost = None if cost_excluded else self.cost
-        df_cf = self._calc_cashflow_history(df_rec, cost) # buy & sell
-        sr_prf = self._calc_profit(sr_val, df_cf, result=result, roi_log=roi_log)
-        return sr_prf
+        cols_pnl = ['ugl', 'roi']
+    
+        result = result.lower()
+        if result in cols_pnl:
+            return df_all[result]
+        else:
+            return df_all[cols_pnl]
 
     
     def plot(self, start_date=None, end_date=None, total=True,
@@ -3110,31 +3109,41 @@ class PortfolioBuilder():
         """
         calc history of roi or unrealized gain/loss
         sr_val: output of _calc_value_history
-        result: ROI, UGL or None
+        result: ROI, UGL or 'all'
         """
         col_tkr = self.cols_record['tkr']
+        col_roi = 'roi'
+        col_ugl = 'ugl'
+        
         conds = [col_tkr in df.index.names for df in [sr_val, df_cashflow_history]]
         if sum(conds) == 1: # both of sr_val & df_cashflow_history be total or by tickers
             return print('ERROR') 
         else: 
-            sr_his = sr_val.to_frame(col_val).join(df_cashflow_history, how='outer')
+            df_his = sr_val.to_frame(col_val).join(df_cashflow_history, how='outer')
         
-        sr_his = sr_his.groupby(col_tkr) if sum(conds) == 2 else sr_his
-        sr_his = sr_his.ffill().fillna(0)
+        df_his = df_his.groupby(col_tkr) if sum(conds) == 2 else df_his
+        df_his = df_his.ffill().fillna(0)
     
-        result = result.upper()
-        if result.upper() == 'ROI':
-            ratio = lambda x: (x[col_val] + x[col_sell]) / x[col_buy]
-            m = 100 if roi_percent else 1
-            if roi_log:
-                sr_his = sr_his.apply(lambda x: np.log(ratio(x)), axis=1).mul(m)
-            else:
-                sr_his = sr_his.apply(lambda x: ratio(x) - 1, axis=1).mul(m)
-        elif result.upper() == 'UGL': # unrealized gain/loss
-            sr_his = sr_his.apply(lambda x: x[col_val] + x[col_sell] - x[col_buy], axis=1)
+        # calc ROI
+        ratio = lambda x: (x[col_val] + x[col_sell]) / x[col_buy]
+        m = 100 if roi_percent else 1
+        if roi_log:
+            sr_roi = df_his.apply(lambda x: np.log(ratio(x)), axis=1)
         else:
-            pass # return df of col_val, col_sell and col_buy
-        return sr_his.rename(result.lower())
+            sr_roi = df_his.apply(lambda x: ratio(x) - 1, axis=1)
+        sr_roi = sr_roi.rename(col_roi)
+        
+        # calc unrealized gain/loss
+        sr_ugl = (df_his.apply(lambda x: x[col_val] + x[col_sell] - x[col_buy], axis=1)
+                        .rename(col_ugl))
+    
+        result = result.lower()
+        if result == col_roi:
+            return sr_roi
+        elif result == col_ugl:
+            return sr_ugl
+        else:
+            return sr_ugl.to_frame().join(sr_roi)
         
 
     def _check_result(self, msg=True):
