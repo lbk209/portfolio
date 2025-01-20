@@ -2301,22 +2301,29 @@ class PortfolioBuilder():
         return df_rec
 
 
-    def valuate(self, date=None, print_msg=False, cost_excluded=False):
+    def valuate(self, date=None, print_msg=False, cost_excluded=False, total=True):
         """
         calc date, buy/sell prices & portfolio value from self.record or self.df_rec
+        date: date, None, 'all'
         """
-        date_format = self.date_format
-        
         # get latest record
         df_rec = self._check_result(print_msg)
         if df_rec is None:
             return None
+
+        if isinstance(date, str) and date.lower() == 'all':
+            date = None
+            history = True
+        else:
+            history = False
+
+        date_format = self.date_format
+        col_date = self.cols_record['date']
         
-        # update price data by adding tickers not in the universe if existing
-        df_prices = self._update_universe(df_rec, msg=print_msg)
-        df_prices = self.liquidation.set_price(df_prices)
-    
         # check date by price data
+        df_prices = self._update_universe(df_rec, msg=print_msg)
+        # update price data by adding tickers not in the universe if existing
+        df_prices = self.liquidation.set_price(df_prices)
         date = df_prices.loc[:date].index.max() # works even if date None
         date_ft = df_rec.index.get_level_values(0).min()
         if date_ft > date:
@@ -2330,22 +2337,56 @@ class PortfolioBuilder():
         df_rec = df_rec.loc[:date]
         date_lt = df_rec.index.get_level_values(0).max()
         
+        # calc value
+        sr_val = self._calc_value_history(df_rec, date, self.name, msg=False, total=total)
         # buy & sell prices to date.
         cost = None if cost_excluded else self.cost
-        cf = self._calc_cashflow_history(df_rec, cost).sort_index().iloc[-1].astype(int)
-        sell, buy = cf['sell'], cf['buy']
-        # calc value
-        val = self._calc_value_history(df_rec, date, self.name, msg=False).sort_index().iloc[-1]
-        # calc roi & unrealized gain/loss
-        ugl = val + sell - buy
-        roi = ugl / buy
-        if print_msg:
-            s = format_rounded_string(roi, ugl)
-            print(s, f' ({date})')
-             
-        data = [date_ft, date, buy, sell, val, ugl, roi]
-        index = ['start', 'date', 'buy', 'sell', 'value', 'UGL', 'ROI']
-        return pd.Series(data, index=index)
+        df_cf = self._calc_cashflow_history(df_rec, cost, total=total)
+
+        # calc profit
+        df_pnl = self._calc_profit(sr_val, df_cf, result='all', roi_percent=False)
+        
+        if total:
+            df_m = df_cf.join(sr_val.rename('value'), how='right').join(df_pnl).ffill()
+        else:
+            df_m = self._join_cashflow_by_ticker(sr_val, df_cf, df_pnl)
+        df_m = df_m.dropna(how='all')
+
+        if not history:
+            start = df_m.index.get_level_values(col_date).min().strftime(date_format)
+            sr = pd.Series([start, date], index=['start', 'end'])
+            df_m = pd.concat([sr, df_m.loc[date]]) # concat data range
+            print(f'Result from {start} to {date}') if print_msg else None
+        return df_m
+
+
+    def _join_cashflow_by_ticker(self, sr_val, df_cf, df_pnl):
+        """
+        Merge cashflow history (based on transaction records) with value history (based on price changes).
+        sr_val, df_cf, df_pnl: data by date & ticker
+        """
+        cols_record = self.cols_record
+        col_date = cols_record['date']
+        col_tkr = cols_record['tkr']
+        col_val = 'value'
+        
+        index = None
+        dates_cf = df_cf.index.get_level_values(col_date).unique()
+        end = sr_val.index.get_level_values(col_date).max()
+        for start in dates_cf.sort_values(ascending=False):
+            dts = sr_val.loc[start:end].index.get_level_values(col_date).unique()
+            if dts.size == 0: # end date is smaller tha start
+                continue
+            tkrs = df_cf.loc[start].index
+            idx = pd.MultiIndex.from_product([dts, tkrs])
+            index = idx if index is None else index.append(idx)
+            end = start - pd.DateOffset(days=1)
+       
+        return (pd.DataFrame(index=index).join(df_cf).join(sr_val.rename(col_val))
+                .join(df_pnl).groupby(col_tkr).ffill()
+                # DO NOT drop col_val of None to include the cashflow of all tickers in history
+                #.dropna(subset=col_val) 
+                .sort_index())
 
 
     def transaction_pipeline(self, date=None, capital=10000000, commissions=0, 
@@ -2431,86 +2472,127 @@ class PortfolioBuilder():
         return df_cf
 
 
-    def get_profit_history(self, result='ROI', roi_log=False, msg=True, cost_excluded=False):
+    def get_profit_history(self, result='ROI', total=True, cost_excluded=False, 
+                           roi_log=False, msg=True):
         """
         get history of profit/loss
         result: 'ROI', 'UGL' or 'all'
         """
-        df_rec = self._check_result(msg)
-        if df_rec is None:
+        df_all = self.valuate(date='all', total=total, cost_excluded=cost_excluded)
+        if df_all is None:
             return None
-            
-        sr_val = self._calc_value_history(df_rec, name=self.name, msg=msg)
-        if (sr_val is None) or (len(sr_val)==1):
-            return print('ERROR: need more data to plot')
-
-        cost = None if cost_excluded else self.cost
-        df_cf = self._calc_cashflow_history(df_rec, cost) # buy & sell
-        sr_prf = self._calc_profit(sr_val, df_cf, result=result, roi_log=roi_log)
-        return sr_prf
+        cols_pnl = ['ugl', 'roi']
+    
+        result = result.lower()
+        if result in cols_pnl:
+            return df_all[result]
+        else:
+            return df_all[cols_pnl]
 
     
-    def plot(self, start_date=None, end_date=None, 
+    def plot(self, start_date=None, end_date=None, total=True,
              figsize=(10,6), legend=True, height_ratios=(3,1), loc='upper left',
-             msg_cr=True, roi=True, roi_log=False, cashflow=True, cost_excluded=False):
+             roi=True, roi_log=False, cashflow=True, cost_excluded=False):
         """
         plot total, net and profit histories of portfolio
         """
-        df_rec = self._check_result(msg_cr)
-        if df_rec is None:
+        df_all = self.valuate(date='all', total=total, cost_excluded=cost_excluded)
+        if df_all is None:
             return None
-            
-        col_net = 'Net'
-        col_sell = 'sell'
-        sr_val = self._calc_value_history(df_rec, name=self.name, msg=True).rename(col_net)
-        if (sr_val is None) or (len(sr_val)==1):
-            return print('ERROR: need more data to plot')
-
-        cost = None if cost_excluded else self.cost
-        df_cf = self._calc_cashflow_history(df_rec, cost) # cashflow
-        res_prf = 'ROI' if roi else 'UGL'
-        sr_prf = self._calc_profit(sr_val, df_cf, result=res_prf, roi_log=roi_log) # profit
+        else: # necessary to get tickers of end_date and plot vlines for trasaction dates
+            df_rec = self._check_result(False)
     
-        # total: value + sell price
-        sr_ttl = (df_cf.join(sr_val, how='right').ffill()
-                  .apply(lambda x: x[col_net] + x[col_sell], axis=1))
-    
+        # reset start & end dates
         func = lambda x: x.loc[start_date:end_date]
-        sr_ttl = func(sr_ttl)
-        sr_val = func(sr_val)
-        sr_prf = func(sr_prf)
-        
-       # set title
-        sr = self.valuate(end_date, print_msg=False, cost_excluded=cost_excluded)
-        title = format_rounded_string(sr['ROI'], sr['UGL'])
-        title = f"{title} ({sr['date']})"
-            
-        # plot historical of portfolio value
-        ax1, ax2 = self._plot_get_axes(figsize=figsize, height_ratios=height_ratios)
-        line_ttl = {'c':'darkgray', 'ls':'--'}
-        _ = sr_ttl.plot(ax=ax1, label='Total', title=title, figsize=figsize, **line_ttl)
-        _ = sr_val.plot(ax=ax1, c=line_ttl['c'])
-        ax1.fill_between(sr_ttl.index, sr_ttl, ax1.get_ylim()[0], facecolor=line_ttl['c'], alpha=0.1)
-        ax1.fill_between(sr_val.index, sr_val, ax1.get_ylim()[0], facecolor=line_ttl['c'], alpha=0.2)
+        df_all = func(df_all)
+        start_date, end_date = get_date_minmax(df_all, self.date_format)
     
-        # plot vline for transaction dates
-        dates_trs = func(df_rec).index.get_level_values(0).unique()
-        ax1.vlines(dates_trs, 0, 1, transform=ax1.get_xaxis_transform(), lw=0.5, color='gray')
-        ax1.set_ylabel('Value')
+        col_tkr = self.cols_record['tkr']
+        col_date = self.cols_record['date']
+        col_val = 'value'
+        col_buy = 'buy'
+        col_sell = 'sell'
+        col_roi = 'roi'
+        col_ugl = 'ugl'
+    
+        ax1, ax2 = self._plot_get_axes(figsize=figsize, height_ratios=height_ratios)
+        # determine plot type: total or individuals
+        col_pnl = col_roi if roi else col_ugl
+        str_pnl = 'Return On Investment (%)' if roi else 'Unrealized Gain/Loss'
+        mlf_pnl = 100 if roi else 1
         
-        # plot profit history
-        ax1t = sr_prf.plot(ax=ax1.twinx(), label=res_prf, lw=1, color='orange')
-        ax1t.set_ylabel('Return On Investment (%)' if roi else 'Unrealized Gain/Loss')
-        # set env for the twins
-        _ = set_matplotlib_twins(ax1, ax1t, legend=legend, loc=loc)
-        ax1.margins(0)
-        ax1t.margins(0)
-        
+        if total:
+            # data for plot
+            sr_ttl = df_all.apply(lambda x: x[col_sell] + x[col_val], axis=1)
+            sr_val = df_all[col_val]
+            sr_pnl = df_all[col_pnl].mul(mlf_pnl)
+    
+            # get title
+            sr_end = df_all.loc[end_date]
+            title = format_rounded_string(sr_end[col_roi], sr_end[col_ugl])
+            title = f"{title} ({end_date})"
+    
+            # plot
+            line_ttl = {'c':'darkgray', 'ls':'--'}
+            _ = sr_ttl.plot(ax=ax1, label='Total', title=title, **line_ttl)
+            _ = sr_val.plot(ax=ax1, c=line_ttl['c'])
+            ax1.fill_between(sr_ttl.index, sr_ttl, ax1.get_ylim()[0], facecolor=line_ttl['c'], alpha=0.1)
+            ax1.fill_between(sr_val.index, sr_val, ax1.get_ylim()[0], facecolor=line_ttl['c'], alpha=0.2)
+            ax1.set_ylabel('Value')
+            ax1.margins(0)
+            
+            # plot profit history
+            ax1t = sr_pnl.plot(ax=ax1.twinx(), label=col_pnl.upper(), lw=1, color='orange')
+            ax1t.set_ylabel(str_pnl)
+            ax1t.margins(0)
+            
+            # set env for the twins
+            _ = set_matplotlib_twins(ax1, ax1t, legend=legend, loc=loc)
+        else:
+            # data for plot
+            # get tickers of the latest transaction
+            dt = df_rec.loc[:end_date].index.get_level_values(col_date).max()
+            tickers = df_rec.loc[dt].index
+            idx = pd.IndexSlice
+            df_tkr = df_all.loc[idx[:, tickers], :]
+    
+            #return df_tkr, col_pnl, col_tkr, mlf_pnl, col_date, col_ugl, col_buy, roi
+            
+            df_pnl = df_tkr[col_pnl].unstack(col_tkr).mul(mlf_pnl)
+            if self.security_names is not None:
+                df_pnl.columns = [self.security_names[x] for x in df_pnl.columns]
+            sr_pnl_ttl = df_tkr.groupby(col_date).sum()
+            sr_pnl_ttl = sr_pnl_ttl[col_ugl].div(sr_pnl_ttl[col_buy].div(mlf_pnl) if roi else 1).rename('Portfolio')
+    
+            # get title
+            sr_end = df_all.loc[end_date]
+            sr_end = sr_end.sum()
+            sr_end[col_roi] = sr_end[col_ugl]/sr_end[col_buy]
+            title = format_rounded_string(sr_end[col_roi], sr_end[col_ugl])
+            title = f"{title} ({end_date})"
+    
+            # plot profit history
+            line_ttl = {'c':'darkgray', 'ls':'--'}
+            _ = sr_pnl_ttl.plot(ax=ax1, lw=1, title=title, **line_ttl)
+            ax1.fill_between(sr_pnl_ttl.index, sr_pnl_ttl, ax1.get_ylim()[0], facecolor=line_ttl['c'], alpha=0.1)
+            _ = df_pnl.plot(ax=ax1, lw=1)
+            yl = ax1.set_ylabel(str_pnl)
+            ax1.yaxis.tick_right()
+            ax1.yaxis.set_label_position("right")
+            #yl.set_rotation(-90)
+            ax1.margins(0)
+            ax1.set_xlabel('')
+            ax1.legend(title=None)
+            #cashflow = False
+    
         # plot cashflow
+        # you might use df_all to plot cashflow if transaction vlines not necessary 
         if cashflow:
+            # plot vline for transaction dates
+            dates_trs = func(df_rec).index.get_level_values(0).unique()
+            ax1.vlines(dates_trs, 0, 1, transform=ax1.get_xaxis_transform(), lw=0.5, color='gray')
             # set slice for record with a single transaction
-            start, end = get_date_minmax(sr_val)
-            ax2 = self.plot_cashflow(df_rec=df_rec, start_date=start, end_date=end, 
+            ax2 = self.plot_cashflow(df_rec=df_rec, start_date=start_date, end_date=end_date, 
                                      cost_excluded=cost_excluded, ax=ax2)
         return None
 
@@ -2730,7 +2812,7 @@ class PortfolioBuilder():
         return SecurityDict(s, names=s)
 
 
-    def _calc_cashflow_history(self, record, cost=None):
+    def _calc_cashflow_history(self, record, cost=None, total=True):
         """
         Returns df of cumulative buy and sell prices at each transaction.
         """
@@ -2738,7 +2820,7 @@ class PortfolioBuilder():
         df_rec = self.view_record(0, df_rec=record, nshares=False, value=True, 
                                   weight_actual=False, msg=False, int_nshares=False)
         cm = CostManager(df_rec, self.cols_record, self.date_format)
-        return cm.calc_cashflow_history(cost=cost)
+        return cm.calc_cashflow_history(cost=cost, total=total)
     
 
     def _update_universe(self, df_rec, msg=False):
@@ -2765,7 +2847,8 @@ class PortfolioBuilder():
         else:
             return df_prices
 
-        
+
+    # TODO: error if df_rec from self.view_record(... value=True)
     def _calc_periodic_value(self, df_rec, df_prices, date=None, msg=False,
                              col_val='value', col_end='end'):
         """
@@ -2930,21 +3013,23 @@ class PortfolioBuilder():
                 .loc[:, cols.insert(i+1, col_wgta)])
 
 
-    def _calc_value_history(self, df_rec, end_date=None, name=None, msg=False):
+    def _calc_value_history(self, df_rec, end_date=None, name=None, msg=False, total=True):
         """
         calc historical of portfolio value from transaction
         end_date: calc value from 1st transaction of df_rec to end_date.
         name: name of output series
         """
         cols_record = self.cols_record
+        col_date = cols_record['date']
         col_rat = cols_record['rat']
         col_net = cols_record['net']
         end = datetime.today() if end_date is None else end_date
-        sr_ttl = pd.Series()
+        sr_ttl = None
         dates_trs = df_rec.index.get_level_values(0).unique()
         # update price data with df_rec
         df_universe = self._update_universe(df_rec, msg=msg)
         df_universe = self.liquidation.set_price(df_universe)
+        df_universe = df_universe.rename_axis(col_date)
         # get number of shares
         sr_nshares = self._get_nshares(df_rec, df_universe, cols_record, int_nshares=False)
         sr_nshares = sr_nshares[col_net]
@@ -2963,17 +3048,22 @@ class PortfolioBuilder():
             rat_i.loc[start] = df_rec.loc[start, col_rat]
             # calc combined security value history from prv transaction (start) to current (end) 
             sr_i = (df_c.div(rat_i, fill_value=1) # trading price
-                    .apply(lambda x: x*n_tickers.loc[x.name]).sum(axis=1)) # x.name: index name
+                        .apply(lambda x: x*n_tickers.loc[x.name])) # x.name: index name
             # concat histories        
-            sr_ttl = pd.concat([sr_ttl, sr_i])
+            sr_ttl = sr_i if sr_ttl is None else pd.concat([sr_ttl, sr_i])
             end = start - pd.DateOffset(days=1)
-    
-        if len(sr_ttl) > 0:
-            # sort by date
-            sr = sr_ttl.astype(int).sort_index()
-            return sr if name is None else sr.rename(name)
-        else:
+        
+        if sr_ttl is None:
             return print('ERROR: no historical')
+        else:
+            sr_ttl = sr_ttl.sort_index()
+        
+        if total:
+            sr_ttl = sr_ttl.fillna(0).sum(axis=1).astype(int)
+        else:
+            sr_ttl = sr_ttl.stack().dropna().astype(int)
+        
+        return sr_ttl if name is None else sr_ttl.rename(name)
 
 
     def _plot_get_axes(self, figsize=(10,6), height_ratios=(3, 1), sharex=True):
@@ -2982,8 +3072,8 @@ class PortfolioBuilder():
         """
         return create_split_axes(figsize=figsize, vertical_split=True, 
                                  ratios=height_ratios, share_axis=sharex, space=0)
-        
 
+    
     def _plot_cashflow(self, ax, sr_cashflow_history, date=None, 
                        label='Cash Flows', alpha=0.4, color='g'):
         sr_cashflow_history = sr_cashflow_history.loc[:date]
@@ -3019,25 +3109,41 @@ class PortfolioBuilder():
         """
         calc history of roi or unrealized gain/loss
         sr_val: output of _calc_value_history
-        result: ROI, UGL or None
+        result: ROI, UGL or 'all'
         """
-        df = (sr_val.to_frame(col_val)
-              .join(df_cashflow_history, how='outer')
-              .ffill().fillna(0))
+        col_tkr = self.cols_record['tkr']
+        col_roi = 'roi'
+        col_ugl = 'ugl'
         
-        result = result.upper()
-        if result == 'ROI':
-            ratio = lambda x: (x[col_val] + x[col_sell]) / x[col_buy]
-            m = 100 if roi_percent else 1
-            if roi_log:
-                df = df.apply(lambda x: np.log(ratio(x)), axis=1).mul(m)
-            else:
-                df = df.apply(lambda x: ratio(x) - 1, axis=1).mul(m)
-        elif result == 'UGL': # unrealized gain/loss
-            df = df.apply(lambda x: x[col_val] + x[col_sell] - x[col_buy], axis=1)
+        conds = [col_tkr in df.index.names for df in [sr_val, df_cashflow_history]]
+        if sum(conds) == 1: # both of sr_val & df_cashflow_history be total or by tickers
+            return print('ERROR') 
+        else: 
+            df_his = sr_val.to_frame(col_val).join(df_cashflow_history, how='outer')
+        
+        df_his = df_his.groupby(col_tkr) if sum(conds) == 2 else df_his
+        df_his = df_his.ffill().fillna(0)
+    
+        # calc ROI
+        ratio = lambda x: (x[col_val] + x[col_sell]) / x[col_buy]
+        m = 100 if roi_percent else 1
+        if roi_log:
+            sr_roi = df_his.apply(lambda x: np.log(ratio(x)), axis=1)
         else:
-            pass # return df of col_val, col_sell and col_buy
-        return df
+            sr_roi = df_his.apply(lambda x: ratio(x) - 1, axis=1)
+        sr_roi = sr_roi.rename(col_roi)
+        
+        # calc unrealized gain/loss
+        sr_ugl = (df_his.apply(lambda x: x[col_val] + x[col_sell] - x[col_buy], axis=1)
+                        .rename(col_ugl))
+    
+        result = result.lower()
+        if result == col_roi:
+            return sr_roi
+        elif result == col_ugl:
+            return sr_ugl
+        else:
+            return sr_ugl.to_frame().join(sr_roi)
         
 
     def _check_result(self, msg=True):
@@ -3153,33 +3259,44 @@ class CostManager():
         
     
     def calc_cashflow_history(self, date=None, percent=True,
-                              cost=dict(buy=0.00363960, sell=0.00363960, tax=0.18, fee=0)):
+                              cost=dict(buy=0.00363960, sell=0.00363960, tax=0.18, fee=0),
+                              total=True):
         """
         calc net buy & sell prices at each transaction date
         cost: dict of cost items
+        total: set to False to get histories of individual tickers
         """
         df_rec = self.df_rec
         if df_rec is None:
             return None
         else:
             cols_record = self.cols_record
-        
-        df_cf = CostManager._calc_cashflow_history(df_rec, cols_record)
+            col_date = cols_record['date']
+            col_tkr = cols_record['tkr']
+    
+        # force to total to calc df_net
+        df_cf = CostManager._calc_cashflow_history(df_rec, cols_record, total=False)
         df_cf = df_cf.loc[:date]
         if cost is None: # cashflow without cost
-            return df_cf
-            
+            return df_cf.groupby(col_date).sum() if total else df_cf
+    
         # calc cost
         df_cost = self.calc_cost(date=date, percent=percent, **cost)
-        df_cost = df_cost.groupby('date').sum().rename(columns={'buy':'cost_buy'})
+        df_cost = df_cost.rename(columns={'buy':'cost_buy'})
         df_cost['cost_sell'] = df_cost['sell'] + df_cost['fee'] + df_cost['tax']
-        df_cost = df_cost[['cost_buy', 'cost_sell']].cumsum()
+        df_cost = df_cost[['cost_buy', 'cost_sell']]
+        df_cost = df_cost.unstack(col_tkr).cumsum().ffill().stack()
         
         # calc net cashflow
-        df_net = df_cf.join(df_cost, how='outer').ffill()
+        df_net = df_cf.join(df_cost, how='outer')
         df_net['buy']  = df_net['buy'] + df_net['cost_buy']
         df_net['sell']  = df_net['sell'] - df_net['cost_sell']
-        return df_net[['buy', 'sell']]
+        df_net = df_net[['buy', 'sell']]
+    
+        if total: 
+            df_net = df_net.groupby(col_date).sum()
+    
+        return df_net
 
 
     def calc_cost(self, date=None, buy=0, sell=0, tax=0, fee=0, percent=True):
@@ -3234,18 +3351,30 @@ class CostManager():
 
 
     @staticmethod
-    def _calc_cashflow_history(df_rec, cols_record):
+    def _calc_cashflow_history(df_rec, cols_record, total=True):
         """
         Returns df of cumulative buy and sell prices at each transaction.
+        total: set to False to get histories of individual tickers
         """
         col_trs = cols_record['trs']
+        col_tkr = cols_record['tkr']
         col_date = cols_record['date']
+        col_buy = 'buy'
+        col_sell = 'sell'
+        col_cf = 'cf'
+    
+        sr_tr = df_rec.apply(lambda x: col_buy if x[col_trs]>0 else 
+                             (col_sell if x[col_trs]<0 else None), axis=1)
+        df_cf = (df_rec.assign(**{col_cf: sr_tr}).dropna(subset=col_cf)
+                       .pivot(columns=col_cf, values=col_trs).abs().sort_index())
         
-        df = df_rec.loc[df_rec[col_trs]>0]
-        df_cf = df[col_trs].groupby(col_date).sum().cumsum().to_frame('buy')
-        df = df_rec.loc[df_rec[col_trs]<0]
-        df_sell = df[col_trs].groupby(col_date).sum().cumsum().mul(-1)
-        return df_cf.join(df_sell.rename('sell'), how='outer').ffill().fillna(0)
+        if col_sell not in df_cf.columns:
+            df_cf[col_sell] = 0
+        
+        if total: 
+            return df_cf.groupby(col_date).sum().cumsum() 
+        else:
+            return df_cf.unstack(col_tkr).cumsum().ffill().stack().fillna(0)
 
 
     @staticmethod
@@ -3278,6 +3407,7 @@ class CostManager():
                          col_val='value', col_end='end'):
         """
         calc annual fee
+        df_rec: should have col_val & col_end. see _calc_periodic_value
         sr_fee: dict or series of ticker to annual fee. rate
         """
         col_tkr = cols_record['tkr']
@@ -5789,7 +5919,7 @@ class PortfolioManager():
     
     def plot(self, pf_names=None, start_date=None, end_date=None, roi=True,
              figsize=(10,5), legend=True, colors = plt.cm.Spectral,
-             col_val='value', col_sell='sell', col_buy='buy'):
+             col_val='value', col_buy='buy', col_total='TOTAL'):
         """
         start_date: date of beginning of the return plot
         end_date: date to calc return
@@ -5799,85 +5929,105 @@ class PortfolioManager():
         pf_names = self.check_portfolios(pf_names)
         if len(pf_names) == 0:
             return None
-        else: # calc portfolio return for title
-            df = self._valuate(pf_names, end_date)
-            sr = df['Total']
-            title = format_rounded_string(sr['ROI'], sr['UGL'])
-            title = f"Total {title} ({sr['date']})"
+    
+        col_ugl = 'ugl'
+        col_roi = 'roi'
+        col_date = 'date'
+        col_end = 'end'
+        
+        # get data
+        df_all = self._valuate(pf_names, 'all')
+        df_all = df_all.loc[start_date:end_date]
+        start_date, end_date = get_date_minmax(df_all)
+    
+        # set plot title
+        df = self.summary(pf_names, end_date)
+        sr = df[col_total]
+        title = format_rounded_string(sr[col_roi], sr[col_ugl])
+        title = f"Total {title} ({sr[col_end]})"
     
         # total value
-        line_ttl = {'c':'gray', 'ls':'--'}
-        dfs = [v._calc_value_history(v.record, name=k, msg=False) for k,v in self.portfolios.items() if k in pf_names]
-        sr_ttl = pd.concat(dfs, axis=1).ffill().sum(axis=1).rename('Total Value').loc[start_date:end_date]
-        ax1 = sr_ttl.plot(title=title, figsize=figsize, **line_ttl)
+        line_ttl = {'c':'black', 'alpha':0.3, 'ls':'--', 'lw':1}
+        # rename for legend
+        sr_val = df_all[col_val].unstack().ffill().sum(axis=1).rename('Total Value')
+        ax1 = sr_val.plot(title=title, figsize=figsize, **line_ttl)
         ax1.set_ylabel('Total Value')
+        ax1.set_xlabel('')
     
         # roi or ugl total
         if roi:
-            result_indv = 'ROI'
+            result_indv = col_roi
             ylabel_indv = 'Return On Investment (%)'
-            func_ttl = lambda x: ((x[col_val] + x[col_sell]) / x[col_buy] - 1)*100
+            calc = lambda x: x[col_ugl] / x[col_buy] * 100
+            sr_pnl = (df_all.unstack().ffill() # ffill dates of no value with the last value
+                      .stack().groupby(col_date).sum().apply(calc, axis=1)) # calc roi
         else:
-            result_indv = 'UGL'
+            result_indv = col_ugl
             ylabel_indv = 'Unrealized Gain/Loss'
-            func_ttl = lambda x: x[col_val] + x[col_sell] - x[col_buy]
-        
+            sr_pnl = df_all[col_ugl].unstack().ffill().sum(axis=1)
         ax2 = ax1.twinx()
-        list_df = [self.portfolios[x].get_profit_history(result='all', msg=False) for x in pf_names]
-        func = lambda x: pd.concat([df[x] for df in list_df], axis=1).ffill().sum(axis=1).rename(x)
-        dfs = [func(x) for x in (col_val, col_sell, col_buy)]
-        df_ttl = pd.concat(dfs, axis=1).ffill()
-        sr_ttl = df_ttl.apply(func_ttl, axis=1).rename(f'Total {result_indv}')
-        sr_ttl = sr_ttl.loc[start_date:end_date]
-        _ = sr_ttl.plot(ax=ax2, lw=1)
-        
+        _ = sr_pnl.rename(f'Total {result_indv.upper()}').plot(ax=ax2, lw=1)
+    
         # roi or ugl individuals
-        dfs = [self.portfolios[x].get_profit_history(result=result_indv, msg=False) for x in pf_names]
-        dfs = [v.rename(k) for k,v in zip(pf_names, dfs) if v is not None]
-        _ = pd.concat(dfs, axis=1).ffill().loc[start_date:end_date].plot(ax=ax2, alpha=0.5, lw=1)
+        df_all[result_indv].unstack().ffill().mul(100 if roi else 1).plot(ax=ax2, alpha=0.5, lw=1)
         ax2.set_prop_cycle(color=colors(np.linspace(0,1,len(pf_names))))
         ax2.set_ylabel(ylabel_indv)
         _ = set_matplotlib_twins(ax1, ax2, legend=legend)
-        
+    
         # fill total roi/ugl
-        ax2.fill_between(sr_ttl.index, sr_ttl, ax2.get_ylim()[0], 
+        ax2.fill_between(sr_pnl.index, sr_pnl, ax2.get_ylim()[0], 
                          facecolor=ax2.get_lines()[0].get_color(), alpha=0.1)
         ax1.margins(0)
         ax2.margins(0)
+        return None
         
+
+    def summary(self, pf_names=None, date=None, int_to_str=False,
+                col_total='TOTAL', r_start='start', r_date='end', 
+                r_roi='roi', r_ugl='ugl', r_buy='buy'):
         
-    def valuate(self, pf_names=None, date=None):
         pf_names = self.check_portfolios(pf_names)
         if len(pf_names) == 0:
             return None
-        else:
-            return self._valuate(pf_names, date)
+    
+        df_res = self._valuate(pf_names, date)
+        # set total
+        df_res[col_total] = [df_res.loc[r_start].min(), df_res.loc[r_date].max(), 
+                             *df_res.iloc[2:].sum(axis=1).to_list()]
+        df_ttl = df_res[col_total]
+        df_res.loc[r_roi, col_total] = df_ttl[r_ugl] / df_ttl[r_buy]
+        # format int 
+        idx_int = df_res.index.difference([r_start, r_date, r_roi])
+        if int_to_str:
+            df_res.loc[idx_int] = df_res.loc[idx_int].map(lambda x: f'{round(x):,}')
+        return df_res
 
 
     def _valuate(self, pf_names, date):
         """
         return evaluation summary df the portfolios in pf_names
         pf_names: list of portfolio names
+        date: date for values on date, None for values on last date, 'all' for history
         """
-        col_total = 'Total'
-        r_start, r_date, r_roi, r_ugl, r_buy = ('start', 'date', 'ROI', 'UGL', 'buy')
-        df_res = None
+        col_pf = 'portfolio'
+        df_all = None
         no_res = []
         for name in pf_names:
             pf = self.portfolios[name]
-            sr = pf.valuate(date=date, print_msg=False)
-            if sr is None:
+            df = pf.valuate(date=date, print_msg=False, total=True)
+            if df is None:
                 no_res.append(name)
             else:
-                df_res = sr.to_frame(name) if df_res is None else df_res.join(sr.rename(name)) 
-        # set total
-        df_res[col_total] = [df_res.loc[r_start].min(), df_res.loc[r_date].max(), 
-                             *df_res.iloc[2:].sum(axis=1).to_list()]
-        df_ttl = df_res[col_total]
-        df_res.loc[r_roi, col_total] = df_ttl[r_ugl] / df_ttl[r_buy]
-        if no_res is not None:
-            df_res[no_res] = None
-        return df_res
+                if date == 'all':
+                    df = df.assign(**{col_pf:name}).set_index(col_pf, append=True)
+                    axis = 0
+                else:
+                    df = df.to_frame(name)
+                    axis = 1
+                df_all = df if df_all is None else pd.concat([df_all, df], axis=axis) 
+    
+        df_all = df_all.sort_index() if date == 'all' else df_all
+        return df_all
 
 
 
