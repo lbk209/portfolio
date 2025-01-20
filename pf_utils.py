@@ -2352,7 +2352,7 @@ class PortfolioBuilder():
             df_m = self._join_cashflow_by_ticker(sr_val, df_cf, sr_ugl, sr_roi)
         df_m = df_m.dropna(how='all')
     
-        if not history:
+        if not history and print_msg:
             start = df_m.index.get_level_values(col_date).min().strftime(date_format)
             print(f'Result from {start} to {date}')
             df_m = df_m.loc[date]
@@ -2507,21 +2507,17 @@ class PortfolioBuilder():
         col_tkr = self.cols_record['tkr']
         col_date = self.cols_record['date']
         col_val = 'value'
+        col_buy = 'buy'
         col_sell = 'sell'
         col_roi = 'roi'
         col_ugl = 'ugl'
     
-        # get axes for plot
-        #if cashflow and total:
-        if True:
-            ax1, ax2 = self._plot_get_axes(figsize=figsize, height_ratios=height_ratios)
-        else:
-            _, ax1 = plt.subplots(figsize=figsize)
-    
+        ax1, ax2 = self._plot_get_axes(figsize=figsize, height_ratios=height_ratios)
         # determine plot type: total or individuals
         col_pnl = col_roi if roi else col_ugl
         str_pnl = 'Return On Investment (%)' if roi else 'Unrealized Gain/Loss'
         mlf_pnl = 100 if roi else 1
+        
         if total:
             # data for plot
             sr_ttl = df_all.apply(lambda x: x[col_sell] + x[col_val], axis=1)
@@ -2535,7 +2531,7 @@ class PortfolioBuilder():
     
             # plot
             line_ttl = {'c':'darkgray', 'ls':'--'}
-            _ = sr_ttl.plot(ax=ax1, label='Total', title=title, figsize=figsize, **line_ttl)
+            _ = sr_ttl.plot(ax=ax1, label='Total', title=title, **line_ttl)
             _ = sr_val.plot(ax=ax1, c=line_ttl['c'])
             ax1.fill_between(sr_ttl.index, sr_ttl, ax1.get_ylim()[0], facecolor=line_ttl['c'], alpha=0.1)
             ax1.fill_between(sr_val.index, sr_val, ax1.get_ylim()[0], facecolor=line_ttl['c'], alpha=0.2)
@@ -2550,14 +2546,33 @@ class PortfolioBuilder():
             # set env for the twins
             _ = set_matplotlib_twins(ax1, ax1t, legend=legend, loc=loc)
         else:
+            # data for plot
             # get tickers of the latest transaction
             dt = df_rec.loc[:end_date].index.get_level_values(col_date).max()
             tickers = df_rec.loc[dt].index
             idx = pd.IndexSlice
+            df_tkr = df_all.loc[idx[:, tickers], :]
+    
+            #return df_tkr, col_pnl, col_tkr, mlf_pnl, col_date, col_ugl, col_buy, roi
+            
+            df_pnl = df_tkr[col_pnl].unstack(col_tkr).mul(mlf_pnl)
+            if self.security_names is not None:
+                df_pnl.columns = [self.security_names[x] for x in df_pnl.columns]
+            sr_pnl_ttl = df_tkr.groupby(col_date).sum()
+            sr_pnl_ttl = sr_pnl_ttl[col_ugl].div(sr_pnl_ttl[col_buy].div(mlf_pnl) if roi else 1).rename('Portfolio')
+    
+            # get title
+            sr_end = df_all.loc[end_date]
+            sr_end = sr_end.sum()
+            sr_end[col_roi] = sr_end[col_ugl]/sr_end[col_buy]
+            title = format_rounded_string(sr_end[col_roi], sr_end[col_ugl])
+            title = f"{title} ({end_date})"
+    
             # plot profit history
-            title = f'{str_pnl} {end_date}'
-            sr_pnl = df_all.loc[idx[:, tickers], col_pnl].unstack(col_tkr).mul(mlf_pnl)
-            _ = sr_pnl.plot(ax=ax1, label=col_pnl.upper(), lw=1, title=title)
+            line_ttl = {'c':'darkgray', 'ls':'--'}
+            _ = sr_pnl_ttl.plot(ax=ax1, lw=1, title=title, **line_ttl)
+            ax1.fill_between(sr_pnl_ttl.index, sr_pnl_ttl, ax1.get_ylim()[0], facecolor=line_ttl['c'], alpha=0.1)
+            _ = df_pnl.plot(ax=ax1, lw=1)
             yl = ax1.set_ylabel(str_pnl)
             ax1.yaxis.tick_right()
             ax1.yaxis.set_label_position("right")
