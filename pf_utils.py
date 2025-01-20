@@ -2352,10 +2352,11 @@ class PortfolioBuilder():
             df_m = self._join_cashflow_by_ticker(sr_val, df_cf, sr_ugl, sr_roi)
         df_m = df_m.dropna(how='all')
     
-        if not history and print_msg:
+        if not history:
             start = df_m.index.get_level_values(col_date).min().strftime(date_format)
-            print(f'Result from {start} to {date}')
-            df_m = df_m.loc[date]
+            sr = pd.Series([start, date], index=['start', 'end'])
+            df_m = pd.concat([sr, df_m.loc[date]]) # concat data range
+            print(f'Result from {start} to {date}') if print_msg else None
         return df_m
 
 
@@ -2382,7 +2383,10 @@ class PortfolioBuilder():
             end = start - pd.DateOffset(days=1)
        
         return (pd.DataFrame(index=index).join(df_cf).join(sr_val.rename(col_val))
-                .join(sr_ugl).join(sr_roi).groupby(col_tkr).ffill().sort_index())
+                .join(sr_ugl).join(sr_roi).groupby(col_tkr).ffill()
+                # DO NOT drop col_val of None to include the cashflow of all tickers in history
+                #.dropna(subset=col_val) 
+                .sort_index())
 
 
     def transaction_pipeline(self, date=None, capital=10000000, commissions=0, 
@@ -3119,14 +3123,14 @@ class PortfolioBuilder():
         sr_his = sr_his.ffill().fillna(0)
     
         result = result.upper()
-        if result == 'ROI':
+        if result.upper() == 'ROI':
             ratio = lambda x: (x[col_val] + x[col_sell]) / x[col_buy]
             m = 100 if roi_percent else 1
             if roi_log:
                 sr_his = sr_his.apply(lambda x: np.log(ratio(x)), axis=1).mul(m)
             else:
                 sr_his = sr_his.apply(lambda x: ratio(x) - 1, axis=1).mul(m)
-        elif result == 'UGL': # unrealized gain/loss
+        elif result.upper() == 'UGL': # unrealized gain/loss
             sr_his = sr_his.apply(lambda x: x[col_val] + x[col_sell] - x[col_buy], axis=1)
         else:
             pass # return df of col_val, col_sell and col_buy
@@ -5919,8 +5923,8 @@ class PortfolioManager():
         else: # calc portfolio return for title
             df = self._valuate(pf_names, end_date)
             sr = df['Total']
-            title = format_rounded_string(sr['ROI'], sr['UGL'])
-            title = f"Total {title} ({sr['date']})"
+            title = format_rounded_string(sr['roi'], sr['ugl'])
+            title = f"Total {title} ({sr['end']})"
     
         # total value
         line_ttl = {'c':'gray', 'ls':'--'}
@@ -5977,7 +5981,7 @@ class PortfolioManager():
         pf_names: list of portfolio names
         """
         col_total = 'Total'
-        r_start, r_date, r_roi, r_ugl, r_buy = ('start', 'date', 'ROI', 'UGL', 'buy')
+        r_start, r_date, r_roi, r_ugl, r_buy = ('start', 'end', 'roi', 'ugl', 'buy')
         df_res = None
         no_res = []
         for name in pf_names:
