@@ -2496,51 +2496,80 @@ class PortfolioBuilder():
         df_all = self.valuate(date='all', total=total, cost_excluded=cost_excluded)
         if df_all is None:
             return None
-        
+        else: # necessary to get tickers of end_date and plot vlines for trasaction dates
+            df_rec = self._check_result(False)
+    
+        # reset start & end dates
         func = lambda x: x.loc[start_date:end_date]
         df_all = func(df_all)
         start_date, end_date = get_date_minmax(df_all, self.date_format)
-        
-        col_value = 'value'
+    
+        col_tkr = self.cols_record['tkr']
+        col_date = self.cols_record['date']
+        col_val = 'value'
         col_sell = 'sell'
         col_roi = 'roi'
         col_ugl = 'ugl'
     
-        sr_ttl = df_all.apply(lambda x: x[col_sell] + x[col_value], axis=1)
-        sr_val = df_all[col_value]
-        res_prf = col_roi if roi else col_ugl
-        sr_prf = df_all[res_prf]
-    
-        # set title
-        sr = df_all.loc[end_date]
-        title = format_rounded_string(sr[col_roi], sr[col_ugl])
-        title = f"{title} ({end_date})"
-            
-        # plot historical of portfolio value
-        if cashflow:
+        # get axes for plot
+        #if cashflow and total:
+        if True:
             ax1, ax2 = self._plot_get_axes(figsize=figsize, height_ratios=height_ratios)
         else:
             _, ax1 = plt.subplots(figsize=figsize)
+    
+        # determine plot type: total or individuals
+        col_pnl = col_roi if roi else col_ugl
+        str_pnl = 'Return On Investment (%)' if roi else 'Unrealized Gain/Loss'
+        mlf_pnl = 100 if roi else 1
+        if total:
+            # data for plot
+            sr_ttl = df_all.apply(lambda x: x[col_sell] + x[col_val], axis=1)
+            sr_val = df_all[col_val]
+            sr_pnl = df_all[col_pnl].mul(mlf_pnl)
+    
+            # get title
+            sr_end = df_all.loc[end_date]
+            title = format_rounded_string(sr_end[col_roi], sr_end[col_ugl])
+            title = f"{title} ({end_date})"
+    
+            # plot
+            line_ttl = {'c':'darkgray', 'ls':'--'}
+            _ = sr_ttl.plot(ax=ax1, label='Total', title=title, figsize=figsize, **line_ttl)
+            _ = sr_val.plot(ax=ax1, c=line_ttl['c'])
+            ax1.fill_between(sr_ttl.index, sr_ttl, ax1.get_ylim()[0], facecolor=line_ttl['c'], alpha=0.1)
+            ax1.fill_between(sr_val.index, sr_val, ax1.get_ylim()[0], facecolor=line_ttl['c'], alpha=0.2)
+            ax1.set_ylabel('Value')
+            ax1.margins(0)
             
-        line_ttl = {'c':'darkgray', 'ls':'--'}
-        _ = sr_ttl.plot(ax=ax1, label='Total', title=title, figsize=figsize, **line_ttl)
-        _ = sr_val.plot(ax=ax1, c=line_ttl['c'])
-        ax1.fill_between(sr_ttl.index, sr_ttl, ax1.get_ylim()[0], facecolor=line_ttl['c'], alpha=0.1)
-        ax1.fill_between(sr_val.index, sr_val, ax1.get_ylim()[0], facecolor=line_ttl['c'], alpha=0.2)
-        ax1.set_ylabel('Value')
-        
-        # plot profit history
-        ax1t = sr_prf.plot(ax=ax1.twinx(), label=res_prf.upper(), lw=1, color='orange')
-        ax1t.set_ylabel('Return On Investment (%)' if roi else 'Unrealized Gain/Loss')
-        # set env for the twins
-        _ = set_matplotlib_twins(ax1, ax1t, legend=legend, loc=loc)
-        ax1.margins(0)
-        ax1t.margins(0)
-        
+            # plot profit history
+            ax1t = sr_pnl.plot(ax=ax1.twinx(), label=col_pnl.upper(), lw=1, color='orange')
+            ax1t.set_ylabel(str_pnl)
+            ax1t.margins(0)
+            
+            # set env for the twins
+            _ = set_matplotlib_twins(ax1, ax1t, legend=legend, loc=loc)
+        else:
+            # get tickers of the latest transaction
+            dt = df_rec.loc[:end_date].index.get_level_values(col_date).max()
+            tickers = df_rec.loc[dt].index
+            idx = pd.IndexSlice
+            # plot profit history
+            title = f'{str_pnl} {end_date}'
+            sr_pnl = df_all.loc[idx[:, tickers], col_pnl].unstack(col_tkr).mul(mlf_pnl)
+            _ = sr_pnl.plot(ax=ax1, label=col_pnl.upper(), lw=1, title=title)
+            yl = ax1.set_ylabel(str_pnl)
+            ax1.yaxis.tick_right()
+            ax1.yaxis.set_label_position("right")
+            #yl.set_rotation(-90)
+            ax1.margins(0)
+            ax1.set_xlabel('')
+            ax1.legend(title=None)
+            #cashflow = False
+    
         # plot cashflow
         # you might use df_all to plot cashflow if transaction vlines not necessary 
         if cashflow:
-            df_rec = self._check_result(False)
             # plot vline for transaction dates
             dates_trs = func(df_rec).index.get_level_values(0).unique()
             ax1.vlines(dates_trs, 0, 1, transform=ax1.get_xaxis_transform(), lw=0.5, color='gray')
