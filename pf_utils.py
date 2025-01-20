@@ -5917,9 +5917,9 @@ class PortfolioManager():
         return pf_names
 
     
-    def plot(self, start_date=None, end_date=None, pf_names=None, roi=True,
+    def plot(self, pf_names=None, start_date=None, end_date=None, roi=True,
              figsize=(10,5), legend=True, colors = plt.cm.Spectral,
-             col_val='value', col_sell='sell', col_buy='buy'):
+             col_val='value', col_buy='buy', col_total='TOTAL'):
         """
         start_date: date of beginning of the return plot
         end_date: date to calc return
@@ -5929,54 +5929,60 @@ class PortfolioManager():
         pf_names = self.check_portfolios(pf_names)
         if len(pf_names) == 0:
             return None
-        else: # calc portfolio return for title
-            df = self._valuate(pf_names, end_date)
-            sr = df['Total']
-            title = format_rounded_string(sr['roi'], sr['ugl'])
-            title = f"Total {title} ({sr['end']})"
+    
+        col_ugl = 'ugl'
+        col_roi = 'roi'
+        col_date = 'date'
+        col_end = 'end'
+        
+        # get data
+        df_all = self._valuate(pf_names, 'all')
+        df_all = df_all.loc[start_date:end_date]
+        start_date, end_date = get_date_minmax(df_all)
+    
+        # set plot title
+        df = self.summary(pf_names, end_date)
+        sr = df[col_total]
+        title = format_rounded_string(sr[col_roi], sr[col_ugl])
+        title = f"Total {title} ({sr[col_end]})"
     
         # total value
-        line_ttl = {'c':'gray', 'ls':'--'}
-        dfs = [v._calc_value_history(v.record, name=k, msg=False) for k,v in self.portfolios.items() if k in pf_names]
-        sr_ttl = pd.concat(dfs, axis=1).ffill().sum(axis=1).rename('Total Value').loc[start_date:end_date]
-        ax1 = sr_ttl.plot(title=title, figsize=figsize, **line_ttl)
+        line_ttl = {'c':'black', 'alpha':0.3, 'ls':'--', 'lw':1}
+        # rename for legend
+        sr_val = df_all[col_val].unstack().ffill().sum(axis=1).rename('Total Value')
+        ax1 = sr_val.plot(title=title, figsize=figsize, **line_ttl)
         ax1.set_ylabel('Total Value')
+        ax1.set_xlabel('')
     
         # roi or ugl total
         if roi:
-            result_indv = 'ROI'
+            result_indv = col_roi
             ylabel_indv = 'Return On Investment (%)'
-            func_ttl = lambda x: ((x[col_val] + x[col_sell]) / x[col_buy] - 1)*100
+            calc = lambda x: x[col_ugl] / x[col_buy] * 100
+            sr_pnl = (df_all.unstack().ffill() # ffill dates of no value with the last value
+                      .stack().groupby(col_date).sum().apply(calc, axis=1)) # calc roi
         else:
-            result_indv = 'UGL'
+            result_indv = col_ugl
             ylabel_indv = 'Unrealized Gain/Loss'
-            func_ttl = lambda x: x[col_val] + x[col_sell] - x[col_buy]
-        
+            sr_pnl = df_all[col_ugl].unstack().ffill().sum(axis=1)
         ax2 = ax1.twinx()
-        list_df = [self.portfolios[x].get_profit_history(result='all', msg=False) for x in pf_names]
-        func = lambda x: pd.concat([df[x] for df in list_df], axis=1).ffill().sum(axis=1).rename(x)
-        dfs = [func(x) for x in (col_val, col_sell, col_buy)]
-        df_ttl = pd.concat(dfs, axis=1).ffill()
-        sr_ttl = df_ttl.apply(func_ttl, axis=1).rename(f'Total {result_indv}')
-        sr_ttl = sr_ttl.loc[start_date:end_date]
-        _ = sr_ttl.plot(ax=ax2, lw=1)
-        
+        _ = sr_pnl.rename(f'Total {result_indv.upper()}').plot(ax=ax2, lw=1)
+    
         # roi or ugl individuals
-        dfs = [self.portfolios[x].get_profit_history(result=result_indv, msg=False) for x in pf_names]
-        dfs = [v.rename(k) for k,v in zip(pf_names, dfs) if v is not None]
-        _ = pd.concat(dfs, axis=1).ffill().loc[start_date:end_date].plot(ax=ax2, alpha=0.5, lw=1)
+        df_all[result_indv].unstack().ffill().mul(100 if roi else 1).plot(ax=ax2, alpha=0.5, lw=1)
         ax2.set_prop_cycle(color=colors(np.linspace(0,1,len(pf_names))))
         ax2.set_ylabel(ylabel_indv)
         _ = set_matplotlib_twins(ax1, ax2, legend=legend)
-        
+    
         # fill total roi/ugl
-        ax2.fill_between(sr_ttl.index, sr_ttl, ax2.get_ylim()[0], 
+        ax2.fill_between(sr_pnl.index, sr_pnl, ax2.get_ylim()[0], 
                          facecolor=ax2.get_lines()[0].get_color(), alpha=0.1)
         ax1.margins(0)
         ax2.margins(0)
+        return None
         
 
-    def summary(self, date=None, pf_names=None,
+    def summary(self, pf_names=None, date=None, int_to_str=False,
                 col_total='TOTAL', r_start='start', r_date='end', 
                 r_roi='roi', r_ugl='ugl', r_buy='buy'):
         
@@ -5984,22 +5990,24 @@ class PortfolioManager():
         if len(pf_names) == 0:
             return None
     
-        df_res = self._valuate(date, pf_names)
+        df_res = self._valuate(pf_names, date)
         # set total
         df_res[col_total] = [df_res.loc[r_start].min(), df_res.loc[r_date].max(), 
                              *df_res.iloc[2:].sum(axis=1).to_list()]
         df_ttl = df_res[col_total]
         df_res.loc[r_roi, col_total] = df_ttl[r_ugl] / df_ttl[r_buy]
+        # format int 
         idx_int = df_res.index.difference([r_start, r_date, r_roi])
-        # cast to int
-        df_res.loc[idx_int] = df_res.loc[idx_int].astype(int)
+        if int_to_str:
+            df_res.loc[idx_int] = df_res.loc[idx_int].map(lambda x: f'{round(x):,}')
         return df_res
 
 
-    def _valuate(self, date, pf_names):
+    def _valuate(self, pf_names, date):
         """
         return evaluation summary df the portfolios in pf_names
         pf_names: list of portfolio names
+        date: date for values on date, None for values on last date, 'all' for history
         """
         col_pf = 'portfolio'
         df_all = None
