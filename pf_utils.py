@@ -387,21 +387,6 @@ def set_matplotlib_twins(ax1, ax2, legend=True, colors=None, loc='upper left'):
     return (ax1, ax2)
 
 
-def format_rounded_string(*ns, string='ROI: {:.1%}, UGL: {:,.0f}', n_round=3):
-    """
-    Formats a customizable string with rounded numeric values.
-    Parameters:
-        *ns (float): Numbers to be inserted into the template string.
-        template (str): String template for formatting, with placeholders for values.
-        n_round (int): Number of digits to round values based on magnitude.
-    Returns:
-        str:
-    """
-    myround = lambda x: x if abs(x) < 10**(n_round+1) else round(x,-n_round)
-    ns = [myround(x) for x in ns]
-    return string.format(*ns)
-
-
 def sum_dateoffsets(offset1, offset2):
     """
     Sums two pandas DateOffset objects by combining their kwargs.
@@ -499,8 +484,8 @@ def create_split_axes(figsize=(10, 6), vertical_split=True,
     return (ax1, ax2)
 
 
-def format_price(x):
-    return f'{round(x):,}' if isinstance(x, Number) and abs(x) > 1000 else x
+def format_price(x, digits=3):
+    return f'{round(x, -digits):,.0f}' if isinstance(x, Number) and abs(x) > 1000 else x
     
 
 class SecurityDict(dict):
@@ -2511,7 +2496,8 @@ class PortfolioBuilder():
     
             # get title
             sr_end = df_all.loc[end_date]
-            title = format_rounded_string(sr_end[col_roi], sr_end[col_ugl])
+            #title = format_rounded_string(sr_end[col_roi], sr_end[col_ugl])
+            title = f'ROI: {sr_end[col_roi]:.1%}, UGL: {format_price(sr_end[col_ugl])}'
             title = f"{title} ({end_date})"
     
             # plot
@@ -2550,7 +2536,8 @@ class PortfolioBuilder():
             sr_end = df_all.loc[end_date]
             sr_end = sr_end.sum()
             sr_end[col_roi] = sr_end[col_ugl]/sr_end[col_buy]
-            title = format_rounded_string(sr_end[col_roi], sr_end[col_ugl])
+            #title = format_rounded_string(sr_end[col_roi], sr_end[col_ugl])
+            title = f'ROI: {sr_end[col_roi]:.1%}, UGL: {format_price(sr_end[col_ugl])}'
             title = f"{title} ({end_date})"
     
             # plot profit history
@@ -5990,7 +5977,8 @@ class PortfolioManager():
         # set plot title
         df = self.summary(pf_names, end_date, int_to_str=False)
         sr = df[nm_ttl]
-        title = format_rounded_string(sr[nm_roi], sr[nm_ugl])
+        #title = format_rounded_string(sr[nm_roi], sr[nm_ugl])
+        title = f'ROI: {sr[nm_roi]:.1%}, UGL: {format_price(sr[nm_ugl])}'
         title = f"Total {title} ({sr[nm_end]})"
     
         # total value
@@ -6051,11 +6039,7 @@ class PortfolioManager():
                              *df_res.iloc[2:].sum(axis=1).to_list()]
         df_ttl = df_res[nm_ttl]
         df_res.loc[nm_roi, nm_ttl] = df_ttl[nm_ugl] / df_ttl[nm_buy]
-        # format int 
-        idx_int = df_res.index.difference([nm_start, nm_end, nm_roi])
-        if int_to_str:
-            df_res.loc[idx_int] = df_res.loc[idx_int].map(lambda x: f'{round(x):,}')
-        return df_res
+        return df_res.map(format_price, digits=0) if int_to_str else df_res
 
 
     def _valuate(self, pf_names, date):
