@@ -2249,13 +2249,14 @@ class PortfolioBuilder():
                 
         date = df_net.index.get_level_values(0).max()
         record = self._check_var(record, self.record)
-        if not self._check_record(record, msg=True):
-            return None # check input record by self.cols_record
-            
         if record is None: # no transation record saved
             # allocation is same as transaction for the 1st time
             df_rec = df_net.assign(**{col_trs: df_net[col_net]})
         else:
+            # check input record by self.cols_record
+            if not self._check_record(record, msg=True):
+                return None 
+            # check if new transaction added
             if self.check_new_transaction(date):
                 # confine tickers on transaction date
                 date_lt = record.index.get_level_values(col_date).max()
@@ -2776,7 +2777,8 @@ class PortfolioBuilder():
         df_additional = self._check_var(df_additional, self.df_additional)
         if df_additional is None:
             return print('ERROR: no df_additional available')
-    
+
+        # get tickers from transaction records
         df_rec = self._check_result(False)
         if df_rec is None:
             print('No record')
@@ -2791,6 +2793,7 @@ class PortfolioBuilder():
                 # date is not None since df is df_rec then
                 print(f'No record on {date}')
                 tickers = None
+                
         df_all = df_additional.loc[date:]
         if len(df_all) == 0:
             print(f'WARNING: No data after {date}')
