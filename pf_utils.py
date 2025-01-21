@@ -497,6 +497,10 @@ def create_split_axes(figsize=(10, 6), vertical_split=True,
             ax1.sharey(ax2)
     
     return (ax1, ax2)
+
+
+def format_price(x):
+    return f'{round(x):,}' if isinstance(x, Number) and abs(x) > 1000 else x
     
 
 class SecurityDict(dict):
@@ -2011,6 +2015,10 @@ class PortfolioBuilder():
         """
         if record is None:
             record = self._load_transaction(self.file, self.path, print_msg=msg)
+        else:
+            if not self._check_record(record, msg=True):
+                return None # check df_rec by self.cols_record
+        
         if record is None:
             print('REMINDER: make sure this is 1st transaction as no records provided')
         elif record[self.cols_record['prc']].notna().any():
@@ -2248,6 +2256,9 @@ class PortfolioBuilder():
                 
         date = df_net.index.get_level_values(0).max()
         record = self._check_var(record, self.record)
+        if not self._check_record(record, msg=True):
+            return None # check input record by self.cols_record
+            
         if record is None: # no transation record saved
             # allocation is same as transaction for the 1st time
             df_rec = df_net.assign(**{col_trs: df_net[col_net]})
@@ -2301,7 +2312,7 @@ class PortfolioBuilder():
         return df_rec
 
 
-    def valuate(self, date=None, print_msg=False, cost_excluded=False, total=True):
+    def valuate(self, date=None, cost_excluded=False, total=True, print_msg=False):
         """
         calc date, buy/sell prices & portfolio value from self.record or self.df_rec
         date: date, None, 'all'
@@ -2358,35 +2369,6 @@ class PortfolioBuilder():
             df_m = pd.concat([sr, df_m.loc[date]]) # concat data range
             print(f'Result from {start} to {date}') if print_msg else None
         return df_m
-
-
-    def _join_cashflow_by_ticker(self, sr_val, df_cf, df_pnl):
-        """
-        Merge cashflow history (based on transaction records) with value history (based on price changes).
-        sr_val, df_cf, df_pnl: data by date & ticker
-        """
-        cols_record = self.cols_record
-        col_date = cols_record['date']
-        col_tkr = cols_record['tkr']
-        col_val = 'value'
-        
-        index = None
-        dates_cf = df_cf.index.get_level_values(col_date).unique()
-        end = sr_val.index.get_level_values(col_date).max()
-        for start in dates_cf.sort_values(ascending=False):
-            dts = sr_val.loc[start:end].index.get_level_values(col_date).unique()
-            if dts.size == 0: # end date is smaller tha start
-                continue
-            tkrs = df_cf.loc[start].index
-            idx = pd.MultiIndex.from_product([dts, tkrs])
-            index = idx if index is None else index.append(idx)
-            end = start - pd.DateOffset(days=1)
-       
-        return (pd.DataFrame(index=index).join(df_cf).join(sr_val.rename(col_val))
-                .join(df_pnl).groupby(col_tkr).ffill()
-                # DO NOT drop col_val of None to include the cashflow of all tickers in history
-                #.dropna(subset=col_val) 
-                .sort_index())
 
 
     def transaction_pipeline(self, date=None, capital=10000000, commissions=0, 
@@ -2600,9 +2582,12 @@ class PortfolioBuilder():
     def plot_cashflow(self, df_rec=None, start_date=None, end_date=None, cost_excluded=False,
                       ax=None, figsize=(8,2), alpha=0.4, colors=('r', 'g'),
                       labels=['Buy', 'Sell'], loc='upper left'):
-        df_rec = self._check_result() if df_rec is None else df_rec
+        if df_rec is None:
+            df_rec = self._check_result()
         if df_rec is None:
             return None
+        if not self._check_record(df_rec, msg=True):
+            return None # check df_rec by self.cols_record
 
         cost = None if cost_excluded else self.cost
         df_cf = self._calc_cashflow_history(df_rec, cost)
@@ -2654,6 +2639,9 @@ class PortfolioBuilder():
 
 
     def save_transaction(self, df_rec):
+        """
+        DO NOT use _check_record for df_rec as saving nshare allowed for convenience
+        """
         file, path = self.file, self.path
         df_rec = self.liquidation.recover_record(df_rec, self.cols_record)
         self.file = self._save_transaction(df_rec, file, path)
@@ -2705,6 +2693,8 @@ class PortfolioBuilder():
             df_rec = self._check_result(msg)
         if df_rec is None: # record is None or nshares-based to edit
             return self.record # see _check_result for err msg
+        if not self._check_record(df_rec, msg=True):
+            return None # check df_rec by self.cols_record
 
         if weight_actual:# add actual weights
             df_rec = self.insert_weight_actual(df_rec)
@@ -2746,6 +2736,17 @@ class PortfolioBuilder():
             return df_rec.loc[idx].join(df_val)
         else:
             return df_rec.loc[idx]
+
+
+    def insert_weight_actual(self, df_rec, decimals=3):
+        cols_record = self.cols_record
+        col_net = cols_record['net']
+        col_wgt = cols_record['wgt']
+        col_wgta = 'weight*'
+        cols = df_rec.columns
+        i = cols.get_loc(col_wgt)
+        return (df_rec.join(self._calc_weight_actual(df_rec[col_net], decimals=decimals))
+                .loc[:, cols.insert(i+1, col_wgta)])
 
 
     def check_weights(self, *args, **kwargs):
@@ -2810,17 +2811,6 @@ class PortfolioBuilder():
                 tickers = self.tickers
         s = {k:v for k,v in security_names.items() if k in tickers}
         return SecurityDict(s, names=s)
-
-
-    def _calc_cashflow_history(self, record, cost=None, total=True):
-        """
-        Returns df of cumulative buy and sell prices at each transaction.
-        """
-        # add value to record to calc year-fee
-        df_rec = self.view_record(0, df_rec=record, nshares=False, value=True, 
-                                  weight_actual=False, msg=False, int_nshares=False)
-        cm = CostManager(df_rec, self.cols_record, self.date_format)
-        return cm.calc_cashflow_history(cost=cost, total=total)
     
 
     def _update_universe(self, df_rec, msg=False):
@@ -2848,12 +2838,12 @@ class PortfolioBuilder():
             return df_prices
 
 
-    # TODO: error if df_rec from self.view_record(... value=True)
     def _calc_periodic_value(self, df_rec, df_prices, date=None, msg=False,
                              col_val='value', col_end='end'):
         """
         get record of transactions with values by asset 
          which is for CostManager._calc_fee_annual
+        df_rec: error if value column
         """
         cols_record = self.cols_record
         col_date = cols_record['date']
@@ -2867,6 +2857,9 @@ class PortfolioBuilder():
         # calc num of shares for asset value on col_end
         df_val = self._get_nshares(df_rec, df_prices, cols_record, 
                                    int_nshares=False, add_price=True)
+        if df_val is None:
+            return
+        
         sr_prc = df_val[col_prc] # buy/sell price
         df_val = df_val[col_net].to_frame(col_nshares) 
         # transaction date to calc period for fee calc
@@ -2934,14 +2927,17 @@ class PortfolioBuilder():
         """
         cols = [cols_record[x] for x in ['rat','prc','trs','net']]
         col_rat, col_prc, col_trs, col_net = cols
-        if df_rec[col_prc].notna().any():
-            return print(f'ERROR: {col_prc} is not None')
- 
+        try:
+            if df_rec[col_prc].notna().any():
+                return print(f'ERROR: {col_prc} is not None')
+        except KeyError:
+            return print('ERROR: record has no price columns')
+    
         # get buy/sell price to calc num of shares
         sr_prc = self._get_trading_price(df_rec, df_universe, col_rat, col_prc)
         if sr_prc is None:
             return None # see _get_trading_price for err msg
-
+    
         df_nshares = df_rec[[col_trs, col_net]].div(sr_prc, axis=0)
         df_nshares = df_nshares.join(sr_prc) if add_price else df_nshares
         return df_nshares.map(np.fix).astype(int) if int_nshares else df_nshares
@@ -3002,17 +2998,6 @@ class PortfolioBuilder():
         return sr_w.round(decimals) if decimals > 0 else sr_w
 
 
-    def insert_weight_actual(self, df_rec, decimals=3):
-        cols_record = self.cols_record
-        col_net = cols_record['net']
-        col_wgt = cols_record['wgt']
-        col_wgta = 'weight*'
-        cols = df_rec.columns
-        i = cols.get_loc(col_wgt)
-        return (df_rec.join(self._calc_weight_actual(df_rec[col_net], decimals=decimals))
-                .loc[:, cols.insert(i+1, col_wgta)])
-
-
     def _calc_value_history(self, df_rec, end_date=None, name=None, msg=False, total=True):
         """
         calc historical of portfolio value from transaction
@@ -3032,7 +3017,10 @@ class PortfolioBuilder():
         df_universe = df_universe.rename_axis(col_date)
         # get number of shares
         sr_nshares = self._get_nshares(df_rec, df_universe, cols_record, int_nshares=False)
-        sr_nshares = sr_nshares[col_net]
+        if sr_nshares is None:
+            return
+        else:
+            sr_nshares = sr_nshares[col_net]
         df_unit = df_universe.copy()
         df_unit.loc[:,:] = None
         
@@ -3064,6 +3052,46 @@ class PortfolioBuilder():
             sr_ttl = sr_ttl.stack().dropna().astype(int)
         
         return sr_ttl if name is None else sr_ttl.rename(name)
+
+
+    def _calc_cashflow_history(self, record, cost=None, total=True):
+        """
+        Returns df of cumulative buy and sell prices at each transaction.
+        """
+        # add value to record to calc year-fee
+        df_rec = self.view_record(0, df_rec=record, nshares=False, value=True, 
+                                  weight_actual=False, msg=False, int_nshares=False)
+        cm = CostManager(df_rec, self.cols_record, self.date_format)
+        return cm.calc_cashflow_history(cost=cost, total=total)
+
+
+    def _join_cashflow_by_ticker(self, sr_val, df_cf, df_pnl):
+        """
+        Merge cashflow history (based on transaction records) with value history (based on price changes).
+        sr_val, df_cf, df_pnl: data by date & ticker
+        """
+        cols_record = self.cols_record
+        col_date = cols_record['date']
+        col_tkr = cols_record['tkr']
+        col_val = 'value'
+        
+        index = None
+        dates_cf = df_cf.index.get_level_values(col_date).unique()
+        end = sr_val.index.get_level_values(col_date).max()
+        for start in dates_cf.sort_values(ascending=False):
+            dts = sr_val.loc[start:end].index.get_level_values(col_date).unique()
+            if dts.size == 0: # end date is smaller tha start
+                continue
+            tkrs = df_cf.loc[start].index
+            idx = pd.MultiIndex.from_product([dts, tkrs])
+            index = idx if index is None else index.append(idx)
+            end = start - pd.DateOffset(days=1)
+       
+        return (pd.DataFrame(index=index).join(df_cf).join(sr_val.rename(col_val))
+                .join(df_pnl).groupby(col_tkr).ffill()
+                # DO NOT drop col_val of None to include the cashflow of all tickers in history
+                #.dropna(subset=col_val) 
+                .sort_index())
 
 
     def _plot_get_axes(self, figsize=(10,6), height_ratios=(3, 1), sharex=True):
@@ -3108,7 +3136,8 @@ class PortfolioBuilder():
                      col_val='value', col_sell='sell', col_buy='buy'):
         """
         calc history of roi or unrealized gain/loss
-        sr_val: output of _calc_value_history
+        sr_val: output of _calc_value_history. supporting total or by tickers
+        df_cashflow_history: output of _calc_cashflow_history. supporting total or by tickers
         result: ROI, UGL or 'all'
         """
         col_tkr = self.cols_record['tkr']
@@ -3162,6 +3191,18 @@ class PortfolioBuilder():
         
         # self.df_rec or self.record could be modified if not copied
         return df_res.copy() 
+
+
+    def _check_record(self, df_rec, msg=False):
+        """
+        check df_rec by self.cols_record
+        """
+        cols = df_rec.columns.union(df_rec.index.names).difference(self.cols_record.values())
+        if cols.size > 0:
+            print('ERROR: Record is not default form') if msg else None
+            return False
+        else:
+            return True
     
 
     def _load_transaction(self, file, path, print_msg=True):
@@ -3440,7 +3481,7 @@ class CostManager():
     @staticmethod
     def get_history_with_fee(df_val, sr_fee, period=3, percent=True):
         """
-        df_val: history of value or price such as DataManager.df_prices
+        df_val: history of single value or price to apply fee. ex) DataManager.df_prices
         sr_fee: dict or series of ticker to annual fee. rate
         period: add fee every period of months
         """
