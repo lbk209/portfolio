@@ -484,16 +484,16 @@ def create_split_axes(figsize=(10, 6), vertical_split=True,
     return (ax1, ax2)
 
 
-def format_price(x, digits=3):
-    if isinstance(x, Number) and abs(x) > 1000:
-        return f'{round(x, -digits):,.0f}'  
-    else: 
-        return x
-
-
-def get_title_pnl(roi, ugl, date):
-    title = f'ROI: {roi:.1%}, UGL: {format_price(ugl)}'
-    return f"{title} ({date})"
+def format_price(x, digits=3, min_x=1000, int_to_str=True):
+    """
+    Formats a number by rounding and optionally converting it to a string with comma separators.
+    """
+    if isinstance(x, Number) and abs(x) >= min_x:
+        y = int(round(x, -digits))
+        y = f'{y:,.0f}' if int_to_str else y
+    else:
+        y = x
+    return y
     
 
 class SecurityDict(dict):
@@ -2306,13 +2306,14 @@ class PortfolioBuilder():
 
 
     def valuate(self, date=None, cost_excluded=False, total=True, print_msg=False, 
-                sort_by='ugl', int_to_str=True):
+                sort_by='ugl', int_to_str=True, join_str=False):
         """
         calc date, buy/sell prices & portfolio value from self.record or self.df_rec
         date: date, None, 'all'
         sort_by: sort value of date (total=False) by one of 'start', 'end', 'buy', 'sell', 
                 'value', 'ugl', 'roi' in descending order
-        int_to_str: only applied if date != 'all'
+        int_to_str: applied only if date != 'all'
+        join_str: applied only if date != 'all' and total==True
         """
         # get latest record
         df_rec = self._check_result(print_msg)
@@ -2367,11 +2368,17 @@ class PortfolioBuilder():
             if total:
                 start = df_m.index.get_level_values(col_date).min().strftime(date_format)
                 sr = pd.Series([start, date], index=['start', 'end'])
-                df_m = pd.concat([sr, df_m.loc[date]]) # concat data range
-                df_m = df_m.apply(format_price, digits=0) if int_to_str else df_m
+                sr_m = pd.concat([sr, df_m.loc[date]]) # concat data range
+                df_m = sr_m.apply(format_price, digits=0) if int_to_str else sr_m
                 if print_msg:
-                    pnl = get_title_pnl(df_m[col_roi], df_m[col_ugl], date)
-                    print(pnl) 
+                    if join_str:
+                        sr = sr_m.apply(format_price, digits=0, int_to_str=False)
+                        idx = ', '.join(sr.index)
+                        to_print = ', '.join(map(str, sr.to_list()))
+                        to_print = f'{idx}\n{to_print}'
+                    else:
+                        to_print = PortfolioBuilder.get_title_pnl(df_m[col_roi], df_m[col_ugl], date)
+                    print(to_print) 
             else:
                 df = df_m.groupby(col_tkr).apply(lambda x: pd.Series(get_date_minmax(x.dropna()), index=['start', 'end']))
                 df_m = pd.concat([df, df_m.loc[date]], axis=1)
@@ -2520,7 +2527,7 @@ class PortfolioBuilder():
     
             # get title
             sr_end = df_all.loc[end_date]
-            title = get_title_pnl(sr_end[col_roi], sr_end[col_ugl], end_date)
+            title = PortfolioBuilder.get_title_pnl(sr_end[col_roi], sr_end[col_ugl], end_date)
     
             # plot
             line_ttl = {'c':'darkgray', 'ls':'--'}
@@ -2556,7 +2563,7 @@ class PortfolioBuilder():
             sr_end = df_all.loc[end_date]
             sr_end = sr_end.sum()
             sr_end[col_roi] = sr_end[col_ugl]/sr_end[col_buy]
-            title = get_title_pnl(sr_end[col_roi], sr_end[col_ugl], end_date)
+            title = PortfolioBuilder.get_title_pnl(sr_end[col_roi], sr_end[col_ugl], end_date)
     
             # plot profit history
             line_ttl = {'c':'darkgray', 'ls':'--'}
@@ -2816,6 +2823,12 @@ class PortfolioBuilder():
                 tickers = self.tickers
         s = {k:v for k,v in security_names.items() if k in tickers}
         return SecurityDict(s, names=s)
+
+
+    @staticmethod
+    def get_title_pnl(roi, ugl, date, **kwargs):
+        title = f'ROI: {roi:.1%}, UGL: {format_price(ugl, **kwargs)}'
+        return f"{title} ({date})"
     
 
     def _update_universe(self, df_rec, msg=False):
@@ -5995,7 +6008,7 @@ class PortfolioManager():
         # set plot title
         df = self.summary(pf_names, end_date, int_to_str=False)
         sr = df[nm_ttl]
-        title = get_title_pnl(sr[nm_roi], sr[nm_ugl], sr[nm_end])
+        title = PortfolioBuilder.get_title_pnl(sr[nm_roi], sr[nm_ugl], sr[nm_end])
     
         # total value
         line_ttl = {'c':'black', 'alpha':0.3, 'ls':'--', 'lw':1}
