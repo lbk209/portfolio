@@ -485,7 +485,15 @@ def create_split_axes(figsize=(10, 6), vertical_split=True,
 
 
 def format_price(x, digits=3):
-    return f'{round(x, -digits):,.0f}' if isinstance(x, Number) and abs(x) > 1000 else x
+    if isinstance(x, Number) and abs(x) > 1000:
+        return f'{round(x, -digits):,.0f}'  
+    else: 
+        return x
+
+
+def get_title_pnl(roi, ugl, date):
+    title = f'ROI: {roi:.1%}, UGL: {format_price(ugl)}'
+    return f"{title} ({date})"
     
 
 class SecurityDict(dict):
@@ -2176,7 +2184,7 @@ class PortfolioBuilder():
                 # the arg capital is now cash flows
                 print(f'New cash inflows of {capital:,}' ) if capital > 0 else None
                 self.df_rec = None # reset df_rec to calc capital
-                sr = self.valuate(date, print_msg=False)
+                sr = self.valuate(date, total=True, int_to_str=False, print_msg=False)
                 capital += sr['value'] # add porfolio value to capital
 
         # calc amount of each security by weights and capital
@@ -2293,29 +2301,36 @@ class PortfolioBuilder():
         df_rec[cols_int] = df_rec[cols_int].astype(int).sort_index(level=[0,1])
         self.df_rec = df_rec # overwrite existing df_rec with new transaction
         # print portfolio value and profit/loss after self.df_rec updated
-        _ = self.valuate(print_msg=True)
+        _ = self.valuate(total=True, int_to_str=True, print_msg=True)
         return df_rec
 
 
-    def valuate(self, date=None, cost_excluded=False, total=True, print_msg=False):
+    def valuate(self, date=None, cost_excluded=False, total=True, print_msg=False, 
+                sort_by='ugl', int_to_str=True):
         """
         calc date, buy/sell prices & portfolio value from self.record or self.df_rec
         date: date, None, 'all'
+        sort_by: sort value of date (total=False) by one of 'start', 'end', 'buy', 'sell', 
+                'value', 'ugl', 'roi' in descending order
+        int_to_str: only applied if date != 'all'
         """
         # get latest record
         df_rec = self._check_result(print_msg)
         if df_rec is None:
             return None
-
+    
         if isinstance(date, str) and date.lower() == 'all':
             date = None
             history = True
         else:
             history = False
-
+    
         date_format = self.date_format
         col_date = self.cols_record['date']
-        
+        col_tkr = self.cols_record['tkr']
+        col_roi = 'roi'
+        col_ugl = 'ugl'
+    
         # check date by price data
         df_prices = self._update_universe(df_rec, msg=print_msg)
         # update price data by adding tickers not in the universe if existing
@@ -2338,7 +2353,7 @@ class PortfolioBuilder():
         # buy & sell prices to date.
         cost = None if cost_excluded else self.cost
         df_cf = self._calc_cashflow_history(df_rec, cost, total=total)
-
+    
         # calc profit
         df_pnl = self._calc_profit(sr_val, df_cf, result='all', roi_percent=False)
         
@@ -2347,12 +2362,21 @@ class PortfolioBuilder():
         else:
             df_m = self._join_cashflow_by_ticker(sr_val, df_cf, df_pnl)
         df_m = df_m.dropna(how='all')
-
+    
         if not history:
-            start = df_m.index.get_level_values(col_date).min().strftime(date_format)
-            sr = pd.Series([start, date], index=['start', 'end'])
-            df_m = pd.concat([sr, df_m.loc[date]]) # concat data range
-            print(f'Result from {start} to {date}') if print_msg else None
+            if total:
+                start = df_m.index.get_level_values(col_date).min().strftime(date_format)
+                sr = pd.Series([start, date], index=['start', 'end'])
+                df_m = pd.concat([sr, df_m.loc[date]]) # concat data range
+                df_m = df_m.apply(format_price, digits=0) if int_to_str else df_m
+                if print_msg:
+                    pnl = get_title_pnl(df_m[col_roi], df_m[col_ugl], date)
+                    print(pnl) 
+            else:
+                df = df_m.groupby(col_tkr).apply(lambda x: pd.Series(get_date_minmax(x.dropna()), index=['start', 'end']))
+                df_m = pd.concat([df, df_m.loc[date]], axis=1)
+                df_m = df_m.sort_values(sort_by, ascending=False) if sort_by else df_m
+                df_m = df_m.map(format_price, digits=0) if int_to_str else df_m
         return df_m
 
 
@@ -2370,7 +2394,7 @@ class PortfolioBuilder():
         if not self.check_new_transaction(msg=True):
             # calc profit at the last transaction
             dt = self.selected['date'] # selected defined by self.select
-            _ = self.valuate(dt, print_msg=True)
+            _ = self.valuate(dt, total=True, int_to_str=True, print_msg=True)
             return self.record
 
         weights = self.weigh()
@@ -2496,9 +2520,7 @@ class PortfolioBuilder():
     
             # get title
             sr_end = df_all.loc[end_date]
-            #title = format_rounded_string(sr_end[col_roi], sr_end[col_ugl])
-            title = f'ROI: {sr_end[col_roi]:.1%}, UGL: {format_price(sr_end[col_ugl])}'
-            title = f"{title} ({end_date})"
+            title = get_title_pnl(sr_end[col_roi], sr_end[col_ugl], end_date)
     
             # plot
             line_ttl = {'c':'darkgray', 'ls':'--'}
@@ -2523,8 +2545,6 @@ class PortfolioBuilder():
             tickers = df_rec.loc[dt].index
             idx = pd.IndexSlice
             df_tkr = df_all.loc[idx[:, tickers], :]
-    
-            #return df_tkr, col_pnl, col_tkr, mlf_pnl, col_date, col_ugl, col_buy, roi
             
             df_pnl = df_tkr[col_pnl].unstack(col_tkr).mul(mlf_pnl)
             if self.security_names is not None:
@@ -2536,9 +2556,7 @@ class PortfolioBuilder():
             sr_end = df_all.loc[end_date]
             sr_end = sr_end.sum()
             sr_end[col_roi] = sr_end[col_ugl]/sr_end[col_buy]
-            #title = format_rounded_string(sr_end[col_roi], sr_end[col_ugl])
-            title = f'ROI: {sr_end[col_roi]:.1%}, UGL: {format_price(sr_end[col_ugl])}'
-            title = f"{title} ({end_date})"
+            title = get_title_pnl(sr_end[col_roi], sr_end[col_ugl], end_date)
     
             # plot profit history
             line_ttl = {'c':'darkgray', 'ls':'--'}
@@ -5977,9 +5995,7 @@ class PortfolioManager():
         # set plot title
         df = self.summary(pf_names, end_date, int_to_str=False)
         sr = df[nm_ttl]
-        #title = format_rounded_string(sr[nm_roi], sr[nm_ugl])
-        title = f'ROI: {sr[nm_roi]:.1%}, UGL: {format_price(sr[nm_ugl])}'
-        title = f"Total {title} ({sr[nm_end]})"
+        title = get_title_pnl(sr[nm_roi], sr[nm_ugl], sr[nm_end])
     
         # total value
         line_ttl = {'c':'black', 'alpha':0.3, 'ls':'--', 'lw':1}
@@ -6053,7 +6069,7 @@ class PortfolioManager():
         no_res = []
         for name in pf_names:
             pf = self.portfolios[name]
-            df = pf.valuate(date=date, print_msg=False, total=True)
+            df = pf.valuate(date=date, total=True, int_to_str=False, print_msg=False)
             if df is None:
                 no_res.append(name)
             else:
