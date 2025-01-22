@@ -2302,11 +2302,12 @@ class PortfolioBuilder():
         df_rec[cols_int] = df_rec[cols_int].astype(int).sort_index(level=[0,1])
         self.df_rec = df_rec # overwrite existing df_rec with new transaction
         # print portfolio value and profit/loss after self.df_rec updated
-        _ = self.valuate(total=True, int_to_str=True, print_msg=True)
+        _ = self.valuate(total=True, int_to_str=True, print_summary_only=True)
         return df_rec
 
 
-    def valuate(self, date=None, cost_excluded=False, total=True, print_msg=False, 
+    def valuate(self, date=None, cost_excluded=False, total=True, 
+                print_msg=False, print_summary_only=False,
                 sort_by='ugl', int_to_str=True, join_str=False):
         """
         calc date, buy/sell prices & portfolio value from self.record or self.df_rec
@@ -2316,6 +2317,9 @@ class PortfolioBuilder():
         int_to_str: applied only if date != 'all'
         join_str: applied only if date != 'all' and total==True
         """
+        if print_summary_only:
+            print_msg = False # force no print except print_summary_only case
+    
         # get latest record
         df_rec = self._check_result(print_msg)
         if df_rec is None:
@@ -2326,7 +2330,7 @@ class PortfolioBuilder():
             history = True
         else:
             history = False
-    
+
         date_format = self.date_format
         col_date = self.cols_record['date']
         col_tkr = self.cols_record['tkr']
@@ -2371,7 +2375,7 @@ class PortfolioBuilder():
                 sr = pd.Series([start, date], index=['start', 'end'])
                 sr_m = pd.concat([sr, df_m.loc[date]]) # concat data range
                 df_m = sr_m.apply(format_price, digits=0) if int_to_str else sr_m
-                if print_msg:
+                if print_msg or print_summary_only:
                     if join_str:
                         sr = sr_m.apply(format_price, digits=0, int_to_str=False)
                         idx = ', '.join(sr.index)
