@@ -2841,20 +2841,24 @@ class PortfolioBuilder():
     def _update_universe(self, df_rec, msg=False):
         """
         create price histories from record to update universe
-         the amount of transaction assumed as a stock price itself.
+         the amount of net assumed as a stock price itself.
         df_rec: transaction record with amount
         """
         df_prices = self.df_universe
         cols_record = self.cols_record
-        col_trs = cols_record['trs']
+        col_net = cols_record['net']
         col_tkr = cols_record['tkr']
+        col_rat = cols_record['rat']
         # tickers not in the universe
         out = df_rec.index.get_level_values(col_tkr).unique().difference(df_prices.columns)
         if out.size > 0:
             idx = pd.IndexSlice
-            df_out = df_rec.sort_index().loc[idx[:, out], col_trs].unstack(col_tkr)
+            df_out = (df_rec.sort_index().loc[idx[:, out], :]
+                      # close calc by product of col_rat & col_net assuming # of shares as 1
+                      .apply(lambda x: x[col_rat] * x[col_net], axis=1)
+                      .unstack(col_tkr))
             df_new = pd.concat([df_prices, df_out], axis=1)
-            df_new[out] = df_new[out].ffill().bfill()
+            df_new[out] = df_new[out].ffill().fillna(0)
             if msg:
                 s = ', '.join(out.to_list())
                 print(f'Tickers {s} added to universe')
