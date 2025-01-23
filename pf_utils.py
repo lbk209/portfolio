@@ -3614,7 +3614,8 @@ class Liquidation():
         """
         convert securities_to_sell to dict of tickers to sell price
         record: PortfolioBuilder.record
-        securities_to_sell: str of a ticker; list of tickers; dict of the tickers to its sell price
+        securities_to_sell: str of a ticker; list of tickers; dict of the tickers to its sell price;
+                            dataframe of prices of tickers
         hold:     
         - If set to True, all securities in `securities_to_sell` will be held and not liquidated.    
         - If set to False, you can selectively hold certain securities by setting their sell price to zero. 
