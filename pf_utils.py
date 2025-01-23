@@ -811,15 +811,23 @@ class DataManager():
         return self._check_tickers(security_names, tickers)
         
 
-    def _get_tickers_krx(self, tickers=None, col_ticker='Code', col_name='Name'):
+    def _get_tickers_krx(self, tickers=None):
         """
         self.tickers: KOSPI,KOSDAQ
         """
         security_names = dict()
         for x in [x.replace(' ', '') for x in self.tickers.split(',')]:
-            df = fdr.StockListing(x)
-            security_names.update(df.set_index(col_ticker)[col_name].to_dict())
+            security_names.update(DataManager.get_tickers_krx(x))
         return self._check_tickers(security_names, tickers)
+
+
+    @staticmethod
+    def get_tickers_krx(x, col_ticker='Code', col_name='Name'):
+        """
+        self.tickers: KOSPI,KOSDAQ
+        """
+        df = fdr.StockListing(x)
+        return df.set_index(col_ticker)[col_name].to_dict()
 
 
     def _get_tickers_fund(self, tickers=None, path=None, col_name='name'):
@@ -927,7 +935,7 @@ class DataManager():
             df_data = df_data[col_price2]
         else:# data of multiple tickers
             pass
-        return df_data
+        return df_data.rename_axis('date')
         
     @staticmethod
     def download_krx(tickers, start_date, end_date,
@@ -2688,7 +2696,7 @@ class PortfolioBuilder():
         
         # update ticker name
         df_rec = self._update_ticker_name(df_rec, security_names)
-        
+        # save or remind        
         if not df_rec.equals(record): # change exists
             if save:
                 self._overwrite_record(df_rec, update_var=update_var)
@@ -2780,7 +2788,7 @@ class PortfolioBuilder():
         """
         df_additional = self._check_var(df_additional, self.df_additional)
         if df_additional is None:
-            return print('ERROR: no df_additional available')
+            return print('ERROR: no df_additional to check')
 
         # get tickers from transaction records
         df_rec = self._check_result(False)
@@ -2836,6 +2844,23 @@ class PortfolioBuilder():
     def get_title_pnl(roi, ugl, date, **kwargs):
         title = f'ROI: {roi:.1%}, UGL: {format_price(ugl, **kwargs)}'
         return f"{title} ({date})"
+
+
+    def util_get_prices(self, tickers, update_security_names=True):
+        """
+        util to get price history of additional tickers
+        """
+        if update_security_names:
+            try:
+                ticker_names = DataManager.get_tickers_krx('krx')
+                ticker_names = {k:v for k,v in ticker_names.items() if k in tickers}
+                self.security_names.update(ticker_names)
+                print('security_names updated')
+            except Exception as e:
+                print(f'ERROR: Failed to update security names as {e}')
+    
+        start, end = get_date_minmax(self.df_universe, self.date_format)
+        return DataManager.download_fdr(tickers, start, end)
     
 
     def _update_universe(self, df_rec, msg=False):
@@ -3614,20 +3639,32 @@ class Liquidation():
         """
         convert securities_to_sell to dict of tickers to sell price
         record: PortfolioBuilder.record
-        securities_to_sell: str of a ticker; list of tickers; dict of the tickers to its sell price
+        securities_to_sell: str of a ticker; list of tickers; dict of the tickers to its sell price value or series;
+                            dataframe of prices of tickers
         hold:     
         - If set to True, all securities in `securities_to_sell` will be held and not liquidated.    
         - If set to False, you can selectively hold certain securities by setting their sell price to zero. 
           In this case, only the specified securities in `securities_to_sell` will be held, while others may still be liquidated.
         """
         # set self.securities_to_sell first to data check
-        self.securities_to_sell = securities_to_sell
+        #self.securities_to_sell = securities_to_sell # what for?
         if securities_to_sell is None:
             return print('Liquidation set to None')
         
         if record is None:
             return print('ERROR: no record to liquidate')
-    
+
+        # convert df/sr to dict first
+        if isinstance(securities_to_sell, pd.DataFrame):
+            securities_to_sell = {x:securities_to_sell[x] for x in securities_to_sell.columns}
+        if isinstance(securities_to_sell, pd.Series):
+            ticker = securities_to_sell.name
+            if ticker is None:
+                return print('ERROR: Set name as ticker')
+            else:
+                securities_to_sell = {ticker: securities_to_sell}
+
+        # get ticker list
         if isinstance(securities_to_sell, str):
             liq = [securities_to_sell]
         elif isinstance(securities_to_sell, dict):
@@ -3651,7 +3688,7 @@ class Liquidation():
         self.securities_to_sell = securities_to_sell
         return print('Liquidation prepared')
 
-    
+
     def set_price(self, df_prices, select=False):
         """
         update df_prices for liquidation
@@ -3681,7 +3718,7 @@ class Liquidation():
        
         return df_data
 
-
+    
     def check_weights(self, weights):
         """
         check if weights has tickers to liquidate
@@ -3705,7 +3742,7 @@ class Liquidation():
         else:
             return None
 
-    
+
     def recover_record(self, df_rec, cols_rec):
         """
         reset net and transaction of securities in hold
