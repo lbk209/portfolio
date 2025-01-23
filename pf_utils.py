@@ -2778,53 +2778,46 @@ class PortfolioBuilder():
         return BacktestManager.check_weights(*args, **kwargs)
         
 
-    def check_additional(self, date=None, df_additional=None, 
-                         stats=['mean', 'median', 'std'], 
-                         plot=False, figsize=(8,5), title='History of Additional data', legend=True,
-                         market_label='Market', market_color='grey', market_alpha=0.5, market_line='--'):
+    def check_additional(self, start_date=None, df_additional=None):
         """
-        check df_additional from date
-        date: a transaction date from record
+        compare df_additional with df_universe from start_date to latest
         """
-        df_additional = self._check_var(df_additional, self.df_additional)
-        if df_additional is None:
+        df_add = self._check_var(df_additional, self.df_additional)
+        if df_add is None:
             return print('ERROR: no df_additional to check')
-
-        # get tickers from transaction records
-        df_rec = self._check_result(False)
-        if df_rec is None:
-            print('No record')
-            tickers = None
         else:
-            # Retrieve the date and tickers for the transaction closest to the arg date
-            df = df_rec.loc[:date]
-            if len(df) > 0:
-                date = df.index.get_level_values(0).max().strftime(self.date_format)
-                tickers = df.loc[date].index.to_list()
-            else:
-                # date is not None since df is df_rec then
-                print(f'No record on {date}')
-                tickers = None
-                
-        df_all = df_additional.loc[date:]
-        if len(df_all) == 0:
-            print(f'WARNING: No data after {date}')
-            df_all = df_additional
+            df_add = df_add.loc[start_date:]
     
-        try:
-            df_res = None if tickers is None else df_all[tickers] 
-        except KeyError as e:
-            return print(f'ERROR: KeyError {e}')
+        # get prices
+        df_rec = self._check_result()
+        if df_rec is None:
+            df_prc = self.df_universe
+        else:
+            df_prc = self._update_universe(df_rec, msg=True)
+        df_prc = self.liquidation.set_price(df_prc)
+        df_prc = df_prc.loc[start_date:]
     
-        if plot:
-            ax1 = (df_all.mean(axis=1)
-                   .plot(figsize=figsize, title=title, label=market_label, 
-                         alpha=market_alpha, c=market_color, linestyle=market_line))
-            if df_res is not None:
-                ax2 = df_res.plot(ax=ax1.twinx())
-                _ = set_matplotlib_twins(ax1, ax2, legend=legend)
+        result = None
+        
+        # check dates
+        dates = df_prc.index.difference(df_add.index)
+        n = dates.size
+        if n > 0:
+            print(f'WARNING: Missing {n} dates in the additional data')
+            result = (df_prc, df_add)
+            msg = 'Returning price and additional'
     
-        return df_res
+        # check tickers
+        tickers = df_prc.columns.difference(df_add.columns)
+        n = tickers.size
+        if n > 0:
+            print(f'WARNING: Missing {n} tickers in the additional data')
+            if result is None: 
+                result = tickers.to_list()
+                msg = 'Returning missing tickers'
+    
+        print(msg)
+        return result
 
 
     def get_names(self, tickers=None):
