@@ -10,7 +10,7 @@ import pytensor.tensor as pt
 import xml.etree.ElementTree as ET
 import os, time, re, sys, pickle, random
 import bt
-import warnings
+import warnings, functools
 import seaborn as sns
 import yfinance as yf
 import requests
@@ -2688,7 +2688,7 @@ class PortfolioBuilder():
         
         # update ticker name
         df_rec = self._update_ticker_name(df_rec, security_names)
-        
+        # save or remind        
         if not df_rec.equals(record): # change exists
             if save:
                 self._overwrite_record(df_rec, update_var=update_var)
@@ -3614,7 +3614,8 @@ class Liquidation():
         """
         convert securities_to_sell to dict of tickers to sell price
         record: PortfolioBuilder.record
-        securities_to_sell: str of a ticker; list of tickers; dict of the tickers to its sell price
+        securities_to_sell: str of a ticker; list of tickers; dict of the tickers to its sell price;
+                            dataframe of prices of tickers
         hold:     
         - If set to True, all securities in `securities_to_sell` will be held and not liquidated.    
         - If set to False, you can selectively hold certain securities by setting their sell price to zero. 
@@ -3651,7 +3652,7 @@ class Liquidation():
         self.securities_to_sell = securities_to_sell
         return print('Liquidation prepared')
 
-    
+
     def set_price(self, df_prices, select=False):
         """
         update df_prices for liquidation
@@ -3681,7 +3682,7 @@ class Liquidation():
        
         return df_data
 
-
+    
     def check_weights(self, weights):
         """
         check if weights has tickers to liquidate
@@ -3705,7 +3706,7 @@ class Liquidation():
         else:
             return None
 
-    
+
     def recover_record(self, df_rec, cols_rec):
         """
         reset net and transaction of securities in hold
