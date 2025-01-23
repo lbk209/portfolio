@@ -2008,6 +2008,7 @@ class PortfolioBuilder():
         self.df_rec = None # record updated with new transaction
         self.liquidation = Liquidation() # for instance of Liquidation
         self.record = self.import_record()
+        _ = self.check_universe(msg=True)
             
 
     def import_record(self, record=None, msg=True):
@@ -2884,6 +2885,33 @@ class PortfolioBuilder():
         else:
             return df_prices
 
+
+    def check_universe(self, all_transaction=True, msg=False):
+        """
+        check if assets in record missing in universe. 
+         ex) delisted security
+        all_transaction: set to True to track exact value histories of sold assets delisted from universe
+        """
+        df_rec = self._check_result(False)
+        if df_rec is None:
+            return None
+    
+        df_prices = self.df_universe
+        cols_record = self.cols_record
+        col_date = cols_record['date']
+        col_tkr = cols_record['tkr']
+    
+        if all_transaction:
+            date = None
+        else:
+            date = df_rec.index.get_level_values(col_date).max()
+        tickers = df_rec.loc[date:].index.get_level_values(col_tkr).unique().difference(df_prices.columns)
+        n = tickers.size
+        if n > 0:
+            print(f'WARNING: Missing {n} assets in the universe')
+            print('Run check_universe to get the list of missing assets') if msg else None
+            return tickers.to_list()
+            
 
     def _calc_periodic_value(self, df_rec, df_prices, date=None, msg=False,
                              col_val='value', col_end='end'):
