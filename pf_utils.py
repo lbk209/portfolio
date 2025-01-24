@@ -3667,49 +3667,50 @@ class Liquidation():
         - If set to False, you can selectively hold certain securities by setting their sell price to zero. 
           In this case, only the specified securities in `securities_to_sell` will be held, while others may still be liquidated.
         """
-        # set self.securities_to_sell first to data check
-        #self.securities_to_sell = securities_to_sell # what for?
         if securities_to_sell is None:
             return print('Liquidation set to None')
         
         if record is None:
             return print('ERROR: no record to liquidate')
-
-        # convert df/sr to dict first
-        if isinstance(securities_to_sell, pd.DataFrame):
+    
+        if isinstance(securities_to_sell, str):
+            securities_to_sell = [securities_to_sell]
+        
+        # convert securities_to_sell to dict
+        if isinstance(securities_to_sell, list):
+            securities_to_sell = {x:None for x in securities_to_sell}
+        elif isinstance(securities_to_sell, pd.DataFrame):
             securities_to_sell = {x:securities_to_sell[x] for x in securities_to_sell.columns}
-        if isinstance(securities_to_sell, pd.Series):
+        elif isinstance(securities_to_sell, pd.Series):
             ticker = securities_to_sell.name
             if ticker is None:
                 return print('ERROR: Set name as ticker')
             else:
                 securities_to_sell = {ticker: securities_to_sell}
-
-        # get ticker list
-        if isinstance(securities_to_sell, str):
-            liq = [securities_to_sell]
         elif isinstance(securities_to_sell, dict):
-            liq = [x for x, _ in securities_to_sell.items()]
-        elif isinstance(securities_to_sell, list):
-            liq = securities_to_sell
+            start = record.index.get_level_values(0).max()
+            start += pd.DateOffset(days=1)
+            end = datetime.today()
+            index = pd.date_range(start=start, end=end)
+            securities_to_sell = {k: pd.Series(v, index=index, name=k) 
+                                  for k,v in securities_to_sell.items()}
         else:
             return print('ERROR: check arg securities_to_sell')
             
         # check if tickers to sell exist in record
+        liq = securities_to_sell.keys()
         date_lt = record.index.get_level_values(0).max()
         record_lt = record.loc[date_lt]
         if pd.Index(liq).difference(record_lt.index).size > 0:
             return print('ERROR: some tickers not in record')
     
-        if not isinstance(securities_to_sell, dict):
-            price = 0 if hold else None
-            # liq is list regardless of type of securities_to_sell
-            securities_to_sell = {x:price for x in liq}
+        if hold:
+            securities_to_sell = {x:0 for x in securities_to_sell}
     
         self.securities_to_sell = securities_to_sell
         return print('Liquidation prepared')
-
-
+    
+    
     def set_price(self, df_prices, select=False):
         """
         update df_prices for liquidation
@@ -3722,20 +3723,20 @@ class Liquidation():
             return df_prices
         else:
             df_data = df_prices.copy()
-
+    
         if select: # exclude tickers to liquidate in record from universe
             df_data = df_data.drop(list(liq_dict.keys()), axis=1, 
                                    errors='ignore' # tickers might be delisted from kospi200
                                   )
         else: # reset price of liquidating
             tickers_all = df_data.columns
-            for ticker, prc in liq_dict.items():
-                if prc is None:
+            for ticker, sr_prc in liq_dict.items():
+                if sr_prc is None:
                     if ticker not in tickers_all:
                         print(f'ERROR: {ticker} has no sell price')
                         return df_prices
                 else: # set sell price
-                    df_data[ticker] = prc
+                    df_data.update(sr_prc.rename(ticker), overwrite=True)
        
         return df_data
 
