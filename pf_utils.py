@@ -3653,146 +3653,126 @@ class CostManager():
 
 
 class Liquidation():
-    def __init__(self):
-        self.securities_to_sell = None
-        
-    def prepare(self, record, securities_to_sell=None, hold=False):
+    def __init__(self, record=None, cols_record=None, prefix_halt='HLT_'):
         """
-        convert securities_to_sell to dict of tickers to sell price
         record: PortfolioBuilder.record
-        securities_to_sell: str of a ticker; list of tickers; dict of the tickers to its sell price value or series;
-                            dataframe of prices of tickers
-        hold:     
-        - If set to True, all securities in `securities_to_sell` will be held and not liquidated.    
-        - If set to False, you can selectively hold certain securities by setting their sell price to zero. 
-          In this case, only the specified securities in `securities_to_sell` will be held, while others may still be liquidated.
+                record is None if first transaction of a portfolio
+        cols_record: PortfolioBuilder.cols_record
         """
-        if securities_to_sell is None:
-            return print('Liquidation set to None')
+        self.record = record
+        self.cols_record = cols_record
+        self.prefix_halt = prefix_halt
+        self.assets = None
+        self.index_halt = None # index of record (date, ticker) excluded from transaction
         
+        
+    def set_record(self, action='sell', assets=None):
+        """
+        set tickers to halt trading
+        action: sell, halt, resume
+        """
+        record = self.record.copy()
         if record is None:
-            return print('ERROR: no record to liquidate')
-    
-        if isinstance(securities_to_sell, str):
-            securities_to_sell = [securities_to_sell]
+            return print('REMINDER: No record to liquidate')
         
-        # convert securities_to_sell to dict
-        if isinstance(securities_to_sell, list):
-            securities_to_sell = {x:None for x in securities_to_sell}
-        elif isinstance(securities_to_sell, pd.DataFrame):
-            securities_to_sell = {x:securities_to_sell[x] for x in securities_to_sell.columns}
-        elif isinstance(securities_to_sell, pd.Series):
-            ticker = securities_to_sell.name
+        prefix_halt = self.prefix_halt
+        cols_record = self.cols_record
+        col_date = cols_record['date']
+        col_tkr = cols_record['tkr']
+        col_net = cols_record['net']
+
+        # get tickers to prepare for liquidation or halt
+        if isinstance(assets, pd.DataFrame):
+            tickers = assets.columns
+        elif isinstance(assets, pd.Series):
+            tickers = [assets.name]
             if ticker is None:
-                return print('ERROR: Set name as ticker')
+                print('ERROR: Set name as ticker')
+                return record
+        elif isinstance(assets, dict):
+            tickers = assets.keys()
+        elif isinstance(assets, str):
+            tickers = [assets]
+        elif isinstance(assets, list) or assets is None:
+            tickers = assets
+        else:
+            print('ERROR: Check assets')
+            return record
+
+        action = action.lower()
+        if action == 'sell':
+            record = self._set_to_liq(tickers, record)
+        elif action == 'halt':
+            record = self._set_to_halt(tickers, record, prefix_halt, col_date, col_tkr, col_net)
+        elif action == 'resume':
+            record = self._set_to_resume(tickers, record, prefix_halt, col_tkr)
+        else:
+            print('ERROR: Check action')
+            return record
+
+        return record
+
+
+    def _set_to_liq(self, tickers, record):
+        return record
+
+    
+    def _set_to_halt(self, tickers, record, prefix_halt, col_date, col_tkr, col_net):
+        index_halt = self.index_halt
+        if tickers is not None:
+            date_lt = record.index.get_level_values(col_date).max()
+            # check if all tickers in the latest transaction
+            tkr_u = pd.Index(tickers).difference(record.loc[date_lt].index)
+            cond1 = (len(tkr_u) == 0)
+            # check if tickers in hold
+            cond2 = record.loc[(date_lt, tickers), col_net] > 0
+            cond2 = cond2.all()
+            if cond1 and cond2:
+                # Extract unique sorted dates
+                dates = record.index.get_level_values(col_date).unique().sort_values()
+                # Create a MultiIndex with all date-ticker combinations
+                index = pd.MultiIndex.from_product([dates, tickers], names=record.index.names)
+                # Initialize a Series with zeros and update with available values from `record`
+                sr = pd.Series(0, index=index, name=col_net)
+                idx = pd.IndexSlice
+                sr.update(record.loc[idx[:, tickers], col_net])
+                # Identify indices where the previous value is zero
+                cond = sr.groupby(col_tkr).apply(lambda x: x*x.shift(-1).ffill() > 0).droplevel(0)
+                index_halt = sr.loc[cond].index
+                record = self._set_prefix(record, prefix_halt, index_halt=index_halt)
+                tickers = ', '.join(tickers)
+                print(f'Trading of assets {tickers} to halt')
             else:
-                securities_to_sell = {ticker: securities_to_sell}
-        elif isinstance(securities_to_sell, dict):
-            start = record.index.get_level_values(0).max()
-            start += pd.DateOffset(days=1)
-            end = datetime.today()
-            index = pd.date_range(start=start, end=end)
-            securities_to_sell = {k: pd.Series(v, index=index, name=k) 
-                                  for k,v in securities_to_sell.items()}
-        else:
-            return print('ERROR: check arg securities_to_sell')
-            
-        # check if tickers to sell exist in record
-        liq = securities_to_sell.keys()
-        date_lt = record.index.get_level_values(0).max()
-        record_lt = record.loc[date_lt]
-        if pd.Index(liq).difference(record_lt.index).size > 0:
-            return print('ERROR: some tickers not in record')
-    
-        if hold:
-            securities_to_sell = {x:0 for x in securities_to_sell}
-    
-        self.securities_to_sell = securities_to_sell
-        return print('Liquidation prepared')
-    
-    
-    def set_price(self, df_prices, select=False):
-        """
-        update df_prices for liquidation
-        df_prices: df_universe for select or transaction
-        select: exclude tickers to liquidate in record from universe.
-                set to True for self.select
-        """
-        liq_dict = self.securities_to_sell
-        if liq_dict is None:
-            return df_prices
-        else:
-            df_data = df_prices.copy()
-    
-        if select: # exclude tickers to liquidate in record from universe
-            df_data = df_data.drop(list(liq_dict.keys()), axis=1, 
-                                   errors='ignore' # tickers might be delisted from kospi200
-                                  )
-        else: # reset price of liquidating
-            tickers_all = df_data.columns
-            for ticker, sr_prc in liq_dict.items():
-                if sr_prc is None:
-                    if ticker not in tickers_all:
-                        print(f'ERROR: {ticker} has no sell price')
-                        return df_prices
-                else: # set sell price
-                    df_data.update(sr_prc.rename(ticker), overwrite=True)
-       
-        return df_data
+                tkr_u = ', '.join(tkr_u)
+                print(f'ERROR: No {tkr_u} to halt in the latest transaction')
+        self.index_halt = index_halt
+        return record
 
     
-    def check_weights(self, weights):
-        """
-        check if weights has tickers to liquidate
-        """
-        liq_dict = self.securities_to_sell
-        if liq_dict is None:
-            return None
+    def _set_to_resume(self, tickers, record, prefix_halt, col_tkr):
+        cond = record.index.get_level_values(col_tkr).str.startswith(prefix_halt)
+        resumed = record.index[cond].get_level_values(col_tkr).unique() # all assets in halt
+        resumed = [x.removeprefix(prefix_halt) for x in resumed] 
+        if tickers is not None: # all resumed if tickers is None
+            resumed = [x for x in resumed if x in tickers]
+        if len(resumed) > 0:
+            record = self._set_prefix(record, prefix_halt, resumed=resumed)
+            resumed = ', '.join(resumed)
+            print(f'Trading of assets {resumed} resumed')
+        return record
 
-        if isinstance(weights, str):
-            w_list = [weights]
-        elif isinstance(weights, dict):
-            w_list = weights.keys()
-        elif isinstance(weights, list):
-            w_list = weights
-        else:
-            return print('ERROR: check type of weights')
-            
-        w = [x for x in liq_dict.keys() if x in w_list]
-        if len(w) > 0:
-            return print('ERROR: securities to liquidate in weights')
-        else:
-            return None
-
-
-    def recover_record(self, df_rec, cols_rec):
-        """
-        reset net and transaction of securities in hold
-        """
-        liq_dict = self.securities_to_sell
-        if liq_dict is None:
-            return df_rec
-        else:
-            liq = list(liq_dict.keys())
-
-        if df_rec is None:
-            return print('ERROR')
-
-        date_lt = df_rec.index.get_level_values(0).max()
-        df = df_rec.loc[date_lt]
-        if pd.Index(liq).difference(df.index).size > 0:
-            print('ERROR: some tickers not in record')
-            return df_rec
-            
-        col_prc = cols_rec['prc']
-        col_net = cols_rec['net']
-        col_trs = cols_rec['trs']
-        cond = (df_rec[col_prc] == 0) & (df_rec.net == 0)
-        if cond.sum() > 0:
-            df_rec.loc[cond, col_net] = -df_rec.loc[cond, col_trs]
-            df_rec.loc[cond, col_trs] = 0
-            print('Holdings recovered')
-        return df_rec
+        
+    def _set_prefix(self, record, prefix_halt, resumed=None, index_halt=None):
+        index = record.index
+        if resumed is None: # add prefix_halt to index in index_halt
+            if index_halt is not None:
+                func = lambda x: f'{prefix_halt}{x[1]}' if x in index_halt else x[1]
+                index = record.index.map(lambda x: (x[0], func(x)))
+        else: # remove prefix_halt from tickers in resumed
+            func = lambda x: x[1].removeprefix(prefix_halt) if x[1].removeprefix(prefix_halt) in resumed else x[1]
+            index = record.index.map(lambda x: (x[0], func(x)))
+        record.index = index
+        return record
 
 
 
