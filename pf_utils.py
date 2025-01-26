@@ -3673,6 +3673,7 @@ class Liquidation():
         """
         set record, record_halt and date_lt 
             by moving assets of halt from record to record_halt
+            which is necessary even for jobs before transaction. ex) valuate
         """
         record = self.record
         if record is None:
@@ -3681,7 +3682,6 @@ class Liquidation():
         cols_record = self.cols_record
         col_date = cols_record['date']
         col_tkr = cols_record['tkr']
-        
         date_lt = record.index.get_level_values(col_date).max()
         
         # search assets of halt
@@ -3693,41 +3693,13 @@ class Liquidation():
             print(f'{n} assets kept for halt')
         else:
             record_halt = None
+
         self.record = record
         self.record_halt = record_halt
         self.date_lt = date_lt
         return None
 
 
-    def _free_halt(self, tickers):
-        """
-        set record, record_halt and date_lt
-            by moving tickers in record_halt to record; assuming prepare_record run
-        """
-        record = self.record
-        record_halt = self.record_halt
-        if record is None or record_halt is None:
-            return None
-        else:            
-            date_lt = self.date_lt
-            col_tkr = self.cols_record['tkr']
-
-        try: # check if tickers on date_lt in record_halt
-            cond = record_halt.loc[date_lt].index.map(lambda x: x.removeprefix(prefix_halt) in tickers)
-        except KeyError: # no tickers on date_lt
-            return None
-            
-        # update record & record_halt; set record before record_halt
-        record = pd.concat([record, record_halt.loc[cond]]) 
-        record_halt = record_halt.loc[~cond]
-        # removing prefix_halt from tickers
-        record = self._set_to_resume(None, record, col_tkr)
-        
-        self.record_halt = record_halt
-        self.record = record
-        return None
-
-        
     def set_record(self, assets=None, action='sell'):
         """
         set tickers to sell/halt/resume
@@ -3773,12 +3745,13 @@ class Liquidation():
         tickers = None if assets is None else assets.keys()
         action = action.lower()
         if action == 'sell':
-            # move tickers in record_halt to record first
-            self._free_halt(tickers)
-            record = self._set_to_sell(tickers, self.record)
+            # move tickers in record_halt to record before _set_to_sell
+            record = self._free_halt(tickers)
+            record = self._set_to_sell(tickers, record)
         elif action == 'halt':
             record = self._set_to_halt(tickers, record, col_date, col_tkr, col_net)
         elif action == 'resume':
+            record = self._free_halt(tickers)
             record = self._set_to_resume(tickers, record, col_tkr)
         else:
             print(f'ERROR: No action such as {action}')
@@ -3788,20 +3761,15 @@ class Liquidation():
         return record
 
 
-    # TODO
     def recover_record(self, record):
         """
-        add transaction record of tickres in halt
+        add to record the transaction of tickres to halt 
+        record: record with new transaction
         """
         record_halt = self.record_halt
         if record_halt is None:
             return record
-        prefix_halt = self.prefix_halt
-
-        # TODO:
-        rec = self._set_prefix(record_halt, prefix_halt)
-        
-        return pd.concat([record, rec])
+        return pd.concat([record, rec]).sort_index()
         
 
     def _set_to_sell(self, tickers, record):
@@ -3809,7 +3777,7 @@ class Liquidation():
         nothing to do for tickers to sell except to check tickers in record
         """
         if tickers is not None:
-            date_lt, tkr_u = self._check_latest(tickers, record)
+            tkr_u = self._check_latest(tickers, record)
             if len(tkr_u) > 0:
                 tkr_u = ', '.join(tkr_u)
                 print(f'ERROR: No {tkr_u} to sell in the latest transaction')
@@ -3821,38 +3789,26 @@ class Liquidation():
         remove transaction history of tickers to halt from record
         """
         record_halt = self.record_halt
+        date_lt = self.date_lt
         if tickers is not None:
             # check if all tickers in the latest transaction
-            date_lt, tkr_u = self._check_latest(tickers, record)
-            cond1 = (len(tkr_u) == 0)
-            # check if tickers in hold
-            cond2 = record.loc[(date_lt, tickers), col_net] > 0
-            cond2 = cond2.all()
-            if cond1 and cond2:
-                # Extract unique sorted dates
-                dates = record.index.get_level_values(col_date).unique().sort_values()
-                # Create a MultiIndex with all date-ticker combinations
-                index = pd.MultiIndex.from_product([dates, tickers], names=record.index.names)
-                # Initialize a Series with zeros and update with available values from `record`
-                sr = pd.Series(0, index=index, name=col_net)
-                idx = pd.IndexSlice
-                sr.update(record.loc[idx[:, tickers], col_net])
-                # Identify indices where the previous value is zero
-                cond = sr.groupby(col_tkr).apply(lambda x: x*x.shift(-1).ffill() > 0).droplevel(0)
-                
-                
-                # TODO: remove index_halt from record
-                record_halt = sr.loc[cond]
-                record = record.drop(record_halt.index)
-
-                #record = self._set_prefix(record, prefix_halt, index_halt=index_halt)
-                
-                
-                tickers = ', '.join(tickers)
-                print(f'Trading of assets {tickers} to halt')
-            else:
+            tkr_u = self._check_latest(tickers, record)
+            if tkr_u.size == 0:
+                # check if tickers to halt in hold
+                df = record.loc[date_lt].loc[tickers]
+                tkr_u = df.loc[df[col_net] == 0].index
+                if tkr_u.size == 0:
+                    # get all transactions to halt
+                    index_halt = self._get_halt(tickers, record, col_date, col_tkr, col_net)
+                    record_halt = record.loc[index_halt]
+                    # add prefix
+                    record_halt.index = record_halt.index.map(lambda x: (x[0], f'{prefix_halt}{x[1]}'))
+                    record = record.drop(record_halt.index)
+                    tickers = ', '.join(tickers)
+                    print(f'Trading of assets {tickers} to halt')
+            if tkr_u.size > 0:
                 tkr_u = ', '.join(tkr_u)
-                print(f'ERROR: No {tkr_u} to halt in the latest transaction')
+                print(f'ERROR: Check {tkr_u} to halt in the latest transaction')
         self.record_halt = record_halt
         return record
 
@@ -3860,11 +3816,12 @@ class Liquidation():
     def _set_to_resume(self, tickers, record, col_tkr):
         """
         resume tickers from halt by removing prefix_halt from tickers in record
-         not necessary to run self._check_latest beforehand
+            not necessary to run self._check_latest beforehand
         """
         prefix_halt = self.prefix_halt
+        # search transactions of halt
         cond = record.index.get_level_values(col_tkr).str.startswith(prefix_halt)
-        resumed = record.index[cond].get_level_values(col_tkr).unique() # all assets in halt
+        resumed = record.index[cond].get_level_values(col_tkr).unique() # all assets to halt
         resumed = [x.removeprefix(prefix_halt) for x in resumed] 
         if tickers is not None: # all resumed if tickers is None
             resumed = [x for x in resumed if x in tickers]
@@ -3881,10 +3838,9 @@ class Liquidation():
         """
         col_date = self.cols_record['date']
         date_lt = record.index.get_level_values(col_date).max()
-        # check if all tickers in the latest transaction
-        tkr_u = pd.Index(tickers).difference(record.loc[date_lt].index)
-        return (date_lt, tkr_u)
-
+        # return tickers not in the latest transaction
+        return pd.Index(tickers).difference(record.loc[date_lt].index)
+        
 
     def _remove_prefix(self, resumed, record):
         """
@@ -3895,32 +3851,51 @@ class Liquidation():
         index = record.index.map(lambda x: (x[0], func(x)))
         record.index = index
         return record
+
+
+    def _free_halt(self, tickers):
+        """
+        set record & record_halt by moving tickers in record_halt to record; 
+            assuming prepare_record run
+        """
+        record = self.record
+        record_halt = self.record_halt
+        if record is None or record_halt is None:
+            return None
+        else:            
+            date_lt = self.date_lt
+            prefix_halt = self.prefix_halt
+            col_tkr = self.cols_record['tkr']
+
+        try: # check if tickers on date_lt in record_halt
+            cond = record_halt.loc[date_lt].index.map(lambda x: x.removeprefix(prefix_halt) in tickers)
+        except KeyError: # no tickers on date_lt
+            return None
+            
+        # update record & record_halt; set record before record_halt
+        record = pd.concat([record, record_halt.loc[cond]]) 
+        record_halt = record_halt.loc[~cond]
+        record_halt = record_halt if len(record_halt) > 0 else None
+        # removing prefix_halt from tickers
+        record = self._set_to_resume(None, record, col_tkr)
         
-    
-    def _set_prefix(self, transactions):
-        """
-        add prefix_halt to all tickers in transactions
-        """
-
-
-
-
-    def back_set_prefix(self, record, prefix_halt, resumed=None, index_halt=None):
-        """
-        add or remove prefix_halt from tickers in record
-        """
-        index = record.index
-        # add prefix_halt to index in index_halt
-        if resumed is None: 
-            if index_halt is not None:
-                func = lambda x: f'{prefix_halt}{x[1]}' if x in index_halt else x[1]
-                index = record.index.map(lambda x: (x[0], func(x)))
-        # remove prefix_halt from tickers in resumed
-        else:
-            func = lambda x: x[1].removeprefix(prefix_halt) if x[1].removeprefix(prefix_halt) in resumed else x[1]
-            index = record.index.map(lambda x: (x[0], func(x)))
-        record.index = index
+        self.record_halt = record_halt
+        self.record = record # TODO: check if necessary
         return record
+
+
+    def _get_halt(self, tickers, record, col_date, col_tkr, col_net):
+        # Extract unique sorted dates
+        dates = record.index.get_level_values(col_date).unique().sort_values()
+        # Create a MultiIndex with all date-ticker combinations
+        index = pd.MultiIndex.from_product([dates, tickers], names=record.index.names)
+        # Initialize a Series with zeros and update with available values from `record`
+        sr = pd.Series(0, index=index, name=col_net)
+        idx = pd.IndexSlice
+        sr.update(record.loc[idx[:, tickers], col_net])
+        # Identify indices where the previous value is zero
+        cond = sr.groupby(col_tkr).apply(lambda x: x*x.shift(-1).ffill() > 0).droplevel(0)
+        return sr.loc[cond].index
 
 
 
