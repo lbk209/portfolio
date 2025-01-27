@@ -1010,7 +1010,7 @@ class DataManager():
             out = [x for x in security_names.keys() if x not in tickers]
             n_out = len(out)
             if n_out > 0:
-                print(f'WARNING: Update price data as {n_out} tickers not in universe')
+                print(f'WARNING: Update price data as {n_out} tickers missing in universe')
         return security_names
 
 
@@ -2006,8 +2006,8 @@ class PortfolioBuilder():
         
         self.selected = None # data for select, weigh and allocate
         self.df_rec = None # record updated with new transaction
-        self.liquidation = Liquidation() # for instance of Liquidation
         self.record = self.import_record()
+        self.liquidation = Liquidation(self.record, self.cols_record) # for instance of Liquidation
         _ = self.check_universe(msg=True)
             
 
@@ -2144,7 +2144,6 @@ class PortfolioBuilder():
         if weight_min > 0: # drop equities of weight lt weight_min
             w = redistribute_weights(weights, weight_min, n_min=1, none_if_fail=True)
             weights = pd.Series(0, index=weights.index) if w is None else pd.Series(w)
-
         
         self.selected['weights'] = np.round(weights, 4) # weights is series
         print(f'Weights of tickers determined by {method}.')
@@ -2184,8 +2183,7 @@ class PortfolioBuilder():
             return print('ERROR')
 
         # sum capital and security value
-        record = self.record
-        if record is None:
+        if self.record is None:
             if capital == 0:
                 return print('ERROR: Neither capital nor tickers to rebalance exists')
         else:
@@ -2236,11 +2234,10 @@ class PortfolioBuilder():
         return df_net[cols_all]
 
 
-    def transaction(self, df_net, record=None):
+    def transaction(self, df_net):
         """
         add new transaction to records
         df_net: output of self.allocate
-        record: transaction record given as dataframe
         """
         cols_record = self.cols_record
         col_date = cols_record['date']
@@ -2257,7 +2254,7 @@ class PortfolioBuilder():
         cols_int = [col_trs, col_net]
                 
         date = df_net.index.get_level_values(0).max()
-        record = self._check_var(record, self.record)
+        record = self.liquidation.record
         if record is None: # no transation record saved
             # allocation is same as transaction for the 1st time
             df_rec = df_net.assign(**{col_trs: df_net[col_net]})
@@ -2275,7 +2272,7 @@ class PortfolioBuilder():
                 df_rec = pd.concat([record[cols_all], df_net])
                 # update universe by adding tickers not in the universe but in the past transactions
                 df_prc = self._update_universe(df_rec, msg=True)
-                df_prc = self.liquidation.set_price(df_prc)
+                df_prc = self.liquidation.get_price(df_prc)
             else: # return None if no new transaction
                 return None
             
@@ -2304,7 +2301,7 @@ class PortfolioBuilder():
             # drop new tickers before the date
             df_rec = df_rec.dropna(subset=cols_val) 
             # drop rows with neither transaction nor net 
-            cond = (df_rec.transaction == 0) & (df_rec.net == 0)
+            cond = (df_rec[col_trs] == 0) & (df_rec[col_net] == 0)
             df_rec = df_rec.loc[~cond]
 
         df_rec = df_rec[cols_all]
@@ -2402,12 +2399,12 @@ class PortfolioBuilder():
 
 
     def transaction_pipeline(self, date=None, capital=10000000, commissions=0, 
-                             record=None, save=False, nshares=False, **kw_liq):
+                             save=False, nshares=False, **kw_liq):
         """
-        kw_liq: kwargs for Liquidation.prepare
+        kw_liq: kwargs for Liquidation.set_record
         nshares: set to True if saving last transaction as num of shares for the convenience of trading
         """        
-        self.liquidation.prepare(self.record, **kw_liq)
+        self.liquidation.set_record(**kw_liq)
         rank = self.select(date=date)
         if rank is None:
             return None # rank is not None even for static portfolio (method_select='all')
@@ -2426,14 +2423,15 @@ class PortfolioBuilder():
         if df_net is None:
             return None
             
-        df_rec = self.transaction(df_net, record=record)
+        df_rec = self.transaction(df_net)
+        df_rec = self.liquidation.recover(df_rec)
         if df_rec is not None: # new transaction updated
             if save:
                 # save transaction as num of shares for the convenience of trading
                 if nshares:
                     df_prc = self._update_universe(df_rec, msg=False)
-                    df_prc = self.liquidation.set_price(df_prc)
-                    # DO NOT SAVE transaction & net as int. Set int_nshares to False
+                    df_prc = self.liquidation.get_price(df_prc)
+                    # DO NOT SAVE both of transaction & net as int. Set int_nshares to False
                     df_rec = self._convert_to_nshares(df_rec, df_prc, int_nshares=False)
                     # set ratio to None for the new transaction which is a flag for calc of ratio with buy/sell price
                     date_lt = df_rec.index.get_level_values(0).max()
@@ -2669,11 +2667,10 @@ class PortfolioBuilder():
         DO NOT use _check_record for df_rec as saving nshare allowed for convenience
         """
         file, path = self.file, self.path
-        df_rec = self.liquidation.recover_record(df_rec, self.cols_record)
         self.file = self._save_transaction(df_rec, file, path)
         if self.file is not None:
             self.record = self.import_record(df_rec)
-        return None
+        return df_rec
         
 
     def update_record(self, security_names=None, save=True, update_var=True):
@@ -3343,7 +3340,7 @@ class PortfolioBuilder():
             df_data = df_data[tickers]
             
         # setting liquidation
-        df_data = self.liquidation.set_price(df_data, select=True)
+        df_data = self.liquidation.get_price(df_data, select=True)
         # set date range
         date = df_data.index.max()
         dt1 = date - self._get_date_offset(lag, 'weeks')
@@ -3664,6 +3661,7 @@ class Liquidation():
         self.prefix_halt = prefix_halt
         self.assets = None
         self.record_halt = None
+        self.action = None
         self.date_lt = None
         # set record, record_halt and date_lt
         self.prepare()
@@ -3671,7 +3669,7 @@ class Liquidation():
 
     def prepare(self):
         """
-        set record, record_halt and date_lt 
+        set record, record_halt and date_lt before set_record
             by moving assets of halt from record to record_halt
             which is necessary even for jobs before transaction. ex) valuate
         """
@@ -3748,14 +3746,15 @@ class Liquidation():
             record = self._free_halt(tickers, record)
             record = self._set_to_resume(tickers, record, col_tkr)
         else:
-            print(f'ERROR: No action such as {action}')
-            return record
-
+            return print(f'ERROR: No action such as {action}')
+            
         self.assets = assets
-        return record
+        self.record = record
+        self.action = action
+        return None
 
 
-    def recover_record(self, record):
+    def recover(self, record):
         """
         add to record the transaction of tickres to halt 
         record: record with new transaction
@@ -3774,7 +3773,7 @@ class Liquidation():
             tkr_u = self._check_latest(tickers, record)
             if len(tkr_u) > 0:
                 tkr_u = ', '.join(tkr_u)
-                print(f'ERROR: No {tkr_u} to sell in the latest transaction')
+                print(f'ERROR: Check {tkr_u} to sell in the latest transaction')
         return record
 
 
@@ -3844,8 +3843,8 @@ class Liquidation():
         """
         check tickers to sell or halt in the latest transaction
         """
+        date_lt = self.date_lt
         col_date = self.cols_record['date']
-        date_lt = record.index.get_level_values(col_date).max()
         # return tickers not in the latest transaction
         return pd.Index(tickers).difference(record.loc[date_lt].index)
         
@@ -3904,6 +3903,37 @@ class Liquidation():
         # Identify indices where the previous value is zero
         cond = sr.groupby(col_tkr).apply(lambda x: x*x.shift(-1).ffill() > 0).droplevel(0)
         return sr.loc[cond].index
+
+
+    def get_price(self, df_prices, select=False):
+        """
+        update df_prices depending to self.action
+        df_prices: df_universe for select or transaction
+        select: set to True for PortfolioBuilder.select
+        """
+        assets = self.assets
+        if assets is None:
+            return df_prices
+        else:
+            action = self.action.lower()
+            df_data = df_prices.copy()
+
+        select = True if action == 'halt' else select
+        if select: # halt or sell with select
+             df_data = df_data.drop(list(assets.keys()), axis=1, 
+                                    # tickers might be already delisted from universe
+                                    errors='ignore')
+        else: # TODO: add prices if given
+            pass
+
+        return df_data
+
+
+    def check_weights(self, weights):
+        return None
+
+    def set_price(self, df_prices):
+        return df_prices
 
 
 
