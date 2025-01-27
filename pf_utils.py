@@ -3666,10 +3666,10 @@ class Liquidation():
         self.record_halt = None
         self.date_lt = None
         # set record, record_halt and date_lt
-        self.prepare_record()
+        self.prepare()
 
 
-    def prepare_record(self):
+    def prepare(self):
         """
         set record, record_halt and date_lt 
             by moving assets of halt from record to record_halt
@@ -3684,19 +3684,13 @@ class Liquidation():
         col_tkr = cols_record['tkr']
         date_lt = record.index.get_level_values(col_date).max()
         
-        # search assets of halt
-        cond = record.index.get_level_values(col_tkr).str.startswith(self.prefix_halt)
-        if sum(cond) > 0:
-            record_halt = record.loc[cond]
-            record = record.loc[~cond]
-            n = record_halt.index.get_level_values(col_tkr).unique().size
-            print(f'{n} assets kept for halt')
+        # create record_halt from record
+        record = self._set_to_halt(None, record, col_tkr)
+        if record.index.get_level_values(col_date).intersection([date_lt]).size == 0:
+            return print('ERROR: All assets cannot be halt. You better start new portfolio then')
         else:
-            record_halt = None
-
-        self.record = record
-        self.record_halt = record_halt
-        self.date_lt = date_lt
+            self.record = record
+            self.date_lt = date_lt
         return None
 
 
@@ -3746,12 +3740,12 @@ class Liquidation():
         action = action.lower()
         if action == 'sell':
             # move tickers in record_halt to record before _set_to_sell
-            record = self._free_halt(tickers)
+            record = self._free_halt(tickers, record)
             record = self._set_to_sell(tickers, record)
         elif action == 'halt':
-            record = self._set_to_halt(tickers, record, col_date, col_tkr, col_net)
+            record = self._set_to_halt(tickers, record, col_tkr, col_date, col_net)
         elif action == 'resume':
-            record = self._free_halt(tickers)
+            record = self._free_halt(tickers, record)
             record = self._set_to_resume(tickers, record, col_tkr)
         else:
             print(f'ERROR: No action such as {action}')
@@ -3769,7 +3763,7 @@ class Liquidation():
         record_halt = self.record_halt
         if record_halt is None:
             return record
-        return pd.concat([record, rec]).sort_index()
+        return pd.concat([record, record_halt]).sort_index()
         
 
     def _set_to_sell(self, tickers, record):
@@ -3784,13 +3778,23 @@ class Liquidation():
         return record
 
 
-    def _set_to_halt(self, tickers, record, col_date, col_tkr, col_net):
+    def _set_to_halt(self, tickers, record, col_tkr, col_date=None, col_net=None):
         """
         remove transaction history of tickers to halt from record
         """
         record_halt = self.record_halt
+        prefix_halt = self.prefix_halt
         date_lt = self.date_lt
-        if tickers is not None:
+        if tickers is None: # init record_halt
+            if record_halt is None: # make sure no init before
+                cond = record.index.get_level_values(col_tkr).str.startswith(prefix_halt)
+                if sum(cond) > 0:
+                    record_halt = record.loc[cond]
+                    record = record.loc[~cond]
+                    tickers = record_halt.index.get_level_values(col_tkr).unique()
+                    tickers = ', '.join(tickers)
+                    print(f'Trading of assets {tickers} to halt')
+        else:
             # check if all tickers in the latest transaction
             tkr_u = self._check_latest(tickers, record)
             if tkr_u.size == 0:
@@ -3800,10 +3804,14 @@ class Liquidation():
                 if tkr_u.size == 0:
                     # get all transactions to halt
                     index_halt = self._get_halt(tickers, record, col_date, col_tkr, col_net)
-                    record_halt = record.loc[index_halt]
+                    record_halt_new = record.loc[index_halt]
                     # add prefix
-                    record_halt.index = record_halt.index.map(lambda x: (x[0], f'{prefix_halt}{x[1]}'))
-                    record = record.drop(record_halt.index)
+                    record_halt_new.index = record_halt_new.index.map(lambda x: (x[0], f'{prefix_halt}{x[1]}'))
+                    if record_halt is None:
+                        record_halt = record_halt_new
+                    else:
+                        record_halt = pd.concat([record_halt, record_halt_new])
+                    record = record.drop(index_halt)
                     tickers = ', '.join(tickers)
                     print(f'Trading of assets {tickers} to halt')
             if tkr_u.size > 0:
@@ -3853,19 +3861,17 @@ class Liquidation():
         return record
 
 
-    def _free_halt(self, tickers):
+    def _free_halt(self, tickers, record):
         """
         set record & record_halt by moving tickers in record_halt to record; 
             assuming prepare_record run
         """
-        record = self.record
         record_halt = self.record_halt
-        if record is None or record_halt is None:
-            return None
-        else:            
-            date_lt = self.date_lt
-            prefix_halt = self.prefix_halt
-            col_tkr = self.cols_record['tkr']
+        if record_halt is None:
+            return None # nothing to free
+        date_lt = self.date_lt
+        prefix_halt = self.prefix_halt
+        col_tkr = self.cols_record['tkr']
 
         try: # check if tickers on date_lt in record_halt
             cond = record_halt.loc[date_lt].index.map(lambda x: x.removeprefix(prefix_halt) in tickers)
@@ -3880,11 +3886,13 @@ class Liquidation():
         record = self._set_to_resume(None, record, col_tkr)
         
         self.record_halt = record_halt
-        self.record = record # TODO: check if necessary
         return record
 
 
     def _get_halt(self, tickers, record, col_date, col_tkr, col_net):
+        """
+        get index of date & ticker of all transactions of tickers to halt
+        """
         # Extract unique sorted dates
         dates = record.index.get_level_values(col_date).unique().sort_values()
         # Create a MultiIndex with all date-ticker combinations
