@@ -2006,8 +2006,12 @@ class PortfolioBuilder():
         
         self.selected = None # data for select, weigh and allocate
         self.df_rec = None # record updated with new transaction
-        self.liquidation = None # liquidation instance
-        self.record = self.import_record(liquidation=True)
+        # liquidation instance to save record before new transaction
+        self.liquidation = None 
+        self.record = self.import_record(liquidation=True) # record w/o halt
+        # record of halt after new transaction
+        self.record_halt = self.liquidation.record_halt
+        
         _ = self.check_universe(msg=True)
             
 
@@ -2411,7 +2415,11 @@ class PortfolioBuilder():
         kw_liq: kwargs for Liquidation.get_record
         nshares: set to True if saving last transaction as num of shares for the convenience of trading
         """        
-        self.record = self.liquidation.get_record(**kw_liq)
+        # update with new transaction
+        record, record_halt = self.liquidation.get_record(**kw_liq)
+        self.record = record
+        self.record_halt = record_halt
+        
         rank = self.select(date=date)
         if rank is None:
             return None # rank is not None even for static portfolio (method_select='all')
@@ -2421,7 +2429,7 @@ class PortfolioBuilder():
             dt = self.selected['date'] # selected defined by self.select
             _ = self.valuate(dt, total=True, int_to_str=True, print_msg=True)
             # add tickers of halt to recover original record
-            return self.liquidation.recover(self.record)  
+            return self.liquidation.recover(self.record, self.record_halt)  
             
         weights = self.weigh()
         if weights is None:
@@ -2433,7 +2441,7 @@ class PortfolioBuilder():
             
         df_rec = self.transaction(df_net)
         # recover record with halt before saving or converting to record with num of shares
-        df_rec = self.liquidation.recover(df_rec)
+        df_rec = self.liquidation.recover(df_rec, self.record_halt)
         if df_rec is not None: # new transaction updated
             if save:
                 # save transaction as num of shares for the convenience of trading
@@ -2724,7 +2732,7 @@ class PortfolioBuilder():
         if df_rec is None:
             df_rec = self._check_result(msg)
         if df_rec is None: # record is None or nshares-based to edit
-            return self.liquidation.recover(self.record) # see _check_result for err msg
+            return self.liquidation.recover(self.record, self.record_halt) # see _check_result for err msg
         if not self._check_record(df_rec, msg=True):
             return None # check df_rec by self.cols_record
 
@@ -3022,7 +3030,7 @@ class PortfolioBuilder():
         """
         calc number of shares for amount net & transaction
         """
-        cols = [cols_record[x] for x in ['rat','prc','trs','net']]
+        cols = [cols_record[x] for x in ['prc','trs','net']]
         col_prc, col_trs, col_net = cols
         try:
             if df_rec[col_prc].notna().any():
@@ -3683,8 +3691,9 @@ class Liquidation():
         self.record = record
         self.cols_record = cols_record
         self.prefix_halt = prefix_halt
+        # record of halt before new transaction, not updated except by set
+        self.record_halt = None 
         self.assets = None
-        self.record_halt = None
         self.action = None
         self.date_lt = None
         # set record, record_halt and date_lt
@@ -3707,33 +3716,35 @@ class Liquidation():
         date_lt = record.index.get_level_values(col_date).max()
         
         # create record_halt from record
-        record = self._set_to_halt(None, record, col_tkr)
+        tickers, record_halt = None, None
+        record, record_halt = self._set_to_halt(tickers, record, record_halt)
         if record.index.get_level_values(col_date).intersection([date_lt]).size == 0:
             return print('ERROR: All assets cannot be halt. You better start new portfolio then')
         else:
             self.record = record
+            self.record_halt = record_halt
             self.date_lt = date_lt
         return None
 
 
-    def get_record(self, assets=None, action='sell'):
+    def get_record(self, assets=None, action=None):
         """
         set tickers to sell/halt/resume
-        assets: str of a ticker; list of tickers; dict of the tickers to its sell price value or series;
+        assets: new assets to halt/sell/resume in transaction.
+                str of a ticker; list of tickers; dict of the tickers to its sell price value or series;
                 dataframe of prices of tickers
-        action: 'sell', 'halt', 'resume'
+        action: 'sell', 'halt', 'resume' or None
         """
-        record = self.record
+        record = None if self.record is None else self.record.copy() # TODO: need copy?
         if record is None:
-            return print('REMINDER: No record to liquidate')
+            print('REMINDER: No record to liquidate')
+            return (None, None)
         else:
-            record = record.copy()
-        
-        cols_record = self.cols_record
-        col_date = cols_record['date']
-        col_tkr = cols_record['tkr']
-        col_net = cols_record['net']
+            record_halt = None if self.record_halt is None else self.record_halt.copy()
 
+        if action is None: # action is str afterwards
+            return (record, record_halt)
+        
         # set assets to sell/halt/resume
         if isinstance(assets, pd.DataFrame):
             assets = {x: assets[x] for x in assets.columns}
@@ -3741,7 +3752,7 @@ class Liquidation():
             ticker = assets.name
             if ticker is None:
                 print('ERROR: Set name as ticker')
-                return record
+                return (record, record_halt)
             else:
                 assets = {ticker: assets}
         elif isinstance(assets, dict):
@@ -3750,40 +3761,39 @@ class Liquidation():
             assets = {assets: None}
         elif isinstance(assets, list):
             assets = {x:None for x in assets}
-        elif assets is None: # which works if action='resume'
+        elif assets is None: # which works if action='resume' or None
             if action != 'resume':
                 print(f"ERROR: Set assets to {action}")
-                return record
+                return (record, record_halt)
         else:
             print('ERROR: Check assets')
-            return record
+            return (record, record_halt)
 
         tickers = None if assets is None else assets.keys()
         action = action.lower()
         if action == 'sell':
             # move tickers in record_halt to record before _set_to_sell
-            record = self._free_halt(tickers, record)
+            record, record_halt = self._free_halt(tickers, record, record_halt)
             record = self._set_to_sell(tickers, record)
         elif action == 'halt':
-            record = self._set_to_halt(tickers, record, col_tkr, col_date, col_net)
+            record, record_halt = self._set_to_halt(tickers, record, record_halt)
         elif action == 'resume':
-            record = self._free_halt(tickers, record)
-            record = self._set_to_resume(tickers, record, col_tkr)
+            record, record_halt = self._free_halt(tickers, record, record_halt)
+            record = self._set_to_resume(tickers, record)
         else:
-            return print(f'ERROR: No action such as {action}')
+            print(f'ERROR: No action such as {action}')
+            return (record, record_halt)
             
         self.assets = assets
-        self.record = record
         self.action = action
-        return record
+        return (record, record_halt)
 
 
-    def recover(self, record):
+    def recover(self, record, record_halt):
         """
         add to record the transaction of tickres to halt 
         record: record with new transaction
         """
-        record_halt = self.record_halt
         if record_halt is None:
             return record
         return pd.concat([record, record_halt]).sort_index()
@@ -3800,14 +3810,34 @@ class Liquidation():
                 print(f'ERROR: Check {tkr_u} to sell in the latest transaction')
         return record
 
+    
+    def _set_to_resume(self, tickers, record):
+        """
+        resume tickers from halt by removing prefix_halt from tickers in record
+            not necessary to run self._check_latest beforehand
+        """
+        prefix_halt = self.prefix_halt
+        col_tkr = self.cols_record['tkr']
+        # search transactions of halt
+        cond = record.index.get_level_values(col_tkr).str.startswith(prefix_halt)
+        resumed = record.index[cond].get_level_values(col_tkr).unique() # all assets to halt
+        resumed = [x.removeprefix(prefix_halt) for x in resumed] 
+        if tickers is not None: # all resumed if tickers is None
+            resumed = [x for x in resumed if x in tickers]
+        if len(resumed) > 0:
+            record = self._remove_prefix(resumed, record)
+            resumed = ', '.join(resumed)
+            print(f'Trading of assets {resumed} resumed')
+        return record
+        
 
-    def _set_to_halt(self, tickers, record, col_tkr, col_date=None, col_net=None):
+    def _set_to_halt(self, tickers, record, record_halt):
         """
         remove transaction history of tickers to halt from record
         """
-        record_halt = self.record_halt
         prefix_halt = self.prefix_halt
         date_lt = self.date_lt
+        col_tkr, col_date, col_net = [self.cols_record[x] for x in ['tkr', 'date', 'net']]
         if tickers is None: # init record_halt
             if record_halt is None: # make sure no init before
                 cond = record.index.get_level_values(col_tkr).str.startswith(prefix_halt)
@@ -3840,27 +3870,32 @@ class Liquidation():
             if tkr_u.size > 0:
                 tkr_u = ', '.join(tkr_u)
                 print(f'ERROR: Check {tkr_u} to halt in the latest transaction')
-        self.record_halt = record_halt
-        return record
+        return (record, record_halt)
 
-    
-    def _set_to_resume(self, tickers, record, col_tkr):
+
+    def _free_halt(self, tickers, record, record_halt):
         """
-        resume tickers from halt by removing prefix_halt from tickers in record
-            not necessary to run self._check_latest beforehand
+        set record & record_halt by moving tickers in record_halt to record; 
+            assuming set run
         """
+        if record_halt is None:
+            return record, None # nothing to free
+        date_lt = self.date_lt
         prefix_halt = self.prefix_halt
-        # search transactions of halt
-        cond = record.index.get_level_values(col_tkr).str.startswith(prefix_halt)
-        resumed = record.index[cond].get_level_values(col_tkr).unique() # all assets to halt
-        resumed = [x.removeprefix(prefix_halt) for x in resumed] 
-        if tickers is not None: # all resumed if tickers is None
-            resumed = [x for x in resumed if x in tickers]
-        if len(resumed) > 0:
-            record = self._remove_prefix(resumed, record)
-            resumed = ', '.join(resumed)
-            print(f'Trading of assets {resumed} resumed')
-        return record
+        col_tkr = self.cols_record['tkr']
+
+        try: # check if tickers on date_lt in record_halt
+            cond = record_halt.loc[date_lt].index.map(lambda x: x.removeprefix(prefix_halt) in tickers)
+        except KeyError: # no tickers on date_lt
+            return record
+            
+        # update record & record_halt; set record before record_halt
+        record = pd.concat([record, record_halt.loc[cond]]) 
+        record_halt = record_halt.loc[~cond]
+        record_halt = record_halt if len(record_halt) > 0 else None
+        # removing prefix_halt from tickers
+        record = self._set_to_resume(None, record)
+        return (record, record_halt)
 
 
     def _check_latest(self, tickers, record):
@@ -3881,34 +3916,6 @@ class Liquidation():
         func = lambda x: x[1].removeprefix(prefix_halt) if x[1].removeprefix(prefix_halt) in resumed else x[1]
         index = record.index.map(lambda x: (x[0], func(x)))
         record.index = index
-        return record
-
-
-    def _free_halt(self, tickers, record):
-        """
-        set record & record_halt by moving tickers in record_halt to record; 
-            assuming set run
-        """
-        record_halt = self.record_halt
-        if record_halt is None:
-            return None # nothing to free
-        date_lt = self.date_lt
-        prefix_halt = self.prefix_halt
-        col_tkr = self.cols_record['tkr']
-
-        try: # check if tickers on date_lt in record_halt
-            cond = record_halt.loc[date_lt].index.map(lambda x: x.removeprefix(prefix_halt) in tickers)
-        except KeyError: # no tickers on date_lt
-            return None
-            
-        # update record & record_halt; set record before record_halt
-        record = pd.concat([record, record_halt.loc[cond]]) 
-        record_halt = record_halt.loc[~cond]
-        record_halt = record_halt if len(record_halt) > 0 else None
-        # removing prefix_halt from tickers
-        record = self._set_to_resume(None, record, col_tkr)
-        
-        self.record_halt = record_halt
         return record
 
 
@@ -3939,10 +3946,18 @@ class Liquidation():
         if assets is None:
             return df_prices
         else:
-            action = self.action.lower()
+            action = self.action
+            action = action.lower() if isinstance(action, str) else action
             df_data = df_prices.copy()
 
-        drop = True if action == 'halt' else drop
+        # force to set drop accroding to action
+        if action == 'halt':
+            drop = True # drop assets all the time
+        elif action == 'resume':
+            drop = False # include assets all the time
+        else: # drop as specified for sell
+            pass
+
         if drop: # halt or sell with drop
              df_data = df_data.drop(list(assets.keys()), axis=1, 
                                     # tickers might be already delisted from universe
