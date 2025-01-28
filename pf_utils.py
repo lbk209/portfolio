@@ -2006,14 +2006,15 @@ class PortfolioBuilder():
         
         self.selected = None # data for select, weigh and allocate
         self.df_rec = None # record updated with new transaction
-        self.record = self.import_record()
-        self.liquidation = Liquidation(self.record, self.cols_record) # for instance of Liquidation
+        self.liquidation = None # liquidation instance
+        self.record = self.import_record(liquidation=True)
         _ = self.check_universe(msg=True)
             
 
-    def import_record(self, record=None, msg=True):
+    def import_record(self, record=None, liquidation=True, msg=True):
         """
         read record from file and update transaction dates
+        liquidation: set to False before saving
         """
         if record is None:
             record = self._load_transaction(self.file, self.path, print_msg=msg)
@@ -2022,10 +2023,15 @@ class PortfolioBuilder():
                 return None # check df_rec by self.cols_record
         
         if record is None:
-            print('REMINDER: make sure this is 1st transaction as no records provided')
-        elif record[self.cols_record['prc']].notna().any():
+            return print('REMINDER: make sure this is 1st transaction as no records provided')
+        elif record[self.cols_record['prc']].notna().any(): # check record is amount-based
             print('WARNING: Run update_record first after editing record') if msg else None
-        return record
+            return record
+        else:
+            # init liquidation instance only with amount-based
+            self.liquidation = Liquidation(record, self.cols_record)
+            # use record w/o tickers of halt if liquidation true
+            return self.liquidation.record if liquidation else record
 
 
     def select(self, date=None, method=None, sort_ascending=None, 
@@ -2127,9 +2133,10 @@ class PortfolioBuilder():
             weights = bt.ffn.calc_mean_var_weights(df_data.pct_change(1).dropna(), **kwargs)
             method = 'MeanVar'
         elif cond(method, 'specified'):
+            # return equal weights if weights is str or list
             w = self.check_weights(weights, df_data, none_weight_is_error=True)
             if w is None:
-                return self.liquidation.check_weights(weights)
+                return None
             weights = {x:0 for x in tickers}
             weights.update(w)
             weights = pd.Series(weights)
@@ -2254,7 +2261,7 @@ class PortfolioBuilder():
         cols_int = [col_trs, col_net]
                 
         date = df_net.index.get_level_values(0).max()
-        record = self.liquidation.record
+        record = self.record
         if record is None: # no transation record saved
             # allocation is same as transaction for the 1st time
             df_rec = df_net.assign(**{col_trs: df_net[col_net]})
@@ -2346,7 +2353,7 @@ class PortfolioBuilder():
         # check date by price data
         df_prices = self._update_universe(df_rec, msg=print_msg)
         # update price data by adding tickers not in the universe if existing
-        df_prices = self.liquidation.set_price(df_prices)
+        df_prices = self.liquidation.get_price(df_prices)
         date = df_prices.loc[:date].index.max() # works even if date None
         date_ft = df_rec.index.get_level_values(0).min()
         if date_ft > date:
@@ -2401,10 +2408,10 @@ class PortfolioBuilder():
     def transaction_pipeline(self, date=None, capital=10000000, commissions=0, 
                              save=False, nshares=False, **kw_liq):
         """
-        kw_liq: kwargs for Liquidation.set_record
+        kw_liq: kwargs for Liquidation.get_record
         nshares: set to True if saving last transaction as num of shares for the convenience of trading
         """        
-        self.liquidation.set_record(**kw_liq)
+        self.record = self.liquidation.get_record(**kw_liq)
         rank = self.select(date=date)
         if rank is None:
             return None # rank is not None even for static portfolio (method_select='all')
@@ -2413,8 +2420,9 @@ class PortfolioBuilder():
             # calc profit at the last transaction
             dt = self.selected['date'] # selected defined by self.select
             _ = self.valuate(dt, total=True, int_to_str=True, print_msg=True)
-            return self.record
-
+            # add tickers of halt to recover original record
+            return self.liquidation.recover(self.record)  
+            
         weights = self.weigh()
         if weights is None:
             return None
@@ -2424,6 +2432,7 @@ class PortfolioBuilder():
             return None
             
         df_rec = self.transaction(df_net)
+        # recover record with halt before saving or converting to record with num of shares
         df_rec = self.liquidation.recover(df_rec)
         if df_rec is not None: # new transaction updated
             if save:
@@ -2665,6 +2674,7 @@ class PortfolioBuilder():
     def save_transaction(self, df_rec):
         """
         DO NOT use _check_record for df_rec as saving nshare allowed for convenience
+        df_rec: all transaction record w/ tickers of halt
         """
         file, path = self.file, self.path
         self.file = self._save_transaction(df_rec, file, path)
@@ -2675,12 +2685,11 @@ class PortfolioBuilder():
 
     def update_record(self, security_names=None, save=True, update_var=True):
         """
-        update and save record: amount-based & ticker names
+        update amount-based & ticker names with the saved record
         save: overwrite record file if True
         """
-        # load record and check if any ticker name is None
-        # reload record as self.record could been modified for liquidation
-        record = self.import_record(msg=False)
+        # reload record w/ full transaction history first
+        record = self.import_record(liquidation=False, msg=False)
         if record is None:
             return None
         else:
@@ -2688,7 +2697,7 @@ class PortfolioBuilder():
 
         # update col_rat and convert record from num of shares to amount
         df_prc = self._update_universe(df_rec, msg=False)
-        df_prc = self.liquidation.set_price(df_prc)
+        df_prc = self.liquidation.get_price(df_prc)
         df_rec = self._update_price_ratio(df_rec, df_prc)
         df_rec = self._convert_to_amount(df_rec, df_prc)
         
@@ -2715,7 +2724,7 @@ class PortfolioBuilder():
         if df_rec is None:
             df_rec = self._check_result(msg)
         if df_rec is None: # record is None or nshares-based to edit
-            return self.record # see _check_result for err msg
+            return self.liquidation.recover(self.record) # see _check_result for err msg
         if not self._check_record(df_rec, msg=True):
             return None # check df_rec by self.cols_record
 
@@ -2724,7 +2733,7 @@ class PortfolioBuilder():
         
         if nshares or value:
             df_prc = self._update_universe(df_rec, msg=False)
-            df_prc = self.liquidation.set_price(df_prc)
+            df_prc = self.liquidation.get_price(df_prc)
 
         if value: # run before nshares
             df_val = self._calc_periodic_value(df_rec, df_prc)
@@ -2773,6 +2782,9 @@ class PortfolioBuilder():
 
 
     def check_weights(self, *args, **kwargs):
+        """
+        return equal weights if weights is str or list
+        """
         return BacktestManager.check_weights(*args, **kwargs)
         
 
@@ -2792,7 +2804,7 @@ class PortfolioBuilder():
             df_prc = self.df_universe
         else:
             df_prc = self._update_universe(df_rec, msg=True)
-        df_prc = self.liquidation.set_price(df_prc)
+        df_prc = self.liquidation.get_price(df_prc)
         df_prc = df_prc.loc[start_date:]
     
         result = None
@@ -2977,19 +2989,32 @@ class PortfolioBuilder():
         return df_rec
 
 
-    def _get_trading_price(self, df_rec, df_universe, col_rat, col_prc, col_close=None):
+    def _get_trading_price(self, df_rec, df_universe, col_close=None):
         """
         get buy/sell price from ratio and close price
         col_close: set column name to get close price instead of trading price
         """
+        cols_record = self.cols_record
+        col_rat = cols_record['rat']
+        col_prc = cols_record['prc']
+        col_net = cols_record['net']
+        
         sr_rat = df_rec[col_rat]
         idx = sr_rat.index.names
         sr_close = df_universe.stack().rename_axis(idx)
+    
+        # add missing tickers such as those in halt with net amount * ratio assumed as trading price
+        index = df_rec.index.difference(sr_close.index)
+        if index.size > 0:
+            sr = df_rec.loc[index, :].apply(lambda x: x[col_net] * x[col_rat], axis=1)
+            sr_close = pd.concat([sr_close, sr])
         if col_close: # return close price
-            return sr_close.rename(col_close)
+            return sr_close.rename(col_close) 
+        
         if sr_rat.isna().any(): # all col_rat must be filled to get trading price
             return print('ERROR: Missing ratio\'s exist')
-        return sr_close.div(sr_rat).rename(col_prc).dropna(axis=0)
+        else:
+            return sr_close.div(sr_rat).rename(col_prc).dropna(axis=0)
         
 
     def _get_nshares(self, df_rec, df_universe, cols_record, 
@@ -2998,7 +3023,7 @@ class PortfolioBuilder():
         calc number of shares for amount net & transaction
         """
         cols = [cols_record[x] for x in ['rat','prc','trs','net']]
-        col_rat, col_prc, col_trs, col_net = cols
+        col_prc, col_trs, col_net = cols
         try:
             if df_rec[col_prc].notna().any():
                 return print(f'ERROR: {col_prc} is not None')
@@ -3006,7 +3031,7 @@ class PortfolioBuilder():
             return print('ERROR: record has no price columns')
     
         # get buy/sell price to calc num of shares
-        sr_prc = self._get_trading_price(df_rec, df_universe, col_rat, col_prc)
+        sr_prc = self._get_trading_price(df_rec, df_universe)
         if sr_prc is None:
             return None # see _get_trading_price for err msg
     
@@ -3031,8 +3056,7 @@ class PortfolioBuilder():
         if len(df_rat) == 0: # no calc of ratio
             return df_rec
 
-        sr_close = self._get_trading_price(df_rec, df_universe, col_rat, col_prc, 
-                                           col_close=col_close)
+        sr_close = self._get_trading_price(df_rec, df_universe, col_close=col_close)
         df_rat = df_rat.join(sr_close).apply(lambda x: x[col_close] / x[col_prc], axis=1)
         df_rec.update(df_rat.rename(col_rat))
         return df_rec
@@ -3085,7 +3109,7 @@ class PortfolioBuilder():
         dates_trs = df_rec.index.get_level_values(0).unique()
         # update price data with df_rec
         df_universe = self._update_universe(df_rec, msg=msg)
-        df_universe = self.liquidation.set_price(df_universe)
+        df_universe = self.liquidation.get_price(df_universe)
         df_universe = df_universe.rename_axis(col_date)
         # get number of shares
         sr_nshares = self._get_nshares(df_rec, df_universe, cols_record, int_nshares=False)
@@ -3340,7 +3364,7 @@ class PortfolioBuilder():
             df_data = df_data[tickers]
             
         # setting liquidation
-        df_data = self.liquidation.get_price(df_data, select=True)
+        df_data = self.liquidation.get_price(df_data, drop=True)
         # set date range
         date = df_data.index.max()
         dt1 = date - self._get_date_offset(lag, 'weeks')
@@ -3664,12 +3688,12 @@ class Liquidation():
         self.action = None
         self.date_lt = None
         # set record, record_halt and date_lt
-        self.prepare()
+        self.set()
 
 
-    def prepare(self):
+    def set(self):
         """
-        set record, record_halt and date_lt before set_record
+        set record, record_halt and date_lt before get_record
             by moving assets of halt from record to record_halt
             which is necessary even for jobs before transaction. ex) valuate
         """
@@ -3692,7 +3716,7 @@ class Liquidation():
         return None
 
 
-    def set_record(self, assets=None, action='sell'):
+    def get_record(self, assets=None, action='sell'):
         """
         set tickers to sell/halt/resume
         assets: str of a ticker; list of tickers; dict of the tickers to its sell price value or series;
@@ -3751,7 +3775,7 @@ class Liquidation():
         self.assets = assets
         self.record = record
         self.action = action
-        return None
+        return record
 
 
     def recover(self, record):
@@ -3863,7 +3887,7 @@ class Liquidation():
     def _free_halt(self, tickers, record):
         """
         set record & record_halt by moving tickers in record_halt to record; 
-            assuming prepare_record run
+            assuming set run
         """
         record_halt = self.record_halt
         if record_halt is None:
@@ -3905,11 +3929,11 @@ class Liquidation():
         return sr.loc[cond].index
 
 
-    def get_price(self, df_prices, select=False):
+    def get_price(self, df_prices, drop=False):
         """
         update df_prices depending to self.action
         df_prices: df_universe for select or transaction
-        select: set to True for PortfolioBuilder.select
+        drop: set to True for PortfolioBuilder.select or weigh
         """
         assets = self.assets
         if assets is None:
@@ -3918,8 +3942,8 @@ class Liquidation():
             action = self.action.lower()
             df_data = df_prices.copy()
 
-        select = True if action == 'halt' else select
-        if select: # halt or sell with select
+        drop = True if action == 'halt' else drop
+        if drop: # halt or sell with drop
              df_data = df_data.drop(list(assets.keys()), axis=1, 
                                     # tickers might be already delisted from universe
                                     errors='ignore')
@@ -3927,13 +3951,6 @@ class Liquidation():
             pass
 
         return df_data
-
-
-    def check_weights(self, weights):
-        return None
-
-    def set_price(self, df_prices):
-        return df_prices
 
 
 
