@@ -3709,21 +3709,16 @@ class Liquidation():
         record = self.record
         if record is None:
             return None
-
-        cols_record = self.cols_record
-        col_date = cols_record['date']
-        col_tkr = cols_record['tkr']
+        col_date = self.cols_record['date']
         date_lt = record.index.get_level_values(col_date).max()
         
         # create record_halt from record
         tickers, record_halt = None, None
         record, record_halt = self._set_to_halt(tickers, record, record_halt)
-        if record.index.get_level_values(col_date).intersection([date_lt]).size == 0:
-            return print('ERROR: All assets cannot be halt. You better start new portfolio then')
-        else:
-            self.record = record
-            self.record_halt = record_halt
-            self.date_lt = date_lt
+
+        self.record = record
+        self.record_halt = record_halt
+        self.date_lt = date_lt
         return None
 
 
@@ -3796,7 +3791,27 @@ class Liquidation():
         """
         if record_halt is None:
             return record
-        return pd.concat([record, record_halt]).sort_index()
+        
+        date_lt = self.date_lt
+        cols_record = self.cols_record
+        col_date = cols_record['date']
+        # get new transaction date before concat
+        date_nt = record.index.get_level_values(col_date).max()
+        # concat record with halt in kept
+        record = pd.concat([record, record_halt])
+        if date_nt > date_lt:
+            col_tkr = cols_record['tkr']
+            col_name = cols_record['name']
+            col_net = cols_record['net']
+            col_trs = cols_record['trs']
+            col_rat = cols_record['rat']
+            col_dttr = cols_record['dttr']
+            # copy record_halt on date_lt to new transaction date
+            kw = {col_date:date_nt, col_trs:0, col_rat:1, col_dttr:date_nt}
+            record_halt_new = (record_halt.loc[date_lt, [col_name, col_net]].assign(**kw)
+                               .set_index(col_date, append=True).reorder_levels([col_date, col_tkr]))
+            record = pd.concat([record, record_halt_new])
+        return record.sort_index()
         
 
     def _set_to_sell(self, tickers, record):
@@ -3833,7 +3848,7 @@ class Liquidation():
 
     def _set_to_halt(self, tickers, record, record_halt):
         """
-        remove transaction history of tickers to halt from record
+        move transaction history of tickers to halt from record to record_halt
         """
         prefix_halt = self.prefix_halt
         date_lt = self.date_lt
