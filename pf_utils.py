@@ -3682,6 +3682,10 @@ class CostManager():
 
 
 class Liquidation():
+    """
+    split transaction record to record of trading stocks and record of halt and
+        
+    """
     def __init__(self, record=None, cols_record=None, prefix_halt='HLT_'):
         """
         record: PortfolioBuilder.record
@@ -3820,8 +3824,7 @@ class Liquidation():
         if tickers is not None:
             tkr_u = self._check_latest(tickers, record)
             if len(tkr_u) > 0:
-                tkr_u = ', '.join(tkr_u)
-                print(f'ERROR: Check {tkr_u} to sell in the latest transaction')
+                self._print_tickers(tkr_u, 'ERROR: Check {} to sell in the latest transaction')
         return record
         
 
@@ -3839,8 +3842,7 @@ class Liquidation():
                     record_halt = record.loc[cond]
                     record = record.loc[~cond]
                     tickers = record_halt.index.get_level_values(col_tkr).unique()
-                    tickers = ', '.join(tickers)
-                    print(f'Trading of assets {tickers} to halt')
+                    self._print_tickers(tickers, 'Trading of assets {} to halt')
         else:
             # check if all tickers in the latest transaction
             tkr_u = self._check_latest(tickers, record)
@@ -3853,17 +3855,15 @@ class Liquidation():
                     index_halt = self._get_halt(tickers, record, col_date, col_tkr, col_net)
                     record_halt_new = record.loc[index_halt]
                     # add prefix
-                    record_halt_new.index = record_halt_new.index.map(lambda x: (x[0], f'{prefix_halt}{x[1]}'))
+                    record_halt_new.index = record_halt_new.index.map(lambda x: (x[0], self.toggle_prefix(x[1])))
                     if record_halt is None:
                         record_halt = record_halt_new
                     else:
-                        record_halt = pd.concat([record_halt, record_halt_new])
+                        record_halt = pd.concat([record_halt, record_halt_new]).sort_index()
                     record = record.drop(index_halt)
-                    tickers = ', '.join(tickers)
-                    print(f'Trading of assets {tickers} to halt')
+                    self._print_tickers(tickers, 'Trading of assets {} to halt')
             if tkr_u.size > 0:
-                tkr_u = ', '.join(tkr_u)
-                print(f'ERROR: Check {tkr_u} to halt in the latest transaction')
+                self._print_tickers(tkr_u, 'ERROR: Check {} to halt in the latest transaction')
         return (record, record_halt)
 
 
@@ -3881,22 +3881,20 @@ class Liquidation():
         if tickers is None:
             freed = halted # free all in halted
         else:
-            freed = [f'{prefix_halt}{x}' for x in tickers]
+            freed = [self.toggle_prefix(x) for x in tickers] # add prefix_halt
         dff = pd.Index(freed).difference(halted)
         if dff.size == 0:
             cond = record_halt.index.get_level_values(col_tkr).isin(freed)
             record_freed = record_halt.loc[cond]
             # remove prefix before concat
-            record_freed.index = record_freed.index.map(lambda x: (x[0], x[1].removeprefix(prefix_halt)))
-            record = pd.concat([record, record_freed])
+            record_freed.index = record_freed.index.map(lambda x: (x[0], self.toggle_prefix(x[1])))
+            record = pd.concat([record, record_freed]).sort_index()
             record_halt = record_halt.loc[~cond]
             record_halt = record_halt if len(record_halt) > 0 else None
-            rsm = [x.removeprefix(prefix_halt) for x in freed]
-            rsm = ', '.join(rsm)
-            print(f'Trading of assets {rsm} resumed')
+            rsm = [self.toggle_prefix(x) for x in freed] # remove prefix_halt
+            self._print_tickers(rsm, 'Trading of assets {} resumed')
         else:
-            dff = ', '.join(dff)
-            print(f'ERROR: Assets {dff} not halted before')
+            self._print_tickers(diff, 'ERROR: Assets {} not halted before')
         return (record, record_halt)
 
 
@@ -3957,6 +3955,24 @@ class Liquidation():
             pass
 
         return df_data
+
+
+    def _print_tickers(self, tickers, print_str='Trading of assets {} to halt'):
+        tickers = [self.toggle_prefix(x, True) for x in tickers]
+        tickers = ', '.join(tickers)
+        return print(print_str.format(tickers))
+
+
+    def toggle_prefix(self, ticker, remove_only=False):
+        """
+        Adds or removes self.prefix_halt from ticker
+        remove_only: set to True to not add but to remove prefix_halt
+        """
+        prefix_halt = self.prefix_halt
+        if ticker.startswith(prefix_halt) or remove_only:
+            return ticker.removeprefix(prefix_halt)  
+        else:
+            return f"{prefix_halt}{ticker}"
 
 
 
