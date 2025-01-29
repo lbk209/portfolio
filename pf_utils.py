@@ -3774,7 +3774,6 @@ class Liquidation():
             record, record_halt = self._set_to_halt(tickers, record, record_halt)
         elif action == 'resume':
             record, record_halt = self._free_halt(tickers, record, record_halt)
-            record = self._set_to_resume(tickers, record)
         else:
             print(f'ERROR: No action such as {action}')
             return (record, record_halt)
@@ -3824,26 +3823,6 @@ class Liquidation():
                 tkr_u = ', '.join(tkr_u)
                 print(f'ERROR: Check {tkr_u} to sell in the latest transaction')
         return record
-
-    
-    def _set_to_resume(self, tickers, record):
-        """
-        resume tickers from halt by removing prefix_halt from tickers in record
-            not necessary to run self._check_latest beforehand
-        """
-        prefix_halt = self.prefix_halt
-        col_tkr = self.cols_record['tkr']
-        # search transactions of halt
-        cond = record.index.get_level_values(col_tkr).str.startswith(prefix_halt)
-        resumed = record.index[cond].get_level_values(col_tkr).unique() # all assets to halt
-        resumed = [x.removeprefix(prefix_halt) for x in resumed] 
-        if tickers is not None: # all resumed if tickers is None
-            resumed = [x for x in resumed if x in tickers]
-        if len(resumed) > 0:
-            record = self._remove_prefix(resumed, record)
-            resumed = ', '.join(resumed)
-            print(f'Trading of assets {resumed} resumed')
-        return record
         
 
     def _set_to_halt(self, tickers, record, record_halt):
@@ -3890,26 +3869,34 @@ class Liquidation():
 
     def _free_halt(self, tickers, record, record_halt):
         """
-        set record & record_halt by moving tickers in record_halt to record; 
-            assuming set run
+        set record & record_halt by moving tickers in record_halt to record after removing prefix
         """
         if record_halt is None:
             return record, None # nothing to free
-        date_lt = self.date_lt
+            
         prefix_halt = self.prefix_halt
         col_tkr = self.cols_record['tkr']
-
-        try: # check if tickers on date_lt in record_halt
-            cond = record_halt.loc[date_lt].index.map(lambda x: x.removeprefix(prefix_halt) in tickers)
-        except KeyError: # no tickers on date_lt
-            return record
-            
-        # update record & record_halt; set record before record_halt
-        record = pd.concat([record, record_halt.loc[cond]]) 
-        record_halt = record_halt.loc[~cond]
-        record_halt = record_halt if len(record_halt) > 0 else None
-        # removing prefix_halt from tickers
-        record = self._set_to_resume(None, record)
+        # check assets to halt
+        halted = record_halt.index.get_level_values(col_tkr).unique() 
+        if tickers is None:
+            freed = halted # free all in halted
+        else:
+            freed = [f'{prefix_halt}{x}' for x in tickers]
+        dff = pd.Index(freed).difference(halted)
+        if dff.size == 0:
+            cond = record_halt.index.get_level_values(col_tkr).isin(freed)
+            record_freed = record_halt.loc[cond]
+            # remove prefix before concat
+            record_freed.index = record_freed.index.map(lambda x: (x[0], x[1].removeprefix(prefix_halt)))
+            record = pd.concat([record, record_freed])
+            record_halt = record_halt.loc[~cond]
+            record_halt = record_halt if len(record_halt) > 0 else None
+            rsm = [x.removeprefix(prefix_halt) for x in freed]
+            rsm = ', '.join(rsm)
+            print(f'Trading of assets {rsm} resumed')
+        else:
+            dff = ', '.join(dff)
+            print(f'ERROR: Assets {dff} not halted before')
         return (record, record_halt)
 
 
@@ -3921,17 +3908,6 @@ class Liquidation():
         col_date = self.cols_record['date']
         # return tickers not in the latest transaction
         return pd.Index(tickers).difference(record.loc[date_lt].index)
-        
-
-    def _remove_prefix(self, resumed, record):
-        """
-        remove prefix_halt from tickers in resumed
-        """
-        prefix_halt = self.prefix_halt
-        func = lambda x: x[1].removeprefix(prefix_halt) if x[1].removeprefix(prefix_halt) in resumed else x[1]
-        index = record.index.map(lambda x: (x[0], func(x)))
-        record.index = index
-        return record
 
 
     def _get_halt(self, tickers, record, col_date, col_tkr, col_net):
