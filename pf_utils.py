@@ -2010,7 +2010,7 @@ class PortfolioBuilder():
         self.tradinghalts = None 
         self.record = self.import_record() # where self.tradinghalts set
         # record of halted after new transaction
-        self.record_halt = self.tradinghalts.record_halt
+        self.record_halt = None if self.tradinghalts is None else self.tradinghalts.record_halt
         
         _ = self.check_universe(msg=True)
             
@@ -2315,8 +2315,10 @@ class PortfolioBuilder():
             df_rec = df_rec.loc[~cond]
 
         df_rec = df_rec[cols_all]
-        df_rec.loc[:, cols_int] = df_rec.loc[:, cols_int].astype(int).sort_index(level=[0,1])
-        self.df_rec = df_rec # overwrite existing df_rec with new transaction
+        #df_rec.loc[:, cols_int] = df_rec.loc[:, cols_int].astype(int).sort_index(level=[0,1])
+        df_rec[cols_int] = df_rec[cols_int].astype(int)
+        # overwrite existing df_rec with new transaction
+        self.df_rec = df_rec.sort_index(level=[0,1]) 
         # print portfolio value and profit/loss after self.df_rec updated
         _ = self.valuate(total=True, int_to_str=True, print_summary_only=True)
         return df_rec
@@ -2769,7 +2771,8 @@ class PortfolioBuilder():
             cols = cols.insert(i, col_prc).drop(col_rat)
             cols_int = [*cols_int, col_prc]
             
-        df_rec.loc[:, cols_int] = df_rec.loc[:, cols_int].astype(int)
+        #df_rec.loc[:, cols_int] = df_rec.loc[:, cols_int].astype(int)
+        df_rec[cols_int] = df_rec[cols_int].astype(int)
         df_rec = df_rec[cols]
 
         idx = df_rec.index.get_level_values(0).unique().sort_values(ascending=True)
@@ -2999,7 +3002,8 @@ class PortfolioBuilder():
         if df_rec[col_prc].isna().any():
             return df_rec # col_prc must be not None to convert to shares
         # calc amounts for transaction & net
-        df_rec.loc[:, cols_int] = df_rec[cols_int].mul(df_rec[col_prc], axis=0).astype(int)
+        df_rec.loc[:, cols_int] = df_rec[cols_int].mul(df_rec[col_prc], axis=0)
+        df_rec[cols_int] = df_rec[cols_int].astype(int) # ensure casting works by not using loc?
         df_rec.loc[:, col_prc] = None # set col_prc to None as flag
         return df_rec
 
@@ -3830,7 +3834,9 @@ class TradingHalts():
                 df_resume = (pd.DataFrame(resume, index=[col_net]).T
                            .set_index(index).assign(**kw))
                 record.update(df_resume, overwrite=True)
-    
+
+        dt = date.strftime(date_format)
+        print(f'Updated with transaction on {dt}')
         return (record, record_halt)
 
 
