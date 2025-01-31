@@ -2008,7 +2008,7 @@ class PortfolioBuilder():
         self.df_rec = None # record updated with new transaction
         # TradingHalts instance to save record before new transaction
         self.tradinghalts = None 
-        self.record = self.import_record(halt=True) # record w/o stockes halted
+        self.record = self.import_record() # where self.tradinghalts set
         # record of halted after new transaction
         self.record_halt = self.tradinghalts.record_halt
         
@@ -2315,7 +2315,7 @@ class PortfolioBuilder():
             df_rec = df_rec.loc[~cond]
 
         df_rec = df_rec[cols_all]
-        df_rec[cols_int] = df_rec[cols_int].astype(int).sort_index(level=[0,1])
+        df_rec.loc[:, cols_int] = df_rec.loc[:, cols_int].astype(int).sort_index(level=[0,1])
         self.df_rec = df_rec # overwrite existing df_rec with new transaction
         # print portfolio value and profit/loss after self.df_rec updated
         _ = self.valuate(total=True, int_to_str=True, print_summary_only=True)
@@ -2431,9 +2431,9 @@ class PortfolioBuilder():
             return None
             
         df_rec = self.transaction(df_net)
-        # recover record with halt before saving or converting to record with num of shares
-        df_rec = self.tradinghalts.recover(df_rec, self.record_halt)
         if df_rec is not None: # new transaction updated
+            # recover record with halt before saving or converting to record with num of shares
+            df_rec = self.tradinghalts.recover(df_rec, self.record_halt)
             if save:
                 # save transaction as num of shares for the convenience of trading
                 if nshares:
@@ -2449,7 +2449,26 @@ class PortfolioBuilder():
                 print('Set save=True to save transaction record')
         else:
             print('Nothing to save')
-        return df_rec    
+        return df_rec
+
+
+    def transaction_halt(self, date=None, save=False, **kw_halt):
+        """
+        create transaction with TradingHalts instance
+        kw_halt: buy/sell/resume/halt
+        """
+        date = self._get_data(0, 0, date=date).index.max()
+        recs = self.tradinghalts.transaction(date, date_format=self.date_format, **kw_halt) 
+        if recs is not None: # new transaction updated
+            # recover record with halt before saving or converting to record with num of shares
+            df_rec = self.tradinghalts.recover(*recs)
+            if save:
+                self.save_transaction(df_rec) # where self.record updated
+            else:
+                print('Set save=True to save transaction record')
+            return df_rec
+        else:
+            return print('Nothing to save')
 
 
     def get_value_history(self):
@@ -2678,6 +2697,7 @@ class PortfolioBuilder():
         self.file = self._save_transaction(df_rec, file, path)
         if self.file is not None:
             self.record = self.import_record(df_rec)
+            self.record_halt = self.tradinghalts.record_halt
         return df_rec
         
 
@@ -2749,7 +2769,7 @@ class PortfolioBuilder():
             cols = cols.insert(i, col_prc).drop(col_rat)
             cols_int = [*cols_int, col_prc]
             
-        df_rec[cols_int] = df_rec[cols_int].astype(int)
+        df_rec.loc[:, cols_int] = df_rec.loc[:, cols_int].astype(int)
         df_rec = df_rec[cols]
 
         idx = df_rec.index.get_level_values(0).unique().sort_values(ascending=True)
@@ -3358,7 +3378,7 @@ class PortfolioBuilder():
             df_data = df_data[tickers]
             
         # setting tradinghalts
-        df_data = self.tradinghalts.set_price(df_data)
+        df_data = self.tradinghalts.set_price(df_data, self.record_halt)
         # set date range
         date = df_data.index.max()
         dt1 = date - self._get_date_offset(lag, 'weeks')
@@ -3372,6 +3392,7 @@ class PortfolioBuilder():
         print(f'Transaction file {file} updated')
         if update_var:
             self.record = self.import_record(msg=False)
+            self.record_halt = self.tradinghalts.record_halt
             print(f'self.record updated')
         return None
 
@@ -3492,12 +3513,15 @@ class CostManager():
         col_date = cols_record['date']
         col_buy = 'buy'
         col_sell = 'sell'
+        col_keep = 'keep' # for the case of date of no transaction except for halt
         col_cf = 'cf'
     
         sr_tr = df_rec.apply(lambda x: col_buy if x[col_trs]>0 else 
-                             (col_sell if x[col_trs]<0 else None), axis=1)
-        df_cf = (df_rec.assign(**{col_cf: sr_tr}).dropna(subset=col_cf)
-                       .pivot(columns=col_cf, values=col_trs).abs().sort_index())
+                             (col_sell if x[col_trs]<0 else col_keep), axis=1)
+        df_cf = (df_rec.assign(**{col_cf: sr_tr})
+                       .pivot(columns=col_cf, values=col_trs)
+                       .drop(col_keep, axis=1, errors='ignore')
+                       .abs().sort_index())
         
         if col_sell not in df_cf.columns:
             df_cf[col_sell] = 0
@@ -3711,14 +3735,13 @@ class TradingHalts():
     def transaction(self, date, buy=None, sell=None, resume=None, halt=None, date_format='%Y-%m-%d'):
         """
         make new transaction from the latest transaction without price data
-        buy: dict of ticker to buy/sell/resume price
-        sell/resume: dict or list
+        buy: dict of tickers to buy
         halt: list of tickers to halt
+        sell/resume: dict or list
         """
         record = None if self.record is None else self.record.copy()
         if record is None:
-            print('REMINDER: No record to start with')
-            return (None, None)
+            return print('REMINDER: No record to start with')
         else:
             record_halt = None if self.record_halt is None else self.record_halt.copy()
     
@@ -3741,15 +3764,20 @@ class TradingHalts():
         # move tickers to sell first to record if in record_halt 
         if sell is not None: 
             tickers = sell.keys() if isinstance(sell, dict) else sell
-            record, record_halt = self._free_halt(tickers, record, record_halt, msg_err=False)
+            record, record_halt = self._free_halt(tickers, record, record_halt, msg=False)
     
         # update record for resume
         if resume is not None:
-            #tickers = list(resume.keys()) if isinstance(resume, dict) else resume
-            if isinstance(resume, list):
-                # get resume price from net if not spec
-                resume = {x: record_halt.loc[idx[date_lt, self.toggle_prefix(x)], col_net] for x in resume}
-            record, record_halt = self._free_halt(resume.keys(), record, record_halt)
+            if resume == 'all':
+                tickers = None # resume all in halt
+                resume = None # set to None to skip later net update
+            else:
+                if isinstance(resume, list):
+                    tickers = resume
+                    resume = None # set to None to skip later update
+                else:
+                    tickers = resume.keys()
+            record, record_halt = self._free_halt(tickers, record, record_halt)
     
         # update record for halt
         if halt is not None:
@@ -3769,26 +3797,39 @@ class TradingHalts():
                 tkr = tkr.union(tkr2)
             if tkr.size > 0:
                 return self._print_tickers(tkr, 'ERROR: {} to buy in the latest transaction')
-            else:
-                index = pd.MultiIndex.from_product([[date], buy.keys()], names=[col_date, col_tkr])
-                kw = {col_rat:1, col_dttr:date}
-                df_buy = (pd.DataFrame([buy, buy], index=[col_trs, col_net]).T
-                          .set_index(index).assign(**kw))
-                record = pd.concat([record, df_buy]).sort_index()
+            
+            index = pd.MultiIndex.from_product([[date], buy.keys()], names=[col_date, col_tkr])
+            kw = {col_rat:1, col_dttr:date}
+            df_buy = (pd.DataFrame([buy, buy], index=[col_trs, col_net]).T
+                      .set_index(index).assign(**kw))
+            record = pd.concat([record, df_buy]).sort_index()
     
         if sell is not None:
-            if isinstance(sell, list):
-                # get resume price from net if not spec
-                sell = {x: record.loc[idx[date, x], col_net] for x in sell}
-            tkr = pd.Index(sell.keys()).difference(record.loc[date].index)
+            tkr = sell.keys() if isinstance(sell, dict) else sell
+            tkr = pd.Index(tkr).difference(record.loc[date].index)
             if tkr.size > 0:
                 return self._print_tickers(tkr, 'ERROR: {} to sell not in the latest transaction')
+            
+            if isinstance(sell, list):
+                # get sell price from net if not spec after the size check
+                sell = {x: record.loc[idx[date, x], col_net] for x in sell}
+            index = pd.MultiIndex.from_product([[date], sell.keys()], names=[col_date, col_tkr])
+            kw = {col_net:0, col_rat:1, col_dttr:date}
+            df_sell = (pd.DataFrame(sell, index=[col_trs]).mul(-1).T
+                       .set_index(index).assign(**kw))
+            record.update(df_sell, overwrite=True)
+
+        # update net of resumed if net given in resume dict
+        if resume is not None: # resume is dict
+            tkr = pd.Index(resume.keys()).difference(record.loc[date].index)
+            if tkr.size > 0:
+                return self._print_tickers(tkr, 'ERROR: {} to resume not in the latest transaction')
             else:
-                index = pd.MultiIndex.from_product([[date], sell.keys()], names=[col_date, col_tkr])
-                kw = {col_net:0, col_rat:1, col_dttr:date}
-                df_sell = (pd.DataFrame(sell, index=[col_trs]).mul(-1).T
+                index = pd.MultiIndex.from_product([[date], resume.keys()], names=[col_date, col_tkr])
+                kw = {col_trs:0, col_rat:1, col_dttr:date}
+                df_resume = (pd.DataFrame(resume, index=[col_net]).T
                            .set_index(index).assign(**kw))
-                record.update(df_sell, overwrite=True)
+                record.update(df_resume, overwrite=True)
     
         return (record, record_halt)
 
