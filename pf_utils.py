@@ -2006,19 +2006,19 @@ class PortfolioBuilder():
         
         self.selected = None # data for select, weigh and allocate
         self.df_rec = None # record updated with new transaction
-        # liquidation instance to save record before new transaction
-        self.liquidation = None 
-        self.record = self.import_record(liquidation=True) # record w/o halt
-        # record of halt after new transaction
-        self.record_halt = self.liquidation.record_halt
+        # TradingHalts instance to save record before new transaction
+        self.tradinghalts = None 
+        self.record = self.import_record(halt=True) # record w/o stockes halted
+        # record of halted after new transaction
+        self.record_halt = self.tradinghalts.record_halt
         
         _ = self.check_universe(msg=True)
             
 
-    def import_record(self, record=None, liquidation=True, msg=True):
+    def import_record(self, record=None, halt=True, msg=True):
         """
         read record from file and update transaction dates
-        liquidation: set to False before saving
+        halt: set to False before saving
         """
         if record is None:
             record = self._load_transaction(self.file, self.path, print_msg=msg)
@@ -2032,10 +2032,10 @@ class PortfolioBuilder():
             print('WARNING: Run update_record first after editing record') if msg else None
             return record
         else:
-            # init liquidation instance only with amount-based
-            self.liquidation = Liquidation(record, self.cols_record)
-            # use record w/o tickers of halt if liquidation true
-            return self.liquidation.record if liquidation else record
+            # init TradingHalts instance only with amount-based
+            self.tradinghalts = TradingHalts(record, self.cols_record)
+            # use record w/o tickers of halt if halt true
+            return self.tradinghalts.record if halt else record
 
 
     def select(self, date=None, method=None, sort_ascending=None, 
@@ -2283,7 +2283,6 @@ class PortfolioBuilder():
                 df_rec = pd.concat([record[cols_all], df_net])
                 # update universe by adding tickers not in the universe but in the past transactions
                 df_prc = self._update_universe(df_rec, msg=True)
-                df_prc = self.liquidation.get_price(df_prc)
             else: # return None if no new transaction
                 return None
             
@@ -2356,8 +2355,6 @@ class PortfolioBuilder():
     
         # check date by price data
         df_prices = self._update_universe(df_rec, msg=print_msg)
-        # update price data by adding tickers not in the universe if existing
-        df_prices = self.liquidation.get_price(df_prices)
         date = df_prices.loc[:date].index.max() # works even if date None
         date_ft = df_rec.index.get_level_values(0).min()
         if date_ft > date:
@@ -2410,16 +2407,10 @@ class PortfolioBuilder():
 
 
     def transaction_pipeline(self, date=None, capital=10000000, commissions=0, 
-                             save=False, nshares=False, **kw_liq):
+                             save=False, nshares=False):
         """
-        kw_liq: kwargs for Liquidation.get_record
         nshares: set to True if saving last transaction as num of shares for the convenience of trading
         """        
-        # update with new transaction
-        record, record_halt = self.liquidation.get_record(**kw_liq)
-        self.record = record
-        self.record_halt = record_halt
-        
         rank = self.select(date=date)
         if rank is None:
             return None # rank is not None even for static portfolio (method_select='all')
@@ -2429,7 +2420,7 @@ class PortfolioBuilder():
             dt = self.selected['date'] # selected defined by self.select
             _ = self.valuate(dt, total=True, int_to_str=True, print_msg=True)
             # add tickers of halt to recover original record
-            return self.liquidation.recover(self.record, self.record_halt)  
+            return self.tradinghalts.recover(self.record, self.record_halt)  
             
         weights = self.weigh()
         if weights is None:
@@ -2441,13 +2432,12 @@ class PortfolioBuilder():
             
         df_rec = self.transaction(df_net)
         # recover record with halt before saving or converting to record with num of shares
-        df_rec = self.liquidation.recover(df_rec, self.record_halt)
+        df_rec = self.tradinghalts.recover(df_rec, self.record_halt)
         if df_rec is not None: # new transaction updated
             if save:
                 # save transaction as num of shares for the convenience of trading
                 if nshares:
                     df_prc = self._update_universe(df_rec, msg=False)
-                    df_prc = self.liquidation.get_price(df_prc)
                     # DO NOT SAVE both of transaction & net as int. Set int_nshares to False
                     df_rec = self._convert_to_nshares(df_rec, df_prc, int_nshares=False)
                     # set ratio to None for the new transaction which is a flag for calc of ratio with buy/sell price
@@ -2697,7 +2687,7 @@ class PortfolioBuilder():
         save: overwrite record file if True
         """
         # reload record w/ full transaction history first
-        record = self.import_record(liquidation=False, msg=False)
+        record = self.import_record(halt=False, msg=False)
         if record is None:
             return None
         else:
@@ -2705,7 +2695,6 @@ class PortfolioBuilder():
 
         # update col_rat and convert record from num of shares to amount
         df_prc = self._update_universe(df_rec, msg=False)
-        df_prc = self.liquidation.get_price(df_prc)
         df_rec = self._update_price_ratio(df_rec, df_prc)
         df_rec = self._convert_to_amount(df_rec, df_prc)
         
@@ -2732,7 +2721,7 @@ class PortfolioBuilder():
         if df_rec is None:
             df_rec = self._check_result(msg)
         if df_rec is None: # record is None or nshares-based to edit
-            return self.liquidation.recover(self.record, self.record_halt) # see _check_result for err msg
+            return self.tradinghalts.recover(self.record, self.record_halt) # see _check_result for err msg
         if not self._check_record(df_rec, msg=True):
             return None # check df_rec by self.cols_record
 
@@ -2741,7 +2730,6 @@ class PortfolioBuilder():
         
         if nshares or value:
             df_prc = self._update_universe(df_rec, msg=False)
-            df_prc = self.liquidation.get_price(df_prc)
 
         if value: # run before nshares
             df_val = self._calc_periodic_value(df_rec, df_prc)
@@ -2812,7 +2800,6 @@ class PortfolioBuilder():
             df_prc = self.df_universe
         else:
             df_prc = self._update_universe(df_rec, msg=True)
-        df_prc = self.liquidation.get_price(df_prc)
         df_prc = df_prc.loc[start_date:]
     
         result = None
@@ -3117,7 +3104,6 @@ class PortfolioBuilder():
         dates_trs = df_rec.index.get_level_values(0).unique()
         # update price data with df_rec
         df_universe = self._update_universe(df_rec, msg=msg)
-        df_universe = self.liquidation.get_price(df_universe)
         df_universe = df_universe.rename_axis(col_date)
         # get number of shares
         sr_nshares = self._get_nshares(df_rec, df_universe, cols_record, int_nshares=False)
@@ -3371,8 +3357,8 @@ class PortfolioBuilder():
         if tickers is not None:
             df_data = df_data[tickers]
             
-        # setting liquidation
-        df_data = self.liquidation.get_price(df_data, drop=True)
+        # setting tradinghalts
+        df_data = self.tradinghalts.set_price(df_data)
         # set date range
         date = df_data.index.max()
         dt1 = date - self._get_date_offset(lag, 'weeks')
@@ -3681,10 +3667,9 @@ class CostManager():
 
 
 
-class Liquidation():
+class TradingHalts():
     """
-    split transaction record to record of trading stocks and record of halt and
-        
+    split transaction record into record of trading stocks and record of halt
     """
     def __init__(self, record=None, cols_record=None, prefix_halt='HLT_'):
         """
@@ -3697,8 +3682,6 @@ class Liquidation():
         self.prefix_halt = prefix_halt
         # record of halt before new transaction, not updated except by set
         self.record_halt = None 
-        self.assets = None
-        self.action = None
         self.date_lt = None
         # set record, record_halt and date_lt
         self.set()
@@ -3706,8 +3689,7 @@ class Liquidation():
 
     def set(self):
         """
-        set record, record_halt and date_lt before get_record
-            by moving assets of halt from record to record_halt
+        init record, record_halt and date_lt by moving assets of halt from record to record_halt
             which is necessary even for jobs before transaction. ex) valuate
         """
         record = self.record
@@ -3726,64 +3708,88 @@ class Liquidation():
         return None
 
 
-    def get_record(self, assets=None, action=None):
+    def transaction(self, date, buy=None, sell=None, resume=None, halt=None, date_format='%Y-%m-%d'):
         """
-        set tickers to sell/halt/resume
-        assets: new assets to halt/sell/resume in transaction.
-                str of a ticker; list of tickers; dict of the tickers to its sell price value or series;
-                dataframe of prices of tickers
-        action: 'sell', 'halt', 'resume' or None
+        make new transaction from the latest transaction without price data
+        buy: dict of ticker to buy/sell/resume price
+        sell/resume: dict or list
+        halt: list of tickers to halt
         """
-        record = None if self.record is None else self.record.copy() # TODO: need copy?
+        record = None if self.record is None else self.record.copy()
         if record is None:
-            print('REMINDER: No record to liquidate')
+            print('REMINDER: No record to start with')
             return (None, None)
         else:
             record_halt = None if self.record_halt is None else self.record_halt.copy()
-
-        if action is None: # action is str afterwards
-            return (record, record_halt)
+    
+        date_lt = self.date_lt
+        cols_record = self.cols_record
+        col_date = cols_record['date']
+        col_tkr = cols_record['tkr']
+        col_trs = cols_record['trs']
+        col_net = cols_record['net']
+        col_rat = cols_record['rat']
+        col_dttr = cols_record['dttr']
+        idx = pd.IndexSlice
+    
+        # set transaction date
+        date = pd.to_datetime(date)
+        if date <= date_lt:
+            dt1, dt2 = [x.strftime(date_format) for x in [date, date_lt]]
+            return print(f'ERROR: set date ({dt1}) after the latest transaction date {dt2}')
+    
+        # move tickers to sell first to record if in record_halt 
+        if sell is not None: 
+            tickers = sell.keys() if isinstance(sell, dict) else sell
+            record, record_halt = self._free_halt(tickers, record, record_halt, msg_err=False)
+    
+        # update record for resume
+        if resume is not None:
+            #tickers = list(resume.keys()) if isinstance(resume, dict) else resume
+            if isinstance(resume, list):
+                # get resume price from net if not spec
+                resume = {x: record_halt.loc[idx[date_lt, self.toggle_prefix(x)], col_net] for x in resume}
+            record, record_halt = self._free_halt(resume.keys(), record, record_halt)
+    
+        # update record for halt
+        if halt is not None:
+            record, record_halt = self._set_to_halt(halt, record, record_halt)
         
-        # set assets to sell/halt/resume
-        if isinstance(assets, pd.DataFrame):
-            assets = {x: assets[x] for x in assets.columns}
-        elif isinstance(assets, pd.Series):
-            ticker = assets.name
-            if ticker is None:
-                print('ERROR: Set name as ticker')
-                return (record, record_halt)
+        # copy record of date_lt to date
+        kw = {col_date:date, col_trs:0, col_rat:1, col_dttr:date}
+        record_date_lt = record.loc[date_lt, :]
+        record_date = (record_date_lt.loc[record_date_lt[col_net] > 0].assign(**kw)
+                           .set_index(col_date, append=True).reorder_levels([col_date, col_tkr]))
+        record = pd.concat([record, record_date]).sort_index()
+    
+        if buy is not None:
+            tkr = record.loc[date].index.intersection(buy.keys())
+            if record_halt is not None:
+                tkr2 = record_halt.loc[date_lt].index.map(self.toggle_prefix).intersection(buy.keys())
+                tkr = tkr.union(tkr2)
+            if tkr.size > 0:
+                return self._print_tickers(tkr, 'ERROR: {} to buy in the latest transaction')
             else:
-                assets = {ticker: assets}
-        elif isinstance(assets, dict):
-            pass
-        elif isinstance(assets, str):
-            assets = {assets: None}
-        elif isinstance(assets, list):
-            assets = {x:None for x in assets}
-        elif assets is None: # which works if action='resume' or None
-            if action != 'resume':
-                print(f"ERROR: Set assets to {action}")
-                return (record, record_halt)
-        else:
-            print('ERROR: Check assets')
-            return (record, record_halt)
-
-        tickers = None if assets is None else assets.keys()
-        action = action.lower()
-        if action == 'sell':
-            # move tickers in record_halt to record before _set_to_sell
-            record, record_halt = self._free_halt(tickers, record, record_halt)
-            record = self._set_to_sell(tickers, record)
-        elif action == 'halt':
-            record, record_halt = self._set_to_halt(tickers, record, record_halt)
-        elif action == 'resume':
-            record, record_halt = self._free_halt(tickers, record, record_halt)
-        else:
-            print(f'ERROR: No action such as {action}')
-            return (record, record_halt)
-            
-        self.assets = assets
-        self.action = action
+                index = pd.MultiIndex.from_product([[date], buy.keys()], names=[col_date, col_tkr])
+                kw = {col_rat:1, col_dttr:date}
+                df_buy = (pd.DataFrame([buy, buy], index=[col_trs, col_net]).T
+                          .set_index(index).assign(**kw))
+                record = pd.concat([record, df_buy]).sort_index()
+    
+        if sell is not None:
+            if isinstance(sell, list):
+                # get resume price from net if not spec
+                sell = {x: record.loc[idx[date, x], col_net] for x in sell}
+            tkr = pd.Index(sell.keys()).difference(record.loc[date].index)
+            if tkr.size > 0:
+                return self._print_tickers(tkr, 'ERROR: {} to sell not in the latest transaction')
+            else:
+                index = pd.MultiIndex.from_product([[date], sell.keys()], names=[col_date, col_tkr])
+                kw = {col_net:0, col_rat:1, col_dttr:date}
+                df_sell = (pd.DataFrame(sell, index=[col_trs]).mul(-1).T
+                           .set_index(index).assign(**kw))
+                record.update(df_sell, overwrite=True)
+    
         return (record, record_halt)
 
 
@@ -3815,17 +3821,6 @@ class Liquidation():
                                .set_index(col_date, append=True).reorder_levels([col_date, col_tkr]))
             record = pd.concat([record, record_halt_new])
         return record.sort_index()
-        
-
-    def _set_to_sell(self, tickers, record):
-        """
-        nothing to do for tickers to sell except to check tickers in record
-        """
-        if tickers is not None:
-            tkr_u = self._check_latest(tickers, record)
-            if len(tkr_u) > 0:
-                self._print_tickers(tkr_u, 'ERROR: Check {} to sell in the latest transaction')
-        return record
         
 
     def _set_to_halt(self, tickers, record, record_halt):
@@ -3867,9 +3862,10 @@ class Liquidation():
         return (record, record_halt)
 
 
-    def _free_halt(self, tickers, record, record_halt):
+    def _free_halt(self, tickers, record, record_halt, msg=True):
         """
         set record & record_halt by moving tickers in record_halt to record after removing prefix
+        msg: set to False to print no msg if preliminary before selling
         """
         if record_halt is None:
             return record, None # nothing to free
@@ -3892,9 +3888,9 @@ class Liquidation():
             record_halt = record_halt.loc[~cond]
             record_halt = record_halt if len(record_halt) > 0 else None
             rsm = [self.toggle_prefix(x) for x in freed] # remove prefix_halt
-            self._print_tickers(rsm, 'Trading of assets {} resumed')
+            self._print_tickers(rsm, 'Trading of assets {} resumed') if msg else None
         else:
-            self._print_tickers(diff, 'ERROR: Assets {} not halted before')
+            self._print_tickers(dff, 'ERROR: Assets {} not halted before') if msg else None
         return (record, record_halt)
 
 
@@ -3925,36 +3921,19 @@ class Liquidation():
         return sr.loc[cond].index
 
 
-    def get_price(self, df_prices, drop=False):
+    def set_price(self, df_prices, record_halt):
         """
-        update df_prices depending to self.action
-        df_prices: df_universe for select or transaction
-        drop: set to True for PortfolioBuilder.select or weigh
+        remove tickers of halt from df_prices for PortfolioBuilder.select or weigh process
+        df_prices: df_universe for select
         """
-        assets = self.assets
-        if assets is None:
+        if record_halt is None:
             return df_prices
-        else:
-            action = self.action
-            action = action.lower() if isinstance(action, str) else action
-            df_data = df_prices.copy()
 
-        # force to set drop accroding to action
-        if action == 'halt':
-            drop = True # drop assets all the time
-        elif action == 'resume':
-            drop = False # include assets all the time
-        else: # drop as specified for sell
-            pass
-
-        if drop: # halt or sell with drop
-             df_data = df_data.drop(list(assets.keys()), axis=1, 
-                                    # tickers might be already delisted from universe
-                                    errors='ignore')
-        else: # TODO: add prices if given
-            pass
-
-        return df_data
+        col_tkr = self.cols_record['tkr']
+        tickers = record_halt.index.get_level_values(col_tkr).unique()
+        tickers = [self.toggle_prefix(x) for x in tickers]
+        # set error to ignore for the case tickers be already delisted from universe
+        return df_prices.drop(tickers, axis=1, errors='ignore')
 
 
     def _print_tickers(self, tickers, print_str='Trading of assets {} to halt'):
