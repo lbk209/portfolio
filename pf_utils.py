@@ -2462,12 +2462,14 @@ class PortfolioBuilder():
         date = self._get_data(0, 0, date=date).index.max()
         recs = self.tradinghalts.transaction(date, date_format=self.date_format, **kw_halt) 
         if recs is not None: # new transaction updated
+            self.df_rec = recs[0] # save before recover 
             # recover record with halt before saving or converting to record with num of shares
             df_rec = self.tradinghalts.recover(*recs)
             if save:
                 self.save_transaction(df_rec) # where self.record updated
             else:
                 print('Set save=True to save transaction record')
+            _ = self.valuate(total=True, int_to_str=True, print_summary_only=True)
             return df_rec
         else:
             return print('Nothing to save')
