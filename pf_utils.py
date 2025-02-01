@@ -2006,9 +2006,11 @@ class PortfolioBuilder():
         
         self.selected = None # data for select, weigh and allocate
         self.df_rec = None # record updated with new transaction
-        # TradingHalts instance to save record before new transaction
+        # TradingHalts instance to save existing record before new transaction. 
+        # see import_record for its init
         self.tradinghalts = None 
-        self.record = self.import_record() # where self.tradinghalts set
+        # records of all trading except for halted
+        self.record = self.import_record() 
         # record of halted after new transaction
         self.record_halt = None if self.tradinghalts is None else self.tradinghalts.record_halt
         
@@ -2827,8 +2829,6 @@ class PortfolioBuilder():
             df_prc = self._update_universe(df_rec, msg=True)
         df_prc = df_prc.loc[start_date:]
     
-        result = None
-        
         # check dates
         dates = df_prc.index.difference(df_add.index)
         n = dates.size
@@ -2836,6 +2836,8 @@ class PortfolioBuilder():
             print(f'WARNING: Missing {n} dates in the additional data')
             result = (df_prc, df_add)
             msg = 'Returning price and additional'
+        else:
+            result = None
     
         # check tickers
         tickers = df_prc.columns.difference(df_add.columns)
@@ -2846,7 +2848,7 @@ class PortfolioBuilder():
                 result = tickers.to_list()
                 msg = 'Returning missing tickers'
     
-        print(msg)
+        print(msg) if result is not None else None
         return result
 
 
@@ -3028,7 +3030,7 @@ class PortfolioBuilder():
         index = df_rec.index.difference(sr_close.index)
         if index.size > 0:
             sr = df_rec.loc[index, :].apply(lambda x: x[col_net] * x[col_rat], axis=1)
-            sr_close = pd.concat([sr_close, sr])
+            sr_close = pd.concat([sr_close, sr]).sort_index()
         if col_close: # return close price
             return sr_close.rename(col_close) 
         
