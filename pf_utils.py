@@ -1049,7 +1049,7 @@ class DataManager():
             # update self.df_prices with the converted by unstack, concat and unstack 
             # to makes sure outer join of datetime index 
             self.df_prices = (pd.concat([df_prices.drop(tickers, axis=1).unstack(), df.unstack()])
-                              .unstack(0).ffill())
+                              .unstack(0).sort_index().ffill()) # sort date index before ffill
             self.days_in_year = 365
             print(f'REMINDER: {len(tickers)} equities converted to daily (days in year: {self.days_in_year})')
             print('Daily metrics in Performance statistics must be meaningless')
@@ -1435,7 +1435,7 @@ class KRXDownloader():
             tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
         tracker.stop()
         
-        self.df_data = df_data.rename_axis(col_date)
+        self.df_data = df_data.rename_axis(col_date).sort_index()
         n = len(self.failed)
         return print(f'WARNING: {n} tickers failed to download') if n>0 else None
 
@@ -1633,13 +1633,17 @@ class FundDownloader():
                 self.failed.append(x)
             else:
                 sr = df['rate'].rename(x)
-                df_rates = sr.to_frame() if df_rates is None else pd.concat([df_rates, sr], axis=1)
+                if df_rates is None:
+                    df_rates = sr.to_frame() 
+                else:
+                    df_rates = pd.concat([df_rates, sr], axis=1)
             tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
         tracker.stop()
 
         if df_rates is None:
             return print('ERROR')
         else:
+            df_rates = df_rates.sort_index()
             n = len(self.failed)
             print(f'WARNING: {n} tickers failed to download') if n>0 else None
 
@@ -1947,7 +1951,7 @@ class FundDownloader():
                 idx = [col_uv, col_ticker]
                 df = df.set_index(idx)
                 df = df.loc[~df.index.isin(df_cost.set_index(idx).index)]
-                df_cost = pd.concat([df.reset_index(), df_cost])
+                df_cost = pd.concat([df.reset_index(), df_cost]).sort_index()
                 # save as new file name
                 dt = datetime.today().strftime('%y%m%d')
                 file = get_filename(file, f'_{dt}', r"_\d+(?=\.\w+$)")
@@ -2282,7 +2286,7 @@ class PortfolioBuilder():
                 tickers_lt = record.loc[date_lt].index
                 tickers_lt = tickers_lt.union(df_net.index.get_level_values(col_tkr))
                 # add new to record after removing additional info except for cols_all in record
-                df_rec = pd.concat([record[cols_all], df_net])
+                df_rec = pd.concat([record[cols_all], df_net]).sort_index()
                 # update universe by adding tickers not in the universe but in the past transactions
                 df_prc = self._update_universe(df_rec, msg=True)
             else: # return None if no new transaction
@@ -2295,7 +2299,7 @@ class PortfolioBuilder():
             # add security names
             if self.security_names is not None: 
                 df_m = df_m.join(pd.Series(self.security_names, name=col_name), on=col_tkr)
-            df_rec = pd.concat([df_rec, df_m])
+            df_rec = pd.concat([df_rec, df_m]).sort_index()
 
             # get num of shares for transaction & net with price history
             # where num of shares is ratio of value to close from latest data
@@ -2320,7 +2324,7 @@ class PortfolioBuilder():
         #df_rec.loc[:, cols_int] = df_rec.loc[:, cols_int].astype(int).sort_index(level=[0,1])
         df_rec[cols_int] = df_rec[cols_int].astype(int)
         # overwrite existing df_rec with new transaction
-        self.df_rec = df_rec.sort_index(level=[0,1]) 
+        self.df_rec = df_rec
         # print portfolio value and profit/loss after self.df_rec updated
         _ = self.valuate(total=True, int_to_str=True, print_summary_only=True)
         return df_rec
@@ -3571,7 +3575,7 @@ class CostManager():
         """
         calc annual fee
         df_rec: should have col_val & col_end. see _calc_periodic_value
-        sr_fee: dict or series of ticker to annual fee. rate
+        sr_fee: number, dict or series of ticker to annual fee. rate
         """
         col_tkr = cols_record['tkr']
         col_date = cols_record['date']
@@ -4605,6 +4609,7 @@ class BacktestManager():
             df = df.T.set_index(idx).assign(**df_parm.loc[k].to_dict())
             df_cv = pd.concat([df_cv, df])
         df_cv.index.names = ['set','iteration']
+        df_cv = df_cv.sort_index()
 
         if file is not None:
             _ = save_dataframe(df_cv, file, path, msg_succeed=f'{file} saved')
@@ -5534,7 +5539,7 @@ class FinancialRatios():
         df_ratios = (df_ratios.rename_axis(col_date)
                      .loc[df_ratios.index <= end_date] # remove fictitious end date of month
                      .set_index(col_ticker, append=True)
-                     .swaplevel())
+                     .swaplevel().sort_index())
         self._print_info(df_ratios, str_sfx='downloaded')
         self.df_ratios = df_ratios
         if save:
