@@ -1077,8 +1077,9 @@ class DataManager():
             return None
 
         if fee is not None:
-            df_prices = self._get_prices_after_fee(df_prices, fee, 
-                                                   period=period_fee, percent=percent_fee)
+            df_p = self._get_prices_after_fee(df_prices, fee, 
+                                              period=period_fee, percent=percent_fee)
+            df_prices = df_prices if df_p is None else df_p
             
         return self._performance(df_prices, metrics=metrics, sort_by=sort_by)
 
@@ -1150,11 +1151,13 @@ class DataManager():
 
         title = 'Total returns'
         if fee is None:
-            compare_fees = False # force to False as no fee provided for comparison
             df_tf = None
-        else:
+        else: # df_tf is None if fee of dict or series missing any ticker
             df_tf = self._get_prices_after_fee(df_tickers, fee, period=period_fee, 
                                                percent=percent_fee)
+        if df_tf is None:
+            compare_fees = False # force to False as no fee provided for comparison
+        else:
             if not compare_fees:
                 df_tickers = df_tf.copy()
                 df_tf = None
@@ -1213,13 +1216,15 @@ class DataManager():
         if df_tickers is None:
             return None
 
-        label = metric.upper()
         if fee is None:
             df_tf = None
-            labels = [label]
         else:
             df_tf = self._get_prices_after_fee(df_tickers, fee, 
                                                period=period_fee, percent=percent_fee)
+        label = metric.upper()
+        if df_tf is None:
+            labels = [label]
+        else:
             if compare_fees:
                 labels = [label, f'{label} after fees']
             else:
@@ -1300,18 +1305,12 @@ class DataManager():
         return df_tickers.loc[dt_adj:] 
 
 
-    def _get_prices_after_fee(self, df_prices, sr_fee, period=3, percent=True):
+    def _get_prices_after_fee(self, df_prices, fee, period=3, percent=True):
         """
         get df_prices after annual fee
-        sr_fee: dict or series of ticker to annual fee. rate
+        fee: number, dict or series of ticker to annual fee. rate
         """
-        out = df_prices.columns.difference(sr_fee.index)
-        n = out.size
-        if n > 0:
-            print(f'WARNING: Fee of {n} tickers set to 0 as missing fee data')
-            sr = pd.Series(0, index=out)
-            sr_fee = pd.concat([sr_fee, sr])
-        return CostManager.get_history_with_fee(df_prices, sr_fee, period=period, percent=percent)
+        return CostManager.get_history_with_fee(df_prices, fee, period=period, percent=percent)
 
     
     @staticmethod
@@ -3476,6 +3475,8 @@ class CostManager():
             df_rec = df_rec.loc[:date]
 
         m = 0.01 if percent else 1
+        # convert dict to series to multiply m
+        buy, sell, tax, fee = [pd.Series(x) if isinstance(x, dict) else x for x in [buy, sell, tax, fee]]
         sr_buy = CostManager._calc_fee_trading(df_rec, cols_record, m*buy, transaction='buy')
         sr_sell = CostManager._calc_fee_trading(df_rec, cols_record, m*sell, transaction='sell')
         sr_tax = CostManager._calc_fee_trading(df_rec, cols_record, m*tax, transaction='tax')
@@ -3486,18 +3487,25 @@ class CostManager():
 
 
     def calc_fee_trading(self, commission, date=None, transaction='all', percent=True):
+        """
+        wrapper for CostManager._calc_fee_trading
+        """
         df_rec = self.df_rec
         if df_rec is None:
             return None
         else:
             cols_record = self.cols_record
             df_rec = df_rec.loc[:date]
-        
+
+        commission = pd.Series(commission) if isinstance(x, dict) else commission
         commission = commission * (0.01 if percent else 1)
         return CostManager._calc_fee_trading(df_rec, cols_record, commission, transaction=transaction)
 
 
     def calc_tax(self, tax, date=None, percent=True):
+        """
+        calc_fee_trading with transaction 'tax'
+        """
         return self.calc_fee_trading(tax, date=date, transaction='tax', percent=percent)
         
 
@@ -3545,10 +3553,10 @@ class CostManager():
 
 
     @staticmethod
-    def _calc_fee_trading(df_rec, cols_record, sr_fee, transaction='all'):
+    def _calc_fee_trading(df_rec, cols_record, fee, transaction='all'):
         """
         calc trading fee
-        sr_fee: sell/buy commissions. rate of float or seires or dict
+        fee: sell/buy commissions. rate of float or seires or dict
         transaction: 'all', 'buy', 'sell', 'tax'
         """
         col_tkr = cols_record['tkr']
@@ -3556,7 +3564,7 @@ class CostManager():
         
         sr_val = df_rec[col_trs]
         # now sr_fee series or float
-        sr_fee = pd.Series(sr_fee) if isinstance(sr_fee, dict) else sr_fee
+        sr_fee = pd.Series(fee) if isinstance(fee, dict) else fee
         # rename axis to multiply if series
         sr_fee = sr_fee.rename_axis(col_tkr) if isinstance(sr_fee, pd.Series) else sr_fee
         if transaction == 'buy':
@@ -3570,12 +3578,12 @@ class CostManager():
 
 
     @staticmethod
-    def _calc_fee_annual(df_rec, cols_record, sr_fee, date, name='fee',
+    def _calc_fee_annual(df_rec, cols_record, fee, date, name='fee',
                          col_val='value', col_end='end'):
         """
         calc annual fee
         df_rec: should have col_val & col_end. see _calc_periodic_value
-        sr_fee: number, dict or series of ticker to annual fee. rate
+        fee: number, dict or series of ticker to annual fee. rate
         """
         col_tkr = cols_record['tkr']
         col_date = cols_record['date']
@@ -3590,10 +3598,12 @@ class CostManager():
         sr_p = df_rec[col_end].sub(df_rec.index.get_level_values(col_date)).dt.days.rename(col_prd)
         df_val = df_val.join(sr_p).loc[df_val[col_val] > 0]
         
-        if isinstance(sr_fee, dict):
-            sr_fee = pd.Series(sr_fee)
-        elif isinstance(sr_fee, Number):
-            sr_fee = pd.Series(sr_fee, index=df_rec.index.get_level_values(col_tkr).unique())
+        if isinstance(fee, dict):
+            sr_fee = pd.Series(fee)
+        elif isinstance(fee, Number):
+            sr_fee = pd.Series(fee, index=df_rec.index.get_level_values(col_tkr).unique())
+        else: # fee is series
+            sr_fee = fee
         sr_fee = sr_fee.rename_axis(col_tkr).rename(name)
     
         df_val[col_rate] = (df_val.join(sr_fee)
@@ -3605,23 +3615,34 @@ class CostManager():
 
 
     @staticmethod
-    def get_history_with_fee(df_val, sr_fee, period=3, percent=True):
+    def get_history_with_fee(df_val, fee, period=3, percent=True):
         """
         df_val: history of single value or price to apply fee. ex) DataManager.df_prices
-        sr_fee: dict or series of ticker to annual fee. rate
+        fee: number, dict or series of ticker to annual fee. rate
         period: add fee every period of months
         """
         # calc fee every period
-        def calc_fee(df, fee, period=period, percent=percent):
-            fee = fee/100 if percent else fee
-            fee = fee.apply(lambda x: -1 + (1+x)**(period/12)) # get equivalent rate of fee for period
+        def calc_fee(df, sr_fee, period=period, percent=percent):
+            sr_fee = sr_fee/100 if percent else sr_fee
+            sr_fee = sr_fee.apply(lambda x: -1 + (1+x)**(period/12)) # get equivalent rate of fee for period
             days = check_days_in_year(df, msg=False) # get days fo a year
             days = days.mul(period/12).round().astype(int) # get dats for a period
-            return df.apply(lambda x: x.dropna().iloc[::days[x.name]] * fee[x.name]).fillna(0)
+            return df.apply(lambda x: x.dropna().iloc[::days[x.name]] * sr_fee[x.name]).fillna(0)
+
+        # convert fee to series
+        if isinstance(fee, dict):
+            fee = pd.Series(fee)
+        elif isinstance(fee, Number):
+            fee = pd.Series(fee, index=df_val.columns)
+
+        n = df_val.columns.difference(fee.index).size
+        if n > 0:
+            return print(f'ERROR: Missing fee data for {n} tickers')
+        
         # add fees to value history
         df_fee = df_val.copy()
         df_fee.loc[:,:] = None
-        df_fee.update(calc_fee(df_val, sr_fee)) # get fee for every period
+        df_fee.update(calc_fee(df_val, fee)) # get fee for every period
         df_fee = df_fee.fillna(0).cumsum() # get history of fees
         return df_val.sub(df_fee)
 
