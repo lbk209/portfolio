@@ -2898,18 +2898,15 @@ class PortfolioBuilder():
         df_rec: transaction record with amount
         """
         df_prices = self.df_universe
-        cols_record = self.cols_record
-        col_net = cols_record['net']
-        col_tkr = cols_record['tkr']
-        col_rat = cols_record['rat']
+        col_tkr = self.cols_record['tkr']
+        
         # tickers not in the universe
         out = df_rec.index.get_level_values(col_tkr).unique().difference(df_prices.columns)
         if out.size > 0:
             idx = pd.IndexSlice
-            df_out = (df_rec.sort_index().loc[idx[:, out], :]
-                      # close calc by product of col_rat & col_net assuming # of shares as 1
-                      .apply(lambda x: x[col_rat] * x[col_net], axis=1)
-                      .unstack(col_tkr))
+            df_out = df_rec.loc[idx[:, out], :]
+            df_out = self._calc_price_from_transactions(df_out, price_start=1000)
+            df_out = df_out.unstack(col_tkr)
             df_new = pd.concat([df_prices, df_out], axis=1)
             df_new[out] = df_new[out].ffill().fillna(0)
             if msg:
@@ -3017,30 +3014,59 @@ class PortfolioBuilder():
 
     def _get_trading_price(self, df_rec, df_universe, col_close=None):
         """
-        get buy/sell price from ratio and close price
+        calc buy/sell price from ratio and close price for transaction record
         col_close: set column name to get close price instead of trading price
         """
         cols_record = self.cols_record
         col_rat = cols_record['rat']
         col_prc = cols_record['prc']
-        col_net = cols_record['net']
         
         sr_rat = df_rec[col_rat]
+        if sr_rat.isna().any(): # all col_rat must be filled to get trading price
+            return print('ERROR: Missing ratio\'s exist')
+        
         idx = sr_rat.index.names
         sr_close = df_universe.stack().rename_axis(idx)
     
-        # add missing tickers such as those in halt with net amount * ratio assumed as trading price
+        # add missing tickers in universe (ex: delisted) with net amount * ratio assumed as trading price
         index = df_rec.index.difference(sr_close.index)
         if index.size > 0:
-            sr = df_rec.loc[index, :].apply(lambda x: x[col_net] * x[col_rat], axis=1)
+            # guess price based on transaction record
+            df_r = df_rec.loc[index, :].sort_index()
+            sr = self._calc_price_from_transactions(df_r, price_start=1000)
             sr_close = pd.concat([sr_close, sr]).sort_index()
+            
         if col_close: # return close price
             return sr_close.rename(col_close) 
-        
-        if sr_rat.isna().any(): # all col_rat must be filled to get trading price
-            return print('ERROR: Missing ratio\'s exist')
         else:
             return sr_close.div(sr_rat).rename(col_prc).dropna(axis=0)
+
+
+    def _calc_price_from_transactions(self, df_rec, price_start=1000):
+        """
+        guess price history from df_rec w/o price data
+        """
+        cols_record = self.cols_record
+        col_tkr = cols_record['tkr']
+        col_rat = cols_record['rat']
+        col_trs = cols_record['trs']
+        col_net = cols_record['net']
+        
+        def func(df_tkr, price_start=price_start):
+            sr_prc = pd.Series(index=df_tkr.index, dtype=float)  # Initialize output series
+            sr_prc.iloc[0] = price_start
+            sr_trs = df_tkr[col_rat] * df_tkr[col_trs]
+            sr_net = df_tkr[col_rat] *  df_tkr[col_net]
+            sum_t_p = 0  # This keeps track of the summation term
+            for i in range(1, len(df_tkr)):  # Start from i=2 (index 1 in pandas)
+                sum_t_p += sr_trs.iloc[i-1] / sr_prc.iloc[i-1]  # Accumulate sum from previous terms
+                if sum_t_p == 0:
+                    sr_prc.iloc[i] = None
+                else:
+                    sr_prc.iloc[i] = (sr_net.iloc[i] - sr_trs.iloc[i]) / sum_t_p 
+            return sr_prc.ffill()
+    
+        return df_rec.groupby(col_tkr, group_keys=False).apply(lambda x: func(x)).sort_index()
         
 
     def _get_nshares(self, df_rec, df_universe, cols_record, 
