@@ -2894,27 +2894,25 @@ class PortfolioBuilder():
     def _update_universe(self, df_rec, msg=False):
         """
         create price histories from record to update universe
-         the amount of net assumed as a stock price itself.
         df_rec: transaction record with amount
         """
-        df_prices = self.df_universe
+        df_prices = self.df_universe.copy()
         col_tkr = self.cols_record['tkr']
         
         # tickers not in the universe
-        out = df_rec.index.get_level_values(col_tkr).unique().difference(df_prices.columns)
-        if out.size > 0:
+        tkr_m = df_rec.index.get_level_values(col_tkr).unique().difference(df_prices.columns)
+        if tkr_m.size > 0:
             idx = pd.IndexSlice
-            df_out = df_rec.loc[idx[:, out], :]
-            df_out = self._calc_price_from_transactions(df_out, price_start=1000)
-            df_out = df_out.unstack(col_tkr)
-            df_new = pd.concat([df_prices, df_out], axis=1)
-            df_new[out] = df_new[out].ffill().fillna(0)
+            df_m = df_rec.loc[idx[:, tkr_m], :]
+            # guess close price from transaction history
+            df_m = self._calc_price_from_transactions(df_m, price_start=1000)
+            df_m = df_m.unstack(col_tkr)
+            df_prices = pd.concat([df_prices, df_m], axis=1)
+            df_prices[tkr_m] = df_prices[tkr_m].ffill()
             if msg:
-                s = ', '.join(out.to_list())
+                s = ', '.join(tkr_m.to_list())
                 print(f'Tickers {s} added to universe')
-            return df_new
-        else:
-            return df_prices
+        return df_prices
 
 
     def check_universe(self, all_transaction=True, msg=False):
@@ -3012,10 +3010,9 @@ class PortfolioBuilder():
         return df_rec
 
 
-    def _get_trading_price(self, df_rec, df_universe, col_close=None):
+    def _get_trading_price(self, df_rec, df_universe):
         """
         calc buy/sell price from ratio and close price for transaction record
-        col_close: set column name to get close price instead of trading price
         """
         cols_record = self.cols_record
         col_rat = cols_record['rat']
@@ -3024,27 +3021,18 @@ class PortfolioBuilder():
         sr_rat = df_rec[col_rat]
         if sr_rat.isna().any(): # all col_rat must be filled to get trading price
             return print('ERROR: Missing ratio\'s exist')
-        
+            
+        # stack df_universe to div by df_rec
         idx = sr_rat.index.names
         sr_close = df_universe.stack().rename_axis(idx)
-    
-        # add missing tickers in universe (ex: delisted) with net amount * ratio assumed as trading price
-        index = df_rec.index.difference(sr_close.index)
-        if index.size > 0:
-            # guess price based on transaction record
-            df_r = df_rec.loc[index, :].sort_index()
-            sr = self._calc_price_from_transactions(df_r, price_start=1000)
-            sr_close = pd.concat([sr_close, sr]).sort_index()
-            
-        if col_close: # return close price
-            return sr_close.rename(col_close) 
-        else:
-            return sr_close.div(sr_rat).rename(col_prc).dropna(axis=0)
+        
+        # return buy/sell pirces for transactions
+        return sr_close.div(sr_rat).rename(col_prc).dropna(axis=0)
 
 
     def _calc_price_from_transactions(self, df_rec, price_start=1000):
         """
-        guess price history from df_rec w/o price data
+        guess close price history from df_rec w/o price data
         """
         cols_record = self.cols_record
         col_tkr = cols_record['tkr']
@@ -3107,8 +3095,8 @@ class PortfolioBuilder():
         df_rat = df_rec.loc[df_rec[col_rat].isna()]
         if len(df_rat) == 0: # no calc of ratio
             return df_rec
-
-        sr_close = self._get_trading_price(df_rec, df_universe, col_close=col_close)
+    
+        sr_close = df_universe.stack().rename(col_prc)
         df_rat = df_rat.join(sr_close).apply(lambda x: x[col_close] / x[col_prc], axis=1)
         df_rec.update(df_rat.rename(col_rat))
         return df_rec
