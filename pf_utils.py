@@ -1059,8 +1059,7 @@ class DataManager():
             # to makes sure outer join of datetime index 
             self.df_prices = (pd.concat([df_prices.drop(tickers, axis=1).unstack(), df.unstack()])
                               .unstack(0).sort_index().ffill()) # sort date index before ffill
-            self.days_in_year = 365
-            print(f'REMINDER: {len(tickers)} equities converted to daily (days in year: {self.days_in_year})')
+            print(f'REMINDER: {len(tickers)} equities converted to daily')
             print('Daily metrics in Performance statistics must be meaningless')
             return None
         else:
@@ -1991,7 +1990,7 @@ class PortfolioBuilder():
         security_names: dict of ticker to name
         cols_record: all the data fields of transaction file
         """
-        self.df_universe = df_universe
+        self.df_universe = df_universe.rename_axis(cols_record['date'])
         # set temp name for self._load_transaction
         file = set_filename(file, default='tmp.csv')
         file = self._retrieve_transaction_file(file, path)
@@ -2025,7 +2024,8 @@ class PortfolioBuilder():
         self.record = self.import_record() 
         # record of halted after new transaction
         self.record_halt = None if self.tradinghalts is None else self.tradinghalts.record_halt
-        
+        # price data not in universe but in record. see _update_universe
+        self.df_prices_missing = None 
         _ = self.check_universe(msg=True)
             
 
@@ -2109,10 +2109,25 @@ class PortfolioBuilder():
             rank = (df_data.apply(lambda x: x.dropna().iloc[-1]/x.dropna().iloc[0]-1)
                     .sort_values(ascending=sort_ascending)[:n_tickers])
             method = 'Total return'
-        else: # default all for static
-            rank = pd.Series(1, index=df_data.columns)
+        else: # all or selected
+            if cond(method, 'selected'):
+                if tickers is None:
+                    record = self.record
+                    if record is None: # force to all
+                        tickers = df_data.columns
+                        method = 'All'
+                    else: # select tickers in the latest transaction
+                        col_date, col_tkr = [self.cols_record[x] for x in ['date','tkr']]
+                        date_lt = record.index.get_level_values(col_date).max()
+                        tickers = record.loc[date_lt].index.to_list()
+                        method = 'Selected'
+                else:
+                    method = 'Selected'
+            else:
+                tickers = df_data.columns
+                method = 'All'
+            rank = pd.Series(1, index=tickers)
             n_tickers = rank.count()
-            method = 'All' if tickers is None else 'Selected'
                 
         tickers = rank.index
         self.selected = {'date': date, 'tickers': tickers, 'rank': rank} 
@@ -2370,7 +2385,7 @@ class PortfolioBuilder():
         col_ugl = 'ugl'
     
         # check date by price data
-        df_prices = self._update_universe(df_rec, msg=print_msg)
+        df_prices = self._update_universe(df_rec, msg=print_msg, download_missing=True)
         date = df_prices.loc[:date].index.max() # works even if date None
         date_ft = df_rec.index.get_level_values(0).min()
         if date_ft > date:
@@ -2385,7 +2400,7 @@ class PortfolioBuilder():
         date_lt = df_rec.index.get_level_values(0).max()
         
         # calc value
-        sr_val = self._calc_value_history(df_rec, date, self.name, msg=False, total=total)
+        sr_val = self._calc_value_history(df_rec, df_prices, date, self.name, msg=False, total=total)
         # buy & sell prices to date.
         cost = None if cost_excluded else self.cost
         df_cf = self._calc_cashflow_history(df_rec, cost, total=total)
@@ -2497,7 +2512,8 @@ class PortfolioBuilder():
         if df_rec is None:
             return None
         else:
-            return self._calc_value_history(df_rec, name=self.name, msg=True)
+            df_prices = self._update_universe(df_rec, msg=True, download_missing=True)
+            return self._calc_value_history(df_rec, df_prices, name=self.name, msg=True)
 
 
     def get_cash_history(self, cost_excluded=False, cumsum=True, date_actual=False):
@@ -2675,8 +2691,8 @@ class PortfolioBuilder():
         df_rec = self._check_result()
         if df_rec is None:
             return None
-        
-        sr_val = self._calc_value_history(df_rec, name=self.name)
+        df_prices = self._update_universe(df_rec, msg=True, download_missing=True)
+        sr_val = self._calc_value_history(df_rec, df_prices, name=self.name)
         if sr_val is None:
             return None
         else:
@@ -2838,7 +2854,7 @@ class PortfolioBuilder():
         if df_rec is None:
             df_prc = self.df_universe
         else:
-            df_prc = self._update_universe(df_rec, msg=True)
+            df_prc = self._update_universe(df_rec, msg=False)
         df_prc = df_prc.loc[start_date:]
     
         # check dates
@@ -2900,24 +2916,33 @@ class PortfolioBuilder():
         return DataManager.download_fdr(tickers, start, end)
     
 
-    def _update_universe(self, df_rec, msg=False):
+    def _update_universe(self, df_rec, msg=False, download_missing=False):
         """
-        create price histories from record to update universe
+        update universe with missing tickers
         df_rec: transaction record with amount
+        download_missing: set to True to download missing tickers in the universe
         """
         df_prices = self.df_universe.copy()
         col_tkr = self.cols_record['tkr']
         
         # tickers not in the universe
         tkr_m = df_rec.index.get_level_values(col_tkr).unique().difference(df_prices.columns)
+        # guess close price from transaction history
         if tkr_m.size > 0:
-            idx = pd.IndexSlice
-            df_m = df_rec.loc[idx[:, tkr_m], :]
-            # guess close price from transaction history
-            df_m = self._calc_price_from_transactions(df_m, price_start=1000)
-            df_m = df_m.unstack(col_tkr)
-            df_prices = pd.concat([df_prices, df_m], axis=1)
-            df_prices[tkr_m] = df_prices[tkr_m].ffill()
+            if download_missing: # download prices of missing tickers
+                # check saved before downloading
+                df_m = self.df_prices_missing
+                if df_m is None or tkr_m.difference(df_m.columns).size > 0:
+                    df_m = self.util_get_prices(tkr_m)
+                    self.df_prices_missing = df_m
+                df_prices = pd.concat([df_prices, df_m], axis=1)
+            else: # guess prices of missing tickers
+                idx = pd.IndexSlice
+                df_m = df_rec.loc[idx[:, tkr_m], :]
+                df_m = self._calc_price_from_transactions(df_m, price_start=1000)
+                df_m = df_m.unstack(col_tkr)
+                df_prices = pd.concat([df_prices, df_m], axis=1)
+                df_prices[tkr_m] = df_prices[tkr_m].ffill()
             print_list(tkr_m.to_list(), 'Tickers {} added to universe') if msg else None
         return df_prices
 
@@ -3141,7 +3166,8 @@ class PortfolioBuilder():
         return sr_w.round(decimals) if decimals > 0 else sr_w
 
 
-    def _calc_value_history(self, df_rec, end_date=None, name=None, msg=False, total=True):
+    def _calc_value_history(self, df_rec, df_universe, 
+                            end_date=None, name=None, msg=False, total=True):
         """
         calc historical of portfolio value from transaction
         end_date: calc value from 1st transaction of df_rec to end_date.
@@ -3154,9 +3180,6 @@ class PortfolioBuilder():
         end = datetime.today() if end_date is None else end_date
         sr_ttl = None
         dates_trs = df_rec.index.get_level_values(0).unique()
-        # update price data with df_rec
-        df_universe = self._update_universe(df_rec, msg=msg)
-        df_universe = df_universe.rename_axis(col_date)
         # get number of shares
         sr_nshares = self._get_nshares(df_rec, df_universe, cols_record, int_nshares=False)
         if sr_nshares is None:
