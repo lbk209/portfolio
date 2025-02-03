@@ -3044,7 +3044,7 @@ class PortfolioBuilder():
 
     def _calc_price_from_transactions(self, df_rec, price_start=1000):
         """
-        guess price history from df_rec w/o price data
+        guess close price history from df_rec w/o price data
         """
         cols_record = self.cols_record
         col_tkr = cols_record['tkr']
