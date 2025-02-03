@@ -494,6 +494,15 @@ def format_price(x, digits=3, min_x=1000, int_to_str=True):
     else:
         y = x
     return y
+
+
+def print_list(x, print_str='The items in a list: {}'):
+    """
+    print a string by joining all the elements of an iterable 
+    x: list of str
+    """
+    x = ', '.join(x)
+    return print(print_str.format(x))
     
 
 class SecurityDict(dict):
@@ -2000,7 +2009,7 @@ class PortfolioBuilder():
         self.lookback_w = self._check_var(lookback_w, self.lookback) # for weigh
         self.lag_w = self._check_var(lag_w, self.lag)
         self.weight_min = weight_min
-        self.df_additional = df_additional
+        self.df_additional = df_additional # addtional data except for price
         self.security_names = security_names
         self.name = name # portfolio name
         self.cols_record = cols_record
@@ -2909,9 +2918,7 @@ class PortfolioBuilder():
             df_m = df_m.unstack(col_tkr)
             df_prices = pd.concat([df_prices, df_m], axis=1)
             df_prices[tkr_m] = df_prices[tkr_m].ffill()
-            if msg:
-                s = ', '.join(tkr_m.to_list())
-                print(f'Tickers {s} added to universe')
+            print_list(tkr_m.to_list(), 'Tickers {} added to universe') if msg else None
         return df_prices
 
 
@@ -3394,7 +3401,7 @@ class PortfolioBuilder():
 
     def _get_data(self, lookback, lag, date=None, tickers=None):
         """
-        get data for select or weigh
+        get price data for select or weigh
         """
         df_data = self.df_universe
         if date is not None:
@@ -4028,8 +4035,7 @@ class TradingHalts():
 
     def _print_tickers(self, tickers, print_str='Trading of assets {} to halt'):
         tickers = [self.toggle_prefix(x, True) for x in tickers]
-        tickers = ', '.join(tickers)
-        return print(print_str.format(tickers))
+        return print_list(tickers, print_str)
 
 
     def toggle_prefix(self, ticker, remove_only=False):
@@ -4100,6 +4106,7 @@ class BacktestManager():
         """
         return equal weights if weights is str or list
         weights: str, list of str, dict, or None
+        dfs: price data such as DataManager.df_prices
         """
         if isinstance(weights, str):
             if weights in dfs.columns:
@@ -4111,8 +4118,7 @@ class BacktestManager():
             if len(cols) == 0:
                 return {k:1/len(weights) for k in weights}
             else:
-                cols = ', '.join(cols)
-                return print(f'ERROR: No {cols} in the dfs')
+                return print_list(cols, 'ERROR: No {} in the data')
         elif isinstance(weights, dict):
             c = list(weights.keys())
             cols = pd.Index(c).difference(dfs.columns)
@@ -4123,8 +4129,7 @@ class BacktestManager():
                 else:
                     return print('ERROR: sum of weights is not 1')
             else:
-                cols = ', '.join(cols)
-                return print(f'ERROR: No {cols} in the dfs')
+                return print_list(cols, 'ERROR: No {} in the data')
         else:
             if none_weight_is_error:
                 print('ERROR: weights is None')
@@ -5033,8 +5038,7 @@ class BacktestManager():
             if _name in tickers.keys():
                 ticker, universe = tickers[_name]
             else: # show available names for benchmark if no ticker found
-                names = ', '.join(tickers.keys())
-                return print(f'ERROR: Set ticker or name from {names}')
+                return print_list(tickers.keys(), 'ERROR: Set ticker or name from {}')
         else:
             ticker, universe = ticker
             name = ticker if name is None else name
@@ -5474,8 +5478,7 @@ class BayesianEstimator():
         stacked = az.extract(trace, num_samples=num_samples)
         vn = [x for x in var_names if x not in stacked.keys()]
         if len(vn) > 0:
-            v = ', '.join(var_names)
-            return print(f'ERROR: Check if {v} exit')
+            return print_list(var_names, 'ERROR: Check if {} exit')
 
         if axes is None:
             fig, axes = plt.subplots(1, len(var_names), figsize=figsize)
@@ -6290,11 +6293,9 @@ class PortfolioManager():
             pf_names = [pf_names] if isinstance(pf_names, str) else pf_names
             out = set(pf_names)-set(pf_all)
             if len(out) > 0:
-                out = ', '.join(out)
-                print(f'ERROR: No portfolio such as {out}')
+                print_list(out, 'ERROR: No portfolio such as {}')
                 p = PortfolioManager.review('portfolio', output=True)
-                p =', '.join(p)
-                print(f'Portfolios available: {p}')
+                print_list(p, 'Portfolios available: {}')
                 pf_names = list()
         return pf_names
 
