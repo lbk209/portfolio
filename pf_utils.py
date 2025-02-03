@@ -2910,10 +2910,10 @@ class PortfolioBuilder():
         
         # tickers not in the universe
         tkr_m = df_rec.index.get_level_values(col_tkr).unique().difference(df_prices.columns)
+        # guess close price from transaction history
         if tkr_m.size > 0:
             idx = pd.IndexSlice
             df_m = df_rec.loc[idx[:, tkr_m], :]
-            # guess close price from transaction history
             df_m = self._calc_price_from_transactions(df_m, price_start=1000)
             df_m = df_m.unstack(col_tkr)
             df_prices = pd.concat([df_prices, df_m], axis=1)
