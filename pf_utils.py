@@ -3817,7 +3817,8 @@ class TradingHalts():
         make new transaction from the latest transaction without price data
         buy: dict of tickers to buy
         halt: list of tickers to halt
-        sell/resume: dict or list
+        sell: dict or list 
+        resume: dict, list, 'all' 
         """
         record = None if self.record is None else self.record.copy()
         if record is None:
