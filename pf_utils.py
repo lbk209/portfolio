@@ -6419,6 +6419,18 @@ class PortfolioManager():
         return df_res.map(format_price, digits=0) if int_to_str else df_res
 
 
+    def util_print_summary(self, **kwargs):
+        """
+        print summary for bookkeeping
+        """
+        df_s = self.summary(int_to_str=False, **kwargs)
+        df = df_s.drop(columns=['TOTAL'])
+        for p in df.columns:
+            sr = df[p].apply(format_price, digits=0, int_to_str=False)
+            values = sr.iloc[2:].astype(str).tolist()
+            print(f"{sr['end']}, {', '.join(p.split('_'))}, , , , 평가, , {', '.join(values)}")
+
+
     def _valuate(self, pf_names, date):
         """
         return evaluation summary df the portfolios in pf_names
