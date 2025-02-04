@@ -2935,6 +2935,7 @@ class PortfolioBuilder():
                 if df_m is None or tkr_m.difference(df_m.columns).size > 0:
                     df_m = self.util_get_prices(tkr_m)
                     self.df_prices_missing = df_m
+                    print_list(tkr_m, 'Data of tickers {} downloaded')
                 df_prices = pd.concat([df_prices, df_m], axis=1)
             else: # guess prices of missing tickers
                 idx = pd.IndexSlice
@@ -3495,7 +3496,9 @@ class CostManager():
         df_cost = df_cost.unstack(col_tkr).cumsum().ffill().stack()
         
         # calc net cashflow
-        df_net = df_cf.join(df_cost, how='outer')
+        df_net = (df_cf.join(df_cost, how='outer')
+                  # ffill cost for the date of no new transaction from halt
+                  .groupby(col_tkr).ffill()) 
         df_net['buy']  = df_net['buy'] + df_net['cost_buy']
         df_net['sell']  = df_net['sell'] - df_net['cost_sell']
         df_net = df_net[['buy', 'sell']]
