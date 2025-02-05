@@ -1718,9 +1718,9 @@ class FundDownloader():
         return None
 
 
-    def download_rate(self, ticker, start_date, end_date, freq='m', msg=False,
-                       url=None, headers=None, date_format='%Y%m%d',
-                       payload="""<?xml version="1.0" encoding="utf-8"?>
+    def download_rate(self, ticker, start_date, end_date, 
+                      freq='m', msg=False, date_format='%Y%m%d',
+                      payload="""<?xml version="1.0" encoding="utf-8"?>
                                     <message>
                                       <proframeHeader>
                                         <pfmAppName>FS-COM</pfmAppName>
@@ -1752,7 +1752,6 @@ class FundDownloader():
         
 
     def download_settlements(self, ticker, msg=False,
-                             url=None, headers=None,
                              payload = """<?xml version="1.0" encoding="utf-8"?>
                                             <message>
                                               <proframeHeader>
@@ -1778,9 +1777,9 @@ class FundDownloader():
         return df
 
 
-    def download_price(self, ticker, start_date, end_date, freq='m', msg=False,
-                        url=None, headers=None, date_format='%Y%m%d',
-                        payload = """<?xml version="1.0" encoding="utf-8"?>
+    def download_price(self, ticker, start_date, end_date, 
+                       freq='m', msg=False, date_format='%Y%m%d',
+                       payload = """<?xml version="1.0" encoding="utf-8"?>
                                     <message>
                                       <proframeHeader>
                                         <pfmAppName>FS-COM</pfmAppName>
