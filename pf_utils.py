@@ -736,7 +736,7 @@ class DataManager():
         self.df_prices = df_prices
         self.security_names = security_names
         if save:
-            if not self.save(date=df_prices.index.max()):
+            if not self.save():
                 return None
         # convert to daily after saving original monthly
         self.convert_to_daily(True, self.days_in_year) if self.to_daily else None
@@ -751,7 +751,8 @@ class DataManager():
             return print('ERROR: check file or df_prices')
 
         if date is None:
-            date = datetime.now()
+            #date = datetime.now()
+            date = df_prices.index.max()
         if not isinstance(date, str):
             date = date.strftime(date_format)
 
@@ -1698,7 +1699,7 @@ class FundDownloader():
         return None
 
 
-    def download(self, start_date, end_date, freq='monthly',
+    def download(self, start_date, end_date, freq='monthly', percentage=True,
                  url=None, headers=None,
                  interval=5, pause_duration=.1, msg=False,
                  file=None, path='.'):
@@ -1718,7 +1719,8 @@ class FundDownloader():
         tracker = TimeTracker(auto_start=True)
         df_rates = None
         for x in tqdm(tickers):
-            df = self.download_rate(x, start_date, end_date, freq=freq, msg=msg)
+            df = self.download_rate(x, start_date, end_date, freq=freq, msg=msg,
+                                    url=url, headers=headers)
             if df is None:
                 self.failed.append(x)
             else:
@@ -1738,12 +1740,20 @@ class FundDownloader():
             print(f'WARNING: {n} tickers failed to download') if n>0 else None
 
         # convert to price
+        df_prices, sr_err = self._get_prices(df_rates, data_tickers, percentage=percentage, msg=msg)
+        if sr_err is not None:
+            self.df_prices = df_prices
+            self.save(file, path) if file is not None else None
+        return sr_err
+        
+
+    def _get_prices(self, df_rates, data_tickers, percentage=True, msg=True):
         df_prices = None
         errors, index_errors = list(), list()
         for x in df_rates.columns:
             data = data_tickers.loc[x].to_dict()
             sr_rate = df_rates[x]
-            sr_n_err = self._convert_rate(data, sr_rate, percentage=True, msg=msg)
+            sr_n_err = self._convert_rate(data, sr_rate, percentage=percentage, msg=msg)
             if sr_n_err is None:
                 print(f'ERROR: check data for {x}')
             else:
@@ -1751,15 +1761,14 @@ class FundDownloader():
                 df_prices = sr.to_frame() if df_prices is None else pd.concat([df_prices, sr], axis=1)
                 index_errors.append(x)
                 errors.append(err)
-                
         if len(errors) > 0:
             print(f'Max error of conversions: {max(errors):.2e}')
-            self.df_prices = df_prices.sort_index()
-            self.save(file, path) if file is not None else None
-            return pd.Series(errors, index=index_errors, name='error')
+            df_prices = df_prices.sort_index()
+            sr_err = pd.Series(errors, index=index_errors, name='error')
         else:
-            return None
-
+            sr_err = None
+        return df_prices, sr_err
+        
 
     def save(self, file=None, path=None):
         """
@@ -1980,10 +1989,8 @@ class FundDownloader():
         calc price from rate of return
         data: series or dict
         """
-        data_check = [
-            (data['check1_date'], data['check1_price']),
-            (data['check2_date'], data['check2_price']),
-        ]
+        # list of list of date & price
+        data_check = [[data[self.cols_check[i+2*j]] for i in range(2)] for j in range(2)]
         # date check
         for dt, _ in data_check:
             try:
