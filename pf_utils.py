@@ -1749,10 +1749,12 @@ class FundDownloader():
 
     def _get_prices(self, df_rates, data_tickers, percentage=True, msg=True):
         df_prices = None
+        # convert nan & NaT to None for to_dict
+        data_tickers = data_tickers.map(lambda x: 0 if pd.isna(x) else x).replace(0, None)
         errors, index_errors = list(), list()
         for x in df_rates.columns:
             data = data_tickers.loc[x].to_dict()
-            sr_rate = df_rates[x]
+            sr_rate = df_rates[x].dropna()
             sr_n_err = self._convert_rate(data, sr_rate, percentage=percentage, msg=msg)
             if sr_n_err is None:
                 print(f'ERROR: check data for {x}')
@@ -1984,35 +1986,32 @@ class FundDownloader():
         return pd.DataFrame().from_records(data, columns=cols)
     
 
-    def _convert_rate(self, data, sr_rate, percentage=True, msg=False):
+    def _convert_rate(self, data, sr_rate, percentage=True, msg=False, price_init=1000):
         """
         calc price from rate of return
-        data: series or dict
+        data: dict of self.cols_check to value
         """
-        # list of list of date & price
-        data_check = [[data[self.cols_check[i+2*j]] for i in range(2)] for j in range(2)]
-        # date check
-        for dt, _ in data_check:
+        unit = 100 if percentage else 1
+        dt1, prc1, dt2, prc2 = data.values()
+        if dt1 is None: # reset all others
+            rat1 = sr_rate.iloc[0]
+            prc1 = price_init
+            dt2 = sr_rate.index.max()
+            # set price to get zero for conversion error
+            prc2 = prc1 * (sr_rate.loc[dt2] + unit)
+        else:
             try:
-                rate = sr_rate.loc[dt]
+                rat1 = sr_rate.loc[dt1]
             except KeyError as e:
                 return print(f'ERROR: KeyError {e}') if msg else None
-        
-        # convert to price with data_check[0]
-        dt, price = data_check[0]
-        #dt = pd.to_datetime(dt)
-        rate = sr_rate.loc[dt]
-        if percentage:
-            rate = rate/100
-            sr_rate = sr_rate/100
-        price_base = price / (rate+1)
-        sr_price = (sr_rate + 1) * price_base 
-    
-        # check price
-        dt, price = data_check[1]
-        e = sr_price.loc[dt]/price - 1
+
+        # calc price from rate
+        price_base = prc1 / (rat1 + unit)
+        sr_price = (sr_rate + unit) * price_base 
+
+        # calc conversion error
+        e = sr_price.loc[dt2]/prc2 - 1
         print(f'error: {e:.2f}') if msg else None
-        
         return (sr_price, e)
 
 
