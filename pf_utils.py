@@ -704,7 +704,7 @@ class DataManager():
     @print_runtime
     def download(self, start_date=None, end_date=None, n_years=3, tickers=None,
                  save=True, date_format='%Y-%m-%d', close_today=False, 
-                 overwrite=False, # kw for _get_tickers
+                 update_master=True, overwrite_master=False, # kwargs for _get_tickers
                  **kwargs_download):
         """
         download df_prices by using FinanceDataReader
@@ -712,13 +712,13 @@ class DataManager():
         tickers: None for all in new universe, 'selected' for all in df_prices, 
                  or list of tickers in new universe
         kwargs_download: args for krx. ex) interval=5, pause_duration=1, msg=False
-        overwrite: kw for _get_tickers_fund
+        update_master, overwrite_master: see _get_tickers_fund
         """
         start_date, end_date = DataManager.get_start_end_dates(start_date, end_date, 
                                                                close_today, n_years, date_format)
         print('Downloading ...')
         
-        security_names = self._get_tickers(tickers, overwrite=overwrite)
+        security_names = self._get_tickers(tickers, update_master=update_master, overwrite_master=overwrite_master)
         if security_names is None:
             return None # see _get_tickers for error msg
         else:
@@ -845,18 +845,23 @@ class DataManager():
         return df.set_index(col_ticker)[col_name].to_dict()
 
 
-    def _get_tickers_fund(self, tickers=None, path=None, col_name='name', overwrite=False, **kw):
+    def _get_tickers_fund(self, tickers=None, path=None, col_name='name', 
+                          update_master=False, overwrite_master=False, **kw):
         """
         self.fickers: file name for tickers
+        update_master: download data to update master
+        overwrite_master: set to False to only update values that are NA in the master
         """
         file = self.tickers # file of tickers
         path = self._check_var(path, self.path)
         # check_master set to False to run after init
         fd = FundDownloader(file, path, check_master=False, msg=False)
         if fd.check_master(): # True if no duplicated
-            # update conversion data & commissions
-            if not fd.update_master(save=True, overwrite=overwrite): 
-                return None # return None if update fails
+            # update conversion data & commissions. proceeds even if update fails
+            if update_master:
+                fd.update_master(save=True, overwrite=overwrite_master)
+        else:
+            raise Exception('See check_master') # duplicates exist
         security_names = fd.data_tickers[col_name].to_dict()
         return self._check_tickers(security_names, tickers)
         
@@ -1508,9 +1513,10 @@ class FundDownloader():
         path = self.path
         col_ticker = self.col_ticker
         cols_check = self.cols_check
+        cols_dates = [cols_check[i] for i in [0,2]]
         f = f'{path}/{file}'
         try:
-            data_tickers = pd.read_csv(f, index_col=col_ticker)
+            data_tickers = pd.read_csv(f, index_col=col_ticker, parse_dates=cols_dates)
         except Exception as e:
             return print(f'ERROR: failed to load {file} as {e}')
             
@@ -1549,34 +1555,32 @@ class FundDownloader():
         """
         data_tickers = self.data_tickers
         if data_tickers is None:
-            print('ERROR: No data_tickers available')
-            return False
+            return print('ERROR: No data_tickers available')
             
         kw = dict(interval=interval, pause_duration=pause_duration, 
                   msg=msg, overwrite=overwrite)
         # update data for conversion to price
-        data_tickers = self._update_master_checks(data_tickers, **kw)
-        if data_tickers is None:
-            print('ERROR: Set msg to True to see error messages')
-            return False # see _update_master_checks for err msg
+        df_up = self._get_master_conversions(data_tickers, **kw)
+        if df_up is not None:
+            data_tickers.update(df_up, overwrite=True)
 
         # update commission
-        data_tickers = self._update_master_commissions(data_tickers, **kw)
-        if data_tickers is None:
-            print('ERROR: Set msg to True to see error messages')
-            return False # see _update_master_checks for err msg
+        df_up = self._get_master_commissions(data_tickers, **kw)
+        if df_up is not None:
+            data_tickers.update(df_up, overwrite=True)
             
-       # update before saving
-        self.data_tickers = data_tickers 
-        # overwite only file with name of today
-        self.save_master(overwrite=True) if save else None 
-        return True
+        if df_up is not None:
+            # assign before saving updated
+            self.data_tickers = data_tickers 
+            # overwite only file with name of today
+            self.save_master(overwrite=True) if save else None 
+        return None
 
 
-    def _update_master_checks(self, data_tickers, interval=5, pause_duration=.1, 
+    def _get_master_conversions(self, data_tickers, interval=5, pause_duration=.1, 
                               msg=False, overwrite=False):
         """
-        download data and update ticker data for self.cols_check
+        download convesion data to update data_tickers
         """
         col_ticker = self.col_ticker
         cols_check = self.cols_check
@@ -1587,9 +1591,9 @@ class FundDownloader():
         else: # update nan only
             tickers = data_tickers.loc[data_tickers[cols_check].isna().any(axis=1)].index
         if tickers.size == 0:
-            return data_tickers
+            return None
         else:
-            print('Updating master for conversion data')
+            print('Collecting conversion data ...')
         
         data, failed = list(), list()
         tracker = TimeTracker(auto_start=True)
@@ -1614,28 +1618,26 @@ class FundDownloader():
                 start = sr.index.min()
                 end = sr.index.max()
                 data.append([x, start, sr[start], end, sr[end]])
-            
             tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
         tracker.stop()
+        
+        if len(failed) > 0:
+            #print_list(failed, 'ERROR: Failed to get conversion data for {}')
+            print(f'WARNING: {len(failed)} tickers failed to get conversion data')
 
         if len(data) > 0:
             cols = [col_ticker, *cols_check]
-            df = pd.DataFrame().from_records(data, columns=cols).set_index(col_ticker)
-            df[cols_check_float] = df[cols_check_float].astype(float)
-            data_tickers.update(df, overwrite=True)
-            print('data_tickers updated with data for conversions')
-
-        if len(failed) > 0:
-            print_list(failed, 'ERROR: Failed to get conversion data for {}')
-            return None
+            df_up = pd.DataFrame().from_records(data, columns=cols).set_index(col_ticker)
+            df_up[cols_check_float] = df_up[cols_check_float].astype(float)
+            return df_up
         else:
-            return data_tickers
+            return None
 
 
-    def _update_master_commissions(self, data_tickers, interval=5, pause_duration=.1, 
+    def _get_master_commissions(self, data_tickers, interval=5, pause_duration=.1, 
                                    msg=False, overwrite=False):
         """
-        download data and update ticker data for self.cols_commissions
+        download commission data to update data_tickers
         """
         col_ticker = self.col_ticker
         cols_cms = self.cols_commissions
@@ -1645,9 +1647,9 @@ class FundDownloader():
         else: # update only tickers with all commisions nan
             tickers = data_tickers.loc[data_tickers[cols_cms].isna().all(axis=1)].index
         if tickers.size == 0:
-            return data_tickers
+            return None
         else:
-            print('Updating master for commission data')
+            print('Collecting commission data ...')
         
         df_cms, failed = None, list()
         tracker = TimeTracker(auto_start=True)
@@ -1661,16 +1663,15 @@ class FundDownloader():
             tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
         tracker.stop()
 
+        if len(failed) > 0:
+            #print_list(failed, 'ERROR: Failed to get commission data for {}')
+            print(f'WARNING: {len(failed)} tickers failed to get commission data')
+        
         if df_cms is not None:
             df_cms[cols_cms] = df_cms[cols_cms].astype(float)
-            data_tickers.update(df_cms, overwrite=True)
-            print('data_tickers updated with commissions')
- 
-        if len(failed) > 0:
-            print_list(failed, 'ERROR: Failed to get commission data for {}')
-            return None
+            return df_cms
         else:
-            return data_tickers
+            return None
         
 
     def set_tickers(self, tickers=None, col_ticker='ticker'):
