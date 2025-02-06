@@ -979,7 +979,7 @@ class DataManager():
         """
         fd = FundDownloader(file, path, check_master=True, msg=False)
         fd.set_tickers()
-        ers = fd.download(start_date, end_date, file=None, msg=msg)
+        _ = fd.download(start_date, end_date, file=None, msg=msg)
         return fd.df_prices
 
     @staticmethod
@@ -1499,7 +1499,7 @@ class FundDownloader():
         self.data_tickers = self._load_master(msg)
         self.url = url
         self.headers = headers
-        self.tickers = None
+        self.tickers = None # tickers to download rate
         self.df_prices = None
         self.failed = [] # tickers failed to download
         # check missing data for conversion
@@ -1694,7 +1694,7 @@ class FundDownloader():
                 print(f'WARNING: {n} funds missing in the data')
                 tickers = pd.Index(tickers).intersection(tickers_all).to_list()
 
-        print(f'{len(tickers)} tickers set')
+        print(f'{len(tickers)} tickers set to download')
         self.tickers = tickers
         return None
 
@@ -1706,16 +1706,30 @@ class FundDownloader():
         """
         download rate and convert to price using prices in settlement info
         """
+        data_tickers = self.data_tickers
+        # download rates
+        df_rates = self._download_rate(start_date, end_date, freq=freq, 
+                                       url=url, headers=headers, interval=interval, 
+                                       pause_duration=pause_duration, msg=msg)
+        # convert to price
+        df_prices, sr_err = self._get_prices(df_rates, data_tickers, percentage=percentage, msg=msg)
+        if sr_err is not None:
+            self.df_prices = df_prices
+            self.save(file, path) if file is not None else None
+        return sr_err
+        
+    
+    def _download_rate(self, start_date, end_date, freq='monthly',
+                       url=None, headers=None,
+                       interval=5, pause_duration=.1, msg=False):
         tickers = self.tickers
         if tickers is None:
             return print('ERROR: load tickers first')
-            
+        
         url = self._check_var(url, self.url)
         headers = self._check_var(headers, self.headers)
-        data_tickers = self.data_tickers
         self.failed = [] # reset for new downloading
-
-        # download rates
+    
         tracker = TimeTracker(auto_start=True)
         df_rates = None
         for x in tqdm(tickers):
@@ -1731,20 +1745,14 @@ class FundDownloader():
                     df_rates = pd.concat([df_rates, sr], axis=1)
             tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
         tracker.stop()
-
+    
         if df_rates is None:
             return print('ERROR: Set msg to True to see error messages')
         else:
             df_rates = df_rates.sort_index()
             n = len(self.failed)
             print(f'WARNING: {n} tickers failed to download') if n>0 else None
-
-        # convert to price
-        df_prices, sr_err = self._get_prices(df_rates, data_tickers, percentage=percentage, msg=msg)
-        if sr_err is not None:
-            self.df_prices = df_prices
-            self.save(file, path) if file is not None else None
-        return sr_err
+        return df_rates
         
 
     def _get_prices(self, df_rates, data_tickers, percentage=True, msg=True):
@@ -1998,7 +2006,7 @@ class FundDownloader():
             prc1 = price_init
             dt2 = sr_rate.index.max()
             # set price to get zero for conversion error
-            prc2 = prc1 * (sr_rate.loc[dt2] + unit)
+            prc2 = prc1 * (sr_rate.loc[dt2] + unit) / unit
         else:
             try:
                 rat1 = sr_rate.loc[dt1]
