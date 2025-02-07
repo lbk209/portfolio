@@ -5326,10 +5326,37 @@ class BayesianEstimator():
         }
 
 
-    def bayesian_sample(self, freq='1y', rf=0, align_period=False,
+    def bayesian_sample(self, size_batch=50, file=None, path='.', **kwargs):
+        """
+        batch process for _bayesian_sample
+        """
+        df_prices = self.df_prices
+        
+        tickers = df_prices.columns.to_list()
+        size_batch = size_batch if size_batch > 0 else len(tickers)
+        trace = None
+        for i in range(0, len(tickers), size_batch):
+            j = i + size_batch
+            print(f'Running batch {j//size_batch} ...')
+            tkrs_i = tickers[i:j]
+            df_prc = df_prices[tkrs_i]
+            res_dict = self._bayesian_sample(df_prc, **kwargs)
+            trace_i = res_dict['trace']
+            if trace is None:
+                trace = trace_i
+            else:
+                trace.extend(trace_i)
+        # align_period, freq, rf are same for all batches
+        res_dict.update({'trace':trace, 'coords':{'ticker': tickers}, 'data':df_prices})
+        self.bayesian_data = res_dict
+        if file:
+            self.save(file, path)
+        return None
+
+
+    def _bayesian_sample(self, df_prices, freq='1y', rf=0, align_period=False,
                         sample_draws=1000, sample_tune=1000, target_accept=0.9,
-                        multiplier_std=1000, rate_nu = 29, normality_sharpe=True,
-                        file=None, path='.'):
+                        multiplier_std=1000, rate_nu = 29, normality_sharpe=True):
         """
         normality_sharpe: set to True if 
          -. You are making comparisons to Sharpe ratios calculated under the assumption of normality.
@@ -5337,7 +5364,6 @@ class BayesianEstimator():
         """
         days_in_year = self.days_in_year
         periods = self.get_freq_days(freq)
-        df_prices = self.df_prices
         tickers = list(df_prices.columns)
         
         if align_period:
@@ -5384,12 +5410,9 @@ class BayesianEstimator():
                               #return_inferencedata=False, # TODO: what's for?
                               progressbar=True)
             
-        self.bayesian_data = {'trace':trace, 'coords':coords, 'align_period':align_period, 
-                              'freq':freq, 'rf':rf, 'data':df_prices}
-        if file:
-            self.save(file, path)
-        return None
-
+        return {'trace':trace, 'coords':coords, 'align_period':align_period, 
+                'freq':freq, 'rf':rf, 'data':df_prices}
+        
 
     def save(self, file, path='.'):
         """
