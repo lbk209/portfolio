@@ -1708,9 +1708,9 @@ class FundDownloader():
         """
         data_tickers = self.data_tickers
         # download rates
-        df_rates = self._download_rate(start_date, end_date, freq=freq, 
-                                       url=url, headers=headers, interval=interval, 
-                                       pause_duration=pause_duration, msg=msg)
+        df_rates = self._get_rate(start_date, end_date, freq=freq, 
+                                   url=url, headers=headers, interval=interval, 
+                                   pause_duration=pause_duration, msg=msg)
         # convert to price
         df_prices, sr_err = self._get_prices(df_rates, data_tickers, percentage=percentage, msg=msg)
         if sr_err is not None:
@@ -1719,7 +1719,7 @@ class FundDownloader():
         return sr_err
         
     
-    def _download_rate(self, start_date, end_date, freq='monthly',
+    def _get_rate(self, start_date, end_date, freq='monthly',
                        url=None, headers=None,
                        interval=5, pause_duration=.1, msg=False):
         tickers = self.tickers
@@ -1761,9 +1761,7 @@ class FundDownloader():
         data_tickers = data_tickers.map(lambda x: 0 if pd.isna(x) else x).replace(0, None)
         errors, index_errors = list(), list()
         for x in df_rates.columns:
-            data = data_tickers.loc[x].to_dict()
-            sr_rate = df_rates[x].dropna()
-            sr_n_err = self._convert_rate(data, sr_rate, percentage=percentage, msg=msg)
+            sr_n_err = self._convert_rate(x, data_tickers, df_rates, percentage=percentage, msg=msg)
             if sr_n_err is None:
                 print(f'ERROR: check data for {x}')
             else:
@@ -1994,13 +1992,16 @@ class FundDownloader():
         return pd.DataFrame().from_records(data, columns=cols)
     
 
-    def _convert_rate(self, data, sr_rate, percentage=True, msg=False, price_init=1000):
+    def _convert_rate(self, ticker, data_tickers, df_rates, 
+                      percentage=True, msg=False, price_init=1000):
         """
         calc price from rate of return
-        data: dict of self.cols_check to value
         """
+        data = data_tickers.loc[ticker].to_dict()
+        sr_rate = df_rates[ticker].dropna()
+ 
         unit = 100 if percentage else 1
-        dt1, prc1, dt2, prc2 = data.values()
+        dt1, prc1, dt2, prc2 = [data[x] for x in self.cols_check]
         if dt1 is None: # reset all others
             rat1 = sr_rate.iloc[0]
             prc1 = price_init
@@ -2011,14 +2012,18 @@ class FundDownloader():
             try:
                 rat1 = sr_rate.loc[dt1]
             except KeyError as e:
-                return print(f'ERROR: KeyError {e}') if msg else None
-
+                return print(f'ERROR: Check data for {ticker}')
+                
         # calc price from rate
         price_base = prc1 / (rat1 + unit)
         sr_price = (sr_rate + unit) * price_base 
 
         # calc conversion error
-        e = sr_price.loc[dt2]/prc2 - 1
+        try:
+            e = sr_price.loc[dt2]/prc2 - 1
+        except KeyError as e:
+            print(f'WARNING: Failed to calc error for {ticker}')
+            e = 0
         print(f'error: {e:.2f}') if msg else None
         return (sr_price, e)
 
