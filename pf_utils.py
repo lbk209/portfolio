@@ -5241,6 +5241,8 @@ class BayesianEstimator():
         kwargs: kwargs of __init__
         """
         bayesian_data = BayesianEstimator._load(file, path)
+        if bayesian_data is None:
+            return None
         df_prices = bayesian_data['data']
         be = BayesianEstimator(df_prices, **kwargs)
         be.bayesian_data = bayesian_data
@@ -5439,12 +5441,24 @@ class BayesianEstimator():
         load bayesian_data of bayesian_sample 
         """
         file = set_filename(file, 'pkl')
-        f = os.path.join(path, file)
-        if not os.path.exists(f):
-            return print(f'{f} does not exist')
-        with open(f, 'rb') as handle:
-            bayesian_data = pickle.load(handle)
-        print(f'{f} loaded')
+        files = get_file_list(file, path)
+        if len(files) == 0:
+            return print(f'ERROR: {file} does not exist')
+
+        bayesian_data = None
+        for f in files:
+            f = os.path.join(path, f)
+            with open(f, 'rb') as handle:
+                bdata = pickle.load(handle)
+            if bayesian_data is None:
+                bayesian_data = bdata
+            else:
+                try:
+                    bayesian_data = BayesianEstimator.combine_bayesian_data(bayesian_data, bdata)
+                except ValueError:
+                    return None
+        file = f'{file}*' if len(files) > 1 else file
+        print(f'{file} loaded')
         return bayesian_data
         
 
@@ -5729,8 +5743,8 @@ class BayesianEstimator():
         cond3 = dim_ticker == list(data2['coords'].keys())[0]
         cond4 = data1['data'].columns.intersection(data2['data'].columns).size == 0
         if not (cond1 and cond2 and cond3 and cond4):
-            return print('ERROR: Data cannot combine')
-
+            #return print('ERROR: Data cannot combine')
+            raise ValueError('Bayesian data have different structures, cannot combine')
         trace = BayesianEstimator.combine_inference_data(data1['trace'], data2['trace'], dim=dim_ticker)
         tickers = data1['coords'][dim_ticker] + data2['coords'][dim_ticker]
         df_prices = pd.concat([data1['data'], data2['data']], axis=1)
