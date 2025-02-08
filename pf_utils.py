@@ -16,6 +16,7 @@ import yfinance as yf
 import requests
 import plotly.express as px
 import plotly.graph_objects as go
+import xarray as xr
 
 from datetime import datetime, timedelta
 from datetime import date as datetime_date
@@ -5331,30 +5332,32 @@ class BayesianEstimator():
         batch process for _bayesian_sample
         """
         df_prices = self.df_prices
-        
         tickers = df_prices.columns.to_list()
+        dim_ticker = 'ticker'
         size_batch = size_batch if size_batch > 0 else len(tickers)
         trace = None
+        
         for i in range(0, len(tickers), size_batch):
             j = i + size_batch
             print(f'Running batch {j//size_batch} ...')
             tkrs_i = tickers[i:j]
             df_prc = df_prices[tkrs_i]
-            res_dict = self._bayesian_sample(df_prc, **kwargs)
+            res_dict = self._bayesian_sample(df_prc, dim_ticker=dim_ticker, **kwargs)
             trace_i = res_dict['trace']
             if trace is None:
                 trace = trace_i
             else:
-                trace.extend(trace_i)
+                trace = BayesianEstimator.combine_inference_data(trace, trace_i, dim=dim_ticker)
+        
         # align_period, freq, rf are same for all batches
-        res_dict.update({'trace':trace, 'coords':{'ticker': tickers}, 'data':df_prices})
+        res_dict.update({'trace':trace, 'coords':{dim_ticker: tickers}, 'data':df_prices})
         self.bayesian_data = res_dict
         if file:
             self.save(file, path)
         return None
 
 
-    def _bayesian_sample(self, df_prices, freq='1y', rf=0, align_period=False,
+    def _bayesian_sample(self, df_prices, dim_ticker='ticker', freq='1y',rf=0, align_period=False,
                         sample_draws=1000, sample_tune=1000, target_accept=0.9,
                         multiplier_std=1000, rate_nu = 29, normality_sharpe=True):
         """
@@ -5381,12 +5384,12 @@ class BayesianEstimator():
             std_high = [x * multiplier_std for x in std_prior]
             ror = dict()
         
-        coords={'ticker': tickers}
+        coords={dim_ticker: tickers}
         with pm.Model(coords=coords) as model:
             # nu: degree of freedom (normality parameter)
             nu = pm.Exponential('nu_minus_two', 1 / rate_nu, initval=4) + 2.
-            mean = pm.Normal('mu', mu=mean_prior, sigma=std_prior, dims='ticker')
-            std = pm.Uniform('sig', lower=std_low, upper=std_high, dims='ticker')
+            mean = pm.Normal('mu', mu=mean_prior, sigma=std_prior, dims=dim_ticker)
+            std = pm.Uniform('sig', lower=std_low, upper=std_high, dims=dim_ticker)
             
             if align_period:
                 _ = pm.StudentT('ror', nu=nu, mu=mean, sigma=std, observed=df_ret)
@@ -5394,15 +5397,15 @@ class BayesianEstimator():
                 func = lambda x: dict(mu=mean[x], sigma=std[x], observed=ret_list[x])
                 _ = {i: pm.StudentT(f'ror[{x}]', nu=nu, **func(i)) for i, x in enumerate(tickers)}
     
-            #pm.Deterministic('mean', mean, dims='ticker')
-            #pm.Deterministic('std', std, dims='ticker')
+            #pm.Deterministic('mean', mean, dims=dim_ticker)
+            #pm.Deterministic('std', std, dims=dim_ticker)
             std_sr = std * pt.sqrt(nu / (nu - 2)) if normality_sharpe else std
-            tret = pm.Normal('total_return', mu=mean, sigma=std_sr, dims='ticker')
-            sharpe = pm.Deterministic('sharpe', (mean-rf) / std_sr, dims='ticker')
+            tret = pm.Normal('total_return', mu=mean, sigma=std_sr, dims=dim_ticker)
+            sharpe = pm.Deterministic('sharpe', (mean-rf) / std_sr, dims=dim_ticker)
 
             years = periods/days_in_year
-            cagr = pm.Deterministic('cagr', (tret+1) ** (1/years) - 1, dims='ticker')
-            yearly_sharpe = pm.Deterministic('yearly_sharpe', sharpe * np.sqrt(1/years), dims='ticker')
+            cagr = pm.Deterministic('cagr', (tret+1) ** (1/years) - 1, dims=dim_ticker)
+            yearly_sharpe = pm.Deterministic('yearly_sharpe', sharpe * np.sqrt(1/years), dims=dim_ticker)
     
             trace = pm.sample(draws=sample_draws, tune=sample_tune,
                               #chains=chains, cores=cores,
@@ -5689,6 +5692,29 @@ class BayesianEstimator():
             trace = self.bayesian_data['trace']
             return az.plot_energy(trace, **kwargs)
 
+
+    @staticmethod
+    def combine_inference_data(idata1, idata2, dim='ticker'):
+        """
+        Combines two InferenceData objects, concatenating along the dim 
+        for all variables in the dataset.
+        """
+        # Check if both InferenceData objects have the same groups
+        cond1 = set(idata1.groups()) == set(idata2.groups())
+        # check only coords of group posterior for convenience
+        cond2 = set(idata1['posterior'].coords) == set(idata1['posterior'].coords)
+        if not (cond1 and cond2) :
+            raise ValueError("InferenceData objects have different components, cannot combine.")
+        
+        # Initialize an empty dictionary to hold the combined data variables
+        combined_data = {}
+        # Loop through all data variables in the first InferenceData object
+        for var in idata1.groups():
+            # Concatenate the corresponding variables along the 'ticker' dimension
+            combined_data[var] = xr.concat([idata1[var], idata2[var]], dim=dim)
+        # Create the new InferenceData object with the combined data
+        return az.InferenceData(**combined_data)
+    
 
     def align_period(self, df, axis=0, fill_na=True, **kwargs):
         return align_period(df, axis=axis, fill_na=fill_na, **kwargs)
