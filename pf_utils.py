@@ -5714,6 +5714,28 @@ class BayesianEstimator():
             combined_data[var] = xr.concat([idata1[var], idata2[var]], dim=dim)
         # Create the new InferenceData object with the combined data
         return az.InferenceData(**combined_data)
+
+    
+    @staticmethod
+    def combine_bayesian_data(data1, data2):
+        """
+        Combines two bayesian_data from bayesian_sample
+        """
+        # conditions to check if two data can be combined
+        cond1 = set(data1.keys()) == set(data2.keys())
+        keys_same = ['align_period', 'freq', 'rf']
+        cond2 = all(data1.get(k) == data2.get(k) for k in keys_same)
+        dim_ticker = list(data1['coords'].keys())[0]
+        cond3 = dim_ticker == list(data2['coords'].keys())[0]
+        cond4 = data1['data'].columns.intersection(data2['data'].columns).size == 0
+        if not (cond1 and cond2 and cond3 and cond4):
+            return print('ERROR: Data cannot combine')
+
+        trace = BayesianEstimator.combine_inference_data(data1['trace'], data2['trace'], dim=dim_ticker)
+        tickers = data1['coords'][dim_ticker] + data2['coords'][dim_ticker]
+        df_prices = pd.concat([data1['data'], data2['data']], axis=1)
+        data1.update({'trace':trace, 'coords':{dim_ticker: tickers}, 'data':df_prices})
+        return data1
     
 
     def align_period(self, df, axis=0, fill_na=True, **kwargs):
