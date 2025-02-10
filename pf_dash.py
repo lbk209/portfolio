@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 import pickle
 from scipy.stats import gaussian_kde
 
-from pf_utils import calculate_hdi
+from pf_utils import calculate_hdi, BayesianEstimator
 
 
 # Initialize the Dash app
@@ -51,7 +51,10 @@ def get_title(title, compare, cost):
     return title
 
 
-def update_tickers(tickers, options, option_all='all'):
+def update_options(tickers, options, option_all='all'):
+    """
+    disable options if option_all selected
+    """
     if option_all in tickers:
         options = [{**x, 'disabled':True} for x in options]
     else:
@@ -62,6 +65,7 @@ def update_tickers(tickers, options, option_all='all'):
 def update_price_data(tickers, data_prc, base=1000, option_all='all'):
     """
     process data and save to dcc.Store
+    data_prc: dict of dfs. see create_app
     """
     fees = list(data_prc.keys())
     data_p = {k:v for k,v in data_prc.items()}
@@ -192,14 +196,11 @@ def update_return_plot(data, cost, compare, months_in_year=12,
 
 
 def get_inference(file, path, var_name='total_return', tickers=None,
-                  n_points=200, hdi_prob=0.94, error=0.999):
+                  n_points=500, hdi_prob=0.94, error=0.999):
     """
     file: inference data file
     """
-    f = f'{path}/{file}'
-    with open(f, 'rb') as handle:
-        data = pickle.load(handle)
-
+    data = BayesianEstimator.load(file, path)
     posterior = data['trace'].posterior
     if tickers is None:
         coords = data['coords']
@@ -332,12 +333,15 @@ def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
         'after fees':df_prices_fees[tickers]
     }
 
+    if fund_name is None:
+        fund_name = {x:x for x in tickers}
     # create dropdown options
-    options = [{'label':v, 'value':v} for v in tickers]
-    if fund_name is not None:
-        options = [{**x, 'title':fund_name[x['value']], 'search':fund_name[x['value']]} for x in options]
-    dropdown_option = [{'label':option_all, 'value':option_all}]
-    dropdown_option += options
+    dm = DropdownManager()
+    dm.create_all()
+    words = ['TDF', 'IBK', 'KB', '미래에셋', '삼성', '신한', '키움', '한국투자', '한화']
+    dm.create_from_name(words, fund_name)
+    dm.create_tickers(fund_name)
+    dropdown_option = dm.get_options()
 
     app = Dash(__name__, title=title, external_stylesheets=external_stylesheets)
 
@@ -397,8 +401,8 @@ def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
         Output('ticker-dropdown', 'options'),
         Input('ticker-dropdown', 'value'),
     )
-    def _update_tickers(tickers):
-        return update_tickers(tickers, dropdown_option, option_all)
+    def _update_options(tickers):
+        return update_options(tickers, dropdown_option, option_all)
     
     
     @app.callback(
@@ -499,4 +503,58 @@ def add_density_plot(app, file=None, path=None, tickers=None, fund_name=None,
     )
     def _update_inference_plot(data):
         return update_inference_plot(data, fund_name)
+
+
+
+class DropdownManager():
+    def __init__(self):
+        self.options = list()
+        self.tickers = dict() # option value to tickers
+
+    def create_all(self, option_all='All'):
+        options = [{'label':option_all, 'value':option_all, 
+                    'title':option_all, 'search':option_all.lower()}]
+        tickers = {option_all:None}
+        self.options += options 
+        self.tickers = {**self.tickers, **tickers}
+
+    def create_tickers(self, fund_name):
+        options = [{'label':k, 'value':k, 'title':v, 'search':v} for k,v in fund_name.items()]
+        tickers = {x['value']:[x['value']] for x in options}
+        self.options += options 
+        self.tickers = {**self.tickers, **tickers}
+
+    def create_from_name(self, names, fund_name):
+        """
+        names: list of name to make options
+        fund_name: dict of ticker to name
+        """
+        if isinstance(names, str):
+            names = [namses]
+        for name in names:
+            tickers = [k for k,v in fund_name.items() if name.lower() in v.lower()]
+            if len(tickers) > 0:
+                options = {'label':name, 'value':name, 'title':name, 'search':name.lower()}
+                self.options.append(options)
+                self.tickers[name] = tickers
+
+    def get_options(self):
+        if len(self.options) == 0:
+            return None
+        else:
+            return self.options
+        
+    def get_tickers(self, value):
+        if len(self.options) == 0:
+            return None
+        try:
+            return self.tickers[value]
+        except KeyError:
+            return None
+    
+
+
+
+
+
         
