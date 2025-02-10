@@ -51,20 +51,21 @@ def get_title(title, compare, cost):
     return title
 
 
-def update_options(tickers, options, option_all='all'):
+def update_options(values, options, option_all='all'):
     """
     disable options if option_all selected
     """
-    if option_all in tickers:
+    if option_all in values:
         options = [{**x, 'disabled':True} for x in options]
     else:
         options = [{**x, 'disabled':False} for x in options]
     return options
 
 
-def update_price_data(tickers, data_prc, base=1000, option_all='all'):
+def update_price_data(tickers, data_prc, base=1000):
     """
     process data and save to dcc.Store
+    values: option values selected
     data_prc: dict of dfs. see create_app
     """
     fees = list(data_prc.keys())
@@ -73,7 +74,7 @@ def update_price_data(tickers, data_prc, base=1000, option_all='all'):
         return None
     
     for fee in fees:
-        df = data_prc[fee] if option_all in tickers else data_prc[fee].loc[:, tickers]
+        df = data_prc[fee].loc[:, tickers]
         data_p[fee] = df.loc[df.notna().any(axis=1)]
 
     data = {'default':dict(), 'compare':dict(), 'fees':fees}
@@ -249,16 +250,16 @@ def get_inference(file, path, var_name='total_return', tickers=None,
     }
         
 
-def update_inference_data(tickers, data_inf, option_all='all'):
+def update_inference_data(tickers, data_inf):
     df_dst = pd.DataFrame(data_inf['density'], index=data_inf['x'])
     hdi_lines = data_inf['interval']
     if len(tickers) == 0:
         return None
+        
+    tickers = df_dst.columns.intersection(tickers)
+    df_dst = df_dst[tickers]
+    hdi_lines = {k:v for k,v in hdi_lines.items() if k in tickers}
 
-    if option_all not in tickers: 
-        df_dst = df_dst[tickers]
-        hdi_lines = {k:v for k,v in hdi_lines.items() if k in tickers}
-    
     return {
         'density': df_dst.to_dict('records'),
         'x': df_dst.index.tolist(),
@@ -321,8 +322,9 @@ def update_inference_plot(data, fund_name=None):
 
 
 def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
-               option_all='All', base=1000,
+               options_word=['TDF', 'IBK', 'KB', '미래에셋', '삼성', '신한', '키움', '한국투자', '한화'], 
                title="Managed Funds", height=500, legend=False, length=20,
+               base=1000,
                external_stylesheets=external_stylesheets,
                debug=False):
 
@@ -335,12 +337,12 @@ def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
 
     if fund_name is None:
         fund_name = {x:x for x in tickers}
+        
     # create dropdown options
-    dm = DropdownManager()
+    dm = DropdownManager(fund_name)
     dm.create_all()
-    words = ['TDF', 'IBK', 'KB', '미래에셋', '삼성', '신한', '키움', '한국투자', '한화']
-    dm.create_from_name(words, fund_name)
-    dm.create_tickers(fund_name)
+    dm.create_from_name(options_word)
+    dm.create_tickers()
     dropdown_option = dm.get_options()
 
     app = Dash(__name__, title=title, external_stylesheets=external_stylesheets)
@@ -401,19 +403,20 @@ def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
         Output('ticker-dropdown', 'options'),
         Input('ticker-dropdown', 'value'),
     )
-    def _update_options(tickers):
-        return update_options(tickers, dropdown_option, option_all)
+    def _update_options(values):
+        return update_options(values, dropdown_option, dm.option_all)
     
     
     @app.callback(
         Output('price-data', 'data'),
         Input('ticker-dropdown', 'value'),
     )
-    def _update_price_data(tickers):
+    def _update_price_data(values):
         """
         process data and save to dcc.Store
         """
-        return update_price_data(tickers, data_prc, base=base, option_all=option_all)
+        tickers = dm.get_tickers(values)
+        return update_price_data(tickers, data_prc, base=base)
         
     
     @app.callback(
@@ -451,11 +454,15 @@ def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
                         return True
     app.add_tab = add_tab
     
-    return app
+    return (app, dm.get_tickers)
 
 
-def add_density_plot(app, file=None, path=None, tickers=None, fund_name=None,
-                     n_points=500, error=0.999, option_all='All'):
+def add_density_plot(app, get_tickers, 
+                     file=None, path=None, tickers=None, fund_name=None,
+                     n_points=500, error=0.999):
+    """
+    get_tickers: function to get tickers from selected option values
+    """
     data_inf = get_inference(file, path, tickers=tickers, n_points=n_points, error=error)
 
     # update layout of the app
@@ -490,11 +497,12 @@ def add_density_plot(app, file=None, path=None, tickers=None, fund_name=None,
         Output('density-data', 'data'),
         Input('ticker-dropdown', 'value')
     )
-    def _update_inference_data(tickers):
+    def _update_inference_data(values):
         """
         process data and save to dcc.Store
         """
-        return update_inference_data(tickers, data_inf, option_all=option_all)
+        tickers = get_tickers(values)
+        return update_inference_data(tickers, data_inf)
         
     
     @app.callback(
@@ -507,28 +515,45 @@ def add_density_plot(app, file=None, path=None, tickers=None, fund_name=None,
 
 
 class DropdownManager():
-    def __init__(self):
+    def __init__(self, fund_name=None):
+        self.fund_name = fund_name # dict of ticker to name
         self.options = list()
-        self.tickers = dict() # option value to tickers
+        self.value_to_ticker = dict() # option value to tickers
+        self.option_all = None
 
     def create_all(self, option_all='All'):
-        options = [{'label':option_all, 'value':option_all, 
-                    'title':option_all, 'search':option_all.lower()}]
-        tickers = {option_all:None}
+        """
+        make option to select all tickers
+        """
+        fund_name = self.fund_name
+        option_all_value = option_all.lower()
+        options = [{'label':option_all, 'value':option_all_value, 
+                    'title':option_all, 'search':option_all_value}]
+        tickers = {option_all: None if fund_name is None else list(fund_name.keys())}
         self.options += options 
-        self.tickers = {**self.tickers, **tickers}
+        self.value_to_ticker = {**self.value_to_ticker, **tickers}
+        self.option_all = option_all_value
 
-    def create_tickers(self, fund_name):
+    def create_tickers(self):
+        """
+        make options of tickers
+        """
+        fund_name = self.fund_name
+        if fund_name is None:
+            return None
         options = [{'label':k, 'value':k, 'title':v, 'search':v} for k,v in fund_name.items()]
         tickers = {x['value']:[x['value']] for x in options}
         self.options += options 
-        self.tickers = {**self.tickers, **tickers}
+        self.value_to_ticker = {**self.value_to_ticker, **tickers}
 
-    def create_from_name(self, names, fund_name):
+    def create_from_name(self, names):
         """
+        make options of names in fund_name
         names: list of name to make options
-        fund_name: dict of ticker to name
         """
+        fund_name = self.fund_name
+        if fund_name is None:
+            return None
         if isinstance(names, str):
             names = [namses]
         for name in names:
@@ -536,7 +561,7 @@ class DropdownManager():
             if len(tickers) > 0:
                 options = {'label':name, 'value':name, 'title':name, 'search':name.lower()}
                 self.options.append(options)
-                self.tickers[name] = tickers
+                self.value_to_ticker[name] = tickers
 
     def get_options(self):
         if len(self.options) == 0:
@@ -544,17 +569,17 @@ class DropdownManager():
         else:
             return self.options
         
-    def get_tickers(self, value):
+    def get_tickers(self, values):
+        """
+        get union of tickers from list of option values
+        """
         if len(self.options) == 0:
-            return None
-        try:
-            return self.tickers[value]
-        except KeyError:
-            return None
-    
+            return list()
 
-
-
-
-
-        
+        tickers = list()
+        for v in values:
+            try:
+                tickers += self.value_to_ticker[v]
+            except KeyError:
+                continue
+        return list(set(tickers))
