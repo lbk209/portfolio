@@ -18,6 +18,25 @@ external_stylesheets = [dbc.themes.CERULEAN,
                         dbc.icons.BOOTSTRAP]
 
 
+def import_categories(file, path, 
+                      cols=['거래처','구분1 (계좌)', '코드'], 
+                      cols_new=['seller', 'account', 'ticker'], 
+                      rename = {'일반':'일반계좌'},
+                      cols_intersection=['seller','account'], prefix_intersection='&'):
+    """
+    import dataframe for options
+    """
+    df_cat = pd.read_csv(f'{path}/{file}', header=1)
+    cols = df_cat.columns if cols is None else cols
+    cols_new = cols if cols_new is None else cols_new
+    df_cat = df_cat[cols].rename(columns=dict(zip(cols, cols_new))).dropna().reset_index(drop=True)
+    if isinstance(rename, dict):
+        df_cat = df_cat.map(lambda x: rename[x] if x in rename.keys() else x)
+    if isinstance(cols_intersection, list):
+        df_cat[cols_intersection] = df_cat[cols_intersection].map(lambda x: f'{prefix_intersection}{x}')
+    return df_cat
+
+
 def get_data(df, start=None, base=1000):
     """
     Preprocess data to make it JSON-serializable and to store it in a JavaScript variable by update_price_data
@@ -240,10 +259,11 @@ def get_inference(file, path, var_name='total_return', tickers=None,
         
 
 def update_inference_data(tickers, data_inf):
-    df_dst = pd.DataFrame(data_inf['density'], index=data_inf['x'])
-    hdi_lines = data_inf['interval']
     if len(tickers) == 0:
         return None
+
+    df_dst = pd.DataFrame(data_inf['density'], index=data_inf['x'])
+    hdi_lines = data_inf['interval']
         
     tickers = df_dst.columns.intersection(tickers)
     df_dst = df_dst[tickers]
@@ -308,6 +328,84 @@ def update_inference_plot(data, fund_name=None):
             trace.update(hoverinfo='skip')  # Exclude from hover text
     
     return fig
+
+
+def get_hdi(file, path, var_name='total_return'):
+    """
+    file: inference data file
+    """
+    be = BayesianEstimator.create(file, path)
+    df_hdi = be.bayesian_summary(var_name).droplevel(0)
+    return df_hdi.to_dict()
+
+
+def update_hdi_data(tickers, data, sort_by='mean', ascending=False):
+    if len(tickers) == 0:
+        return None
+        
+    df_hdi = pd.DataFrame().from_dict(data)
+    if sort_by:
+        df_hdi = df_hdi.sort_values(sort_by, ascending=ascending)
+        
+    tickers = df_hdi.index.intersection(tickers)
+    df_hdi = df_hdi.loc[tickers]
+    
+    return df_hdi.to_dict()
+
+
+def update_hdi_plot(data, fund_name=None, sort_by='mean', ascending=False):
+    if data is None:
+        return px.line()
+    
+    df_hdi = pd.DataFrame().from_dict(data)
+    if sort_by:
+        df_hdi = df_hdi.sort_values(sort_by, ascending=ascending)
+    
+    fig = go.Figure()
+    for ticker in df_hdi.index:
+        # Plot the HDI range (hdi_3% to hdi_97%)
+        fig.add_trace(go.Scatter(
+            x=[ticker, ticker], 
+            y=[df.loc[ticker, 'hdi_3%'], df.loc[ticker, 'hdi_97%']],
+            mode='lines', 
+            name=ticker if fund_name is None else fund_name[ticker],  
+            line=dict(width=3),
+            legendgroup=ticker,  # Group with mean marker
+            showlegend=True
+        ))
+    
+        # Plot the mean marker, grouped with its HDI range but hidden from legend
+        fig.add_trace(go.Scatter(
+            x=[ticker, ticker], 
+            y=[df.loc[ticker, 'mean'], df.loc[ticker, 'mean']],
+            mode='markers', 
+            name=ticker if fund_name is None else fund_name[ticker], 
+            marker=dict(color="gray", size=5, symbol='line-ew-open'),
+            legendgroup=ticker,  # Same group as HDI range
+            showlegend=False  # Hide from legend
+        ))
+    
+    fig.update_layout(
+        title="HDI Range and Mean",
+        xaxis=dict(
+            title='',             # Remove x-axis title (label)
+            showticklabels=False  # Hide x-tick labels
+        ),
+        hoverlabel_bgcolor="white",
+    )
+
+            
+    for trace in fig.data:
+        if trace.showlegend:
+            trace.update(hoverinfo='skip')
+            #text = hover_text[trace.legendgroup]
+            #trace.update(hovertemplate=f"{text} {trace.name}<extra></extra>")
+            #trace.update(hovertemplate=f"{trace.name}<extra></extra>")
+        else:
+            trace.update(hovertemplate=f"{trace.name}<extra></extra><br>test")
+            
+    return fig
+
 
 
 def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
