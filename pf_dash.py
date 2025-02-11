@@ -525,6 +525,14 @@ class DropdownManager():
         else:
             return pd.Index(tickers).intersection(self.tickers).to_list()
 
+    def _set_option(self, value, label=None, title=None, search=None):
+        intersection = self.startswith_intersection
+        # intersection sign kept only for value
+        label, title, search = [value.lstrip(intersection) if x is None else x for x in [label, title, search]]
+        label = f'{label} ({intersection})' if value.startswith(intersection) else label
+        search = search.lower()
+        return {'label':label, 'value':value, 'title':title, 'search':search}
+
     def create_from_df(self, df_values, col_ticker='ticker'):
         """
         set option and its ticker list specifically
@@ -536,7 +544,7 @@ class DropdownManager():
         # each col has option values. None for option skipped by the groupby
         for col in cols.difference([col_ticker]):
             value_to_ticker = df_values.groupby(col)[col_ticker].apply(list).to_dict()
-            self.options += [{'label':x, 'value':x, 'title':x, 'search':x.lower()} for x in value_to_ticker.keys()]
+            self.options += [self._set_option(x) for x in value_to_ticker.keys()]
             self.value_to_ticker = {**self.value_to_ticker, **value_to_ticker}
 
     def create_all(self, option_all='All'):
@@ -570,19 +578,17 @@ class DropdownManager():
         fund_name = self.fund_name
         if fund_name is None:
             return None
-        else:
-            intersection = self.startswith_intersection
             
         if isinstance(names, str):
             names = [namses]
-        for name in names:
-            title = name.lstrip(intersection) # keep intersection sign only for value
+        for value in names:
+            option = self._set_option(value)
+            title = option['title']
+            # get ticker list for title
             tickers = [k for k,v in fund_name.items() if title.lower() in v.lower()]
             if len(tickers) > 0:
-                label = f'{title} ({intersection})' if name.startswith(intersection) else title
-                options = {'label':label, 'value':name, 'title':title, 'search':title.lower()}
-                self.options.append(options)
-                self.value_to_ticker[name] = tickers
+                self.options.append(option)
+                self.value_to_ticker[value] = tickers
 
     def get_options(self):
         if len(self.options) == 0:
