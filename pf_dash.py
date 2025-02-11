@@ -51,17 +51,6 @@ def get_title(title, compare, cost):
     return title
 
 
-def update_options(values, options, option_all='all'):
-    """
-    disable options if option_all selected
-    """
-    if option_all in values:
-        options = [{**x, 'disabled':True} for x in options]
-    else:
-        options = [{**x, 'disabled':False} for x in options]
-    return options
-
-
 def update_price_data(tickers, data_prc, base=1000):
     """
     process data and save to dcc.Store
@@ -322,7 +311,8 @@ def update_inference_plot(data, fund_name=None):
 
 
 def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
-               options_word=['TDF', 'IBK', 'KB', '미래에셋', '삼성', '신한', '키움', '한국투자', '한화'], 
+               options_word=['&TDF', 'IBK', 'KB', '미래에셋', '삼성', '신한', '키움', '한국투자', '한화'], 
+               options_df = None,
                title="Managed Funds", height=500, legend=False, length=20,
                base=1000,
                external_stylesheets=external_stylesheets,
@@ -339,9 +329,10 @@ def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
         fund_name = {x:x for x in tickers}
         
     # create dropdown options
-    dm = DropdownManager(fund_name)
+    dm = DropdownManager(tickers, fund_name)
     dm.create_all()
     dm.create_from_name(options_word)
+    dm.create_from_df(options_df) if options_df is not None else None
     dm.create_tickers()
     dropdown_option = dm.get_options()
 
@@ -401,10 +392,11 @@ def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
 
     @app.callback(
         Output('ticker-dropdown', 'options'),
+        Output('ticker-dropdown', 'value'),
         Input('ticker-dropdown', 'value'),
     )
     def _update_options(values):
-        return update_options(values, dropdown_option, dm.option_all)
+        return dm.update_options(values, dropdown_option)
     
     
     @app.callback(
@@ -416,6 +408,7 @@ def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
         process data and save to dcc.Store
         """
         tickers = dm.get_tickers(values)
+        #print(f'tickers of {values}: {len(tickers)}') # testing
         return update_price_data(tickers, data_prc, base=base)
         
     
@@ -515,28 +508,51 @@ def add_density_plot(app, get_tickers,
 
 
 class DropdownManager():
-    def __init__(self, fund_name=None):
+    def __init__(self, tickers=None, fund_name=None, intersection='&'):
+        self.tickers = tickers
         self.fund_name = fund_name # dict of ticker to name
+        self.startswith_intersection = intersection
         self.options = list()
         self.value_to_ticker = dict() # option value to tickers
         self.option_all = None
+
+    def _check_tickers(self, tickers):
+        """
+        check tickers by returning tickers only in self.tickers
+        """
+        if self.tickers is None:
+            return tickers
+        else:
+            return pd.Index(tickers).intersection(self.tickers).to_list()
+
+    def create_from_df(self, df_values, col_ticker='ticker'):
+        """
+        set option and its ticker list specifically
+        df_values: df of index ticker and column values
+        """
+        cols = df_values.columns
+        if col_ticker not in cols:
+            return None
+        # each col has option values. None for option skipped by the groupby
+        for col in cols.difference([col_ticker]):
+            value_to_ticker = df_values.groupby(col)[col_ticker].apply(list).to_dict()
+            self.options += [{'label':x, 'value':x, 'title':x, 'search':x.lower()} for x in value_to_ticker.keys()]
+            self.value_to_ticker = {**self.value_to_ticker, **value_to_ticker}
 
     def create_all(self, option_all='All'):
         """
         make option to select all tickers
         """
         fund_name = self.fund_name
-        option_all_value = option_all.lower()
-        options = [{'label':option_all, 'value':option_all_value, 
-                    'title':option_all, 'search':option_all_value}]
-        tickers = {option_all: None if fund_name is None else list(fund_name.keys())}
+        options = [{'label':option_all, 'value':option_all, 
+                    'title':option_all, 'search':option_all.lower()}]
         self.options += options 
-        self.value_to_ticker = {**self.value_to_ticker, **tickers}
-        self.option_all = option_all_value
+        self.value_to_ticker[option_all] = list() if fund_name is None else list(fund_name.keys())
+        self.option_all = option_all
 
     def create_tickers(self):
         """
-        make options of tickers
+        set tickers to options
         """
         fund_name = self.fund_name
         if fund_name is None:
@@ -554,20 +570,40 @@ class DropdownManager():
         fund_name = self.fund_name
         if fund_name is None:
             return None
+        else:
+            intersection = self.startswith_intersection
+            
         if isinstance(names, str):
             names = [namses]
         for name in names:
-            tickers = [k for k,v in fund_name.items() if name.lower() in v.lower()]
+            title = name.lstrip(intersection) # keep intersection sign only for value
+            tickers = [k for k,v in fund_name.items() if title.lower() in v.lower()]
             if len(tickers) > 0:
-                options = {'label':name, 'value':name, 'title':name, 'search':name.lower()}
+                label = f'{title} ({intersection})' if name.startswith(intersection) else title
+                options = {'label':label, 'value':name, 'title':title, 'search':title.lower()}
                 self.options.append(options)
                 self.value_to_ticker[name] = tickers
 
     def get_options(self):
         if len(self.options) == 0:
-            return None
+            return list()
         else:
             return self.options
+
+    def update_options(self, values, options):
+        """
+        disable options if option_all selected
+        """
+        option_all = self.option_all
+        intersection = self.startswith_intersection
+        if option_all in values:
+            # disable all options except for intersections
+            options = [{**x, 'disabled':False if x['value'].startswith(intersection) else True} for x in options]
+            # exclude all options except for intersections from values
+            values = [x for x in values if x==option_all or x.startswith(intersection)]
+        else:
+            options = [{**x, 'disabled':False} for x in options]
+        return options, values
         
     def get_tickers(self, values):
         """
@@ -575,11 +611,28 @@ class DropdownManager():
         """
         if len(self.options) == 0:
             return list()
+        else:
+            intersection = self.startswith_intersection
+        # split options of union and intersection
+        values_intersection = [x for x in values if x.startswith(intersection)]
+        values_union = list(set(values) - set(values_intersection))
 
+        # get tickers from union options
         tickers = list()
-        for v in values:
+        for v in values_union:
             try:
                 tickers += self.value_to_ticker[v]
             except KeyError:
                 continue
-        return list(set(tickers))
+        tickers = set(tickers)
+        if len(tickers) == 0:
+            return list()
+
+        # get tickers from intersection options
+        for v in values_intersection:
+            try:
+                tickers = tickers & set(self.value_to_ticker[v])
+            except KeyError:
+                continue
+        tickers = list(tickers)
+        return self._check_tickers(tickers) # remove tickers not in self.tickers
