@@ -330,12 +330,18 @@ def update_inference_plot(data, fund_name=None):
     return fig
 
 
-def get_hdi(file, path, var_name='total_return'):
+def get_hdi(file, path, var_name='total_return', tickers=None):
     """
     file: inference data file
     """
     be = BayesianEstimator.create(file, path)
     df_hdi = be.bayesian_summary(var_name).droplevel(0)
+    if tickers is not None:
+        tkr = pd.Index(tickers).difference(df_hdi.index)
+        if tkr.size > 0:
+            print(f'WARNING: Tickers set to None as {tkr.size} missing tickers')
+        else:
+            df_hdi = df_hdi.loc[tickers]
     return df_hdi.to_dict()
 
 
@@ -353,23 +359,29 @@ def update_hdi_data(tickers, data, sort_by='mean', ascending=False):
     return df_hdi.to_dict()
 
 
-def update_hdi_plot(data, fund_name=None, sort_by='mean', ascending=False):
+def update_hdi_plot(data, fund_name=None, sort_by='mean', ascending=False,
+                    cols_hdi = ['hdi_3%', 'hdi_97%'], line_width=10):
     if data is None:
         return px.line()
     
     df_hdi = pd.DataFrame().from_dict(data)
     if sort_by:
         df_hdi = df_hdi.sort_values(sort_by, ascending=ascending)
+    col_l, col_u = cols_hdi
+    # get intervals for each ticker
+    hdi = df_hdi.apply(lambda x: [x[col_l], x[col_u]], axis=1)
+    sr_mean = df_hdi['mean']
     
     fig = go.Figure()
     for ticker in df_hdi.index:
         # Plot the HDI range (hdi_3% to hdi_97%)
         fig.add_trace(go.Scatter(
             x=[ticker, ticker], 
-            y=[df.loc[ticker, 'hdi_3%'], df.loc[ticker, 'hdi_97%']],
+            y=hdi[ticker],
             mode='lines', 
+            uid=ticker,
             name=ticker if fund_name is None else fund_name[ticker],  
-            line=dict(width=3),
+            line=dict(width=line_width),
             legendgroup=ticker,  # Group with mean marker
             showlegend=True
         ))
@@ -377,35 +389,38 @@ def update_hdi_plot(data, fund_name=None, sort_by='mean', ascending=False):
         # Plot the mean marker, grouped with its HDI range but hidden from legend
         fig.add_trace(go.Scatter(
             x=[ticker, ticker], 
-            y=[df.loc[ticker, 'mean'], df.loc[ticker, 'mean']],
+            y=[sr_mean[ticker], sr_mean[ticker]],
             mode='markers', 
+            uid=ticker, # ok to set uid same as hdi
             name=ticker if fund_name is None else fund_name[ticker], 
-            marker=dict(color="gray", size=5, symbol='line-ew-open'),
+            marker=dict(color="gray", size=round(line_width*1.5), symbol='line-ew-open'),
             legendgroup=ticker,  # Same group as HDI range
             showlegend=False  # Hide from legend
         ))
     
     fig.update_layout(
-        title="HDI Range and Mean",
+        title="94% Interval of 3-Year Return",
         xaxis=dict(
             title='',             # Remove x-axis title (label)
             showticklabels=False  # Hide x-tick labels
         ),
-        hoverlabel_bgcolor="white",
+        hoverlabel=dict(
+            bgcolor="rgba(255, 255, 255, 0.5)", # opacity not works
+            #font_size=16,
+            #font_family="Rockwell"
+        )
     )
-
-            
+    
     for trace in fig.data:
         if trace.showlegend:
-            trace.update(hoverinfo='skip')
-            #text = hover_text[trace.legendgroup]
-            #trace.update(hovertemplate=f"{text} {trace.name}<extra></extra>")
-            #trace.update(hovertemplate=f"{trace.name}<extra></extra>")
+            text = [str(x) for x in hdi[trace.uid]]
+            text = '~'.join(text)
+            trace.update(hovertemplate=f"Interval: {text}<br>{trace.name}<extra></extra>")
         else:
-            trace.update(hovertemplate=f"{trace.name}<extra></extra><br>test")
+            text = sr_mean[trace.uid]
+            trace.update(hovertemplate=f"Mean: {text}<br>{trace.name}<extra></extra>")
             
     return fig
-
 
 
 def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
@@ -602,6 +617,62 @@ def add_density_plot(app, get_tickers,
     )
     def _update_inference_plot(data):
         return update_inference_plot(data, fund_name)
+
+
+def add_hdi_plot(app, get_tickers, 
+                 file=None, path=None, tickers=None, fund_name=None,
+                 line_width=4):
+    """
+    get_tickers: function to get tickers from selected option values
+    """
+    data_hdi = get_hdi(file, path, tickers=tickers)
+
+    # update layout of the app
+    new_tab = dbc.Tab(dcc.Graph(id='hdi-plot'), label='HDI', 
+                      label_class_name="tab-label new-badge-label") # add new badge
+
+    # Locate the Row containing Tabs and append the new Tab
+    if not app.add_tab(new_tab):
+        return None # see add_tab for err msg
+        
+    # Add hdi-data Store to the layout
+    app.layout.children.append(
+        dcc.Store(id='hdi-data')
+    )
+
+    @app.callback(
+        Output('cost-boolean-switch', 'on'),
+        Output('compare-boolean-switch', 'on'),
+        Input("tabs", "active_tab"),
+        Input('cost-boolean-switch', 'on'),
+        Input('compare-boolean-switch', 'on')
+        
+    )
+    def switch_tab(at, cost, compare):
+        if at == new_tab.tab_id:
+            return (True, False)
+        else:
+            return (cost, compare)
+
+    
+    @app.callback(
+        Output('hdi-data', 'data'),
+        Input('ticker-dropdown', 'value')
+    )
+    def _update_hdi_data(values):
+        """
+        process data and save to dcc.Store
+        """
+        tickers = get_tickers(values)
+        return update_hdi_data(tickers, data_hdi)
+        
+    
+    @app.callback(
+        Output('hdi-plot', 'figure'),
+        Input('hdi-data', 'data')
+    )
+    def _update_hdi_plot(data):
+        return update_hdi_plot(data, fund_name, line_width=line_width)
 
 
 
