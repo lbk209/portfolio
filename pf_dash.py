@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-import pickle
+import pickle, re
 from scipy.stats import gaussian_kde
 
 from pf_utils import calculate_hdi, BayesianEstimator
@@ -774,19 +774,20 @@ class DropdownManager():
                 self.value_to_ticker[value] = tickers
 
     def create_order(self, sr_rank,
-                     value_top='top10', value_bottom='bottom10', value_random='random10',
+                     value_top='Top20', value_bottom='Bottom20', value_random='Random20',
                      rex_order = r'([^0-9]+)(\d+)', prefix='№'):
         """
         create options from kwargs value_*
         """
-        tickers = self.tickers
-        if pd.Index(tickers).difference(sr_rank.index).size > 0:
-            return None # no option if missing tickers in rank
-
         options = list()
         value_to_ticker = dict()
-        values_order = dict()    
-        for value in [value_top, value_bottom, value_random]:
+        values_order = dict()  
+        # add prefix
+        values = [value_top, value_bottom, value_random]
+        values = [f'{prefix}{x}' for x in values]
+        value_top, value_bottom, value_random = values
+        # create options for values
+        for value in values:
             if value is None:
                 continue
             match = re.match(rex_order, value)
@@ -795,7 +796,7 @@ class DropdownManager():
                 continue
             else:
                 _, num = match.groups()
-                values_order[value] = num
+                values_order[value] = int(num)
             option = self._set_option(value, prefix=prefix)
             options.append(option)
             value_to_ticker[value] = list() # set to avoid keyerror in get_tickers
@@ -805,15 +806,17 @@ class DropdownManager():
             self.value_to_ticker.update(value_to_ticker)
             
             def select_tickers(tickers, value):
+                # remove tickres not in sr_rank
+                tickers = sr_rank.index.intersection(tickers) 
                 sr_tkr = sr_rank.loc[tickers].sort_values()
                 num = values_order[value]
                 if value == value_top:
-                    sr = sr_tkr[:num]
+                    sr_tkr = sr_tkr[:num]
                 elif value == value_bottom:
-                    sr = sr_tkr[-num:]
+                    sr_tkr = sr_tkr[-num:]
                 elif value == value_random:
-                    sr = sr_tkr.sample(num)
-                return sr.index.to_list()
+                    sr_tkr = sr_tkr.sample(num)
+                return sr_tkr.index.to_list()
             
             self.data_order = dict(
                 prefix = prefix,
@@ -832,15 +835,20 @@ class DropdownManager():
 
     def update_options(self, values, options):
         """
-        disable options if option_all selected
+        disable some options if option_all selected
         """
         option_all = self.option_all
-        prefix = self.prefix_intersection
+        prefix_list = [self.prefix_intersection]
+        data_order = self.data_order
+        if data_order is not None:
+            prefix_list.append(data_order['prefix'])
         if option_all in values:
-            # disable all options except for intersections
-            options = [{**x, 'disabled':False if x['value'].startswith(prefix) else True} for x in options]
-            # exclude all options except for intersections from values
-            values = [x for x in values if x==option_all or x.startswith(prefix)]
+            # return True if value starts with any of prefix_list
+            cond = lambda value: pd.Series([value.startswith(x) for x in prefix_list]).any()
+            # disable all options except for prefix_list
+            options = [{**x, 'disabled':False if cond(x['value']) else True} for x in options]
+            # exclude all options except for option_all and prefix_list from values
+            values = [x for x in values if x==option_all or cond(x)]
         else:
             options = [{**x, 'disabled':False} for x in options]
         return options, values
