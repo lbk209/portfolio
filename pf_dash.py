@@ -18,6 +18,25 @@ external_stylesheets = [dbc.themes.CERULEAN,
                         dbc.icons.BOOTSTRAP]
 
 
+def import_categories(file, path, 
+                      cols=['거래처','구분1 (계좌)', '코드'], 
+                      cols_new=['seller', 'account', 'ticker'], 
+                      rename = {'일반':'일반계좌'},
+                      cols_intersection=['seller','account'], prefix_intersection='&'):
+    """
+    import dataframe for options
+    """
+    df_cat = pd.read_csv(f'{path}/{file}', header=1)
+    cols = df_cat.columns if cols is None else cols
+    cols_new = cols if cols_new is None else cols_new
+    df_cat = df_cat[cols].rename(columns=dict(zip(cols, cols_new))).dropna().reset_index(drop=True)
+    if isinstance(rename, dict):
+        df_cat = df_cat.map(lambda x: rename[x] if x in rename.keys() else x)
+    if isinstance(cols_intersection, list):
+        df_cat[cols_intersection] = df_cat[cols_intersection].map(lambda x: f'{prefix_intersection}{x}')
+    return df_cat
+
+
 def get_data(df, start=None, base=1000):
     """
     Preprocess data to make it JSON-serializable and to store it in a JavaScript variable by update_price_data
@@ -240,10 +259,11 @@ def get_inference(file, path, var_name='total_return', tickers=None,
         
 
 def update_inference_data(tickers, data_inf):
-    df_dst = pd.DataFrame(data_inf['density'], index=data_inf['x'])
-    hdi_lines = data_inf['interval']
     if len(tickers) == 0:
         return None
+
+    df_dst = pd.DataFrame(data_inf['density'], index=data_inf['x'])
+    hdi_lines = data_inf['interval']
         
     tickers = df_dst.columns.intersection(tickers)
     df_dst = df_dst[tickers]
@@ -307,6 +327,99 @@ def update_inference_plot(data, fund_name=None):
         else:
             trace.update(hoverinfo='skip')  # Exclude from hover text
     
+    return fig
+
+
+def get_hdi(file, path, var_name='total_return', tickers=None):
+    """
+    file: inference data file
+    """
+    be = BayesianEstimator.create(file, path)
+    df_hdi = be.bayesian_summary(var_name).droplevel(0)
+    if tickers is not None:
+        tkr = pd.Index(tickers).difference(df_hdi.index)
+        if tkr.size > 0:
+            print(f'WARNING: Tickers set to None as {tkr.size} missing tickers')
+        else:
+            df_hdi = df_hdi.loc[tickers]
+    return df_hdi.to_dict()
+
+
+def update_hdi_data(tickers, data, sort_by='mean', ascending=False):
+    if len(tickers) == 0:
+        return None
+        
+    df_hdi = pd.DataFrame().from_dict(data)
+    if sort_by:
+        df_hdi = df_hdi.sort_values(sort_by, ascending=ascending)
+        
+    tickers = df_hdi.index.intersection(tickers)
+    df_hdi = df_hdi.loc[tickers]
+    
+    return df_hdi.to_dict()
+
+
+def update_hdi_plot(data, fund_name=None, sort_by='mean', ascending=False,
+                    cols_hdi = ['hdi_3%', 'hdi_97%'], line_width=10):
+    if data is None:
+        return px.line()
+    
+    df_hdi = pd.DataFrame().from_dict(data)
+    if sort_by:
+        df_hdi = df_hdi.sort_values(sort_by, ascending=ascending)
+    col_l, col_u = cols_hdi
+    # get intervals for each ticker
+    hdi = df_hdi.apply(lambda x: [x[col_l], x[col_u]], axis=1)
+    sr_mean = df_hdi['mean']
+    
+    fig = go.Figure()
+    for ticker in df_hdi.index:
+        # Plot the HDI range (hdi_3% to hdi_97%)
+        fig.add_trace(go.Scatter(
+            x=[ticker, ticker], 
+            y=hdi[ticker],
+            mode='lines', 
+            uid=ticker,
+            name=ticker if fund_name is None else fund_name[ticker],  
+            line=dict(width=line_width),
+            legendgroup=ticker,  # Group with mean marker
+            showlegend=True
+        ))
+    
+        # Plot the mean marker, grouped with its HDI range but hidden from legend
+        fig.add_trace(go.Scatter(
+            x=[ticker, ticker], 
+            y=[sr_mean[ticker], sr_mean[ticker]],
+            mode='markers', 
+            uid=ticker, # ok to set uid same as hdi
+            name=ticker if fund_name is None else fund_name[ticker], 
+            marker=dict(color="gray", size=round(line_width*1.5), symbol='line-ew-open'),
+            legendgroup=ticker,  # Same group as HDI range
+            showlegend=False  # Hide from legend
+        ))
+    
+    fig.update_layout(
+        title="94% Interval of 3-Year Return",
+        xaxis=dict(
+            title='',             # Remove x-axis title (label)
+            showticklabels=False  # Hide x-tick labels
+        ),
+        hoverlabel=dict(
+            bgcolor="rgba(255, 255, 255, 0.5)", # opacity not works
+            #font_size=16,
+            #font_family="Rockwell"
+        )
+    )
+    
+    for trace in fig.data:
+        if trace.showlegend:
+            text = [str(x) for x in hdi[trace.uid]]
+            text = '~'.join(text)
+            trace.update(hovertemplate=f"Interval: {text}<br>{trace.name}<extra></extra>")
+        else:
+            text = sr_mean[trace.uid]
+            trace.update(hovertemplate=f"Mean: {text}<br>{trace.name}<extra></extra>")
+            
     return fig
 
 
@@ -504,6 +617,62 @@ def add_density_plot(app, get_tickers,
     )
     def _update_inference_plot(data):
         return update_inference_plot(data, fund_name)
+
+
+def add_hdi_plot(app, get_tickers, 
+                 file=None, path=None, tickers=None, fund_name=None,
+                 line_width=4):
+    """
+    get_tickers: function to get tickers from selected option values
+    """
+    data_hdi = get_hdi(file, path, tickers=tickers)
+
+    # update layout of the app
+    new_tab = dbc.Tab(dcc.Graph(id='hdi-plot'), label='HDI', 
+                      label_class_name="tab-label new-badge-label") # add new badge
+
+    # Locate the Row containing Tabs and append the new Tab
+    if not app.add_tab(new_tab):
+        return None # see add_tab for err msg
+        
+    # Add hdi-data Store to the layout
+    app.layout.children.append(
+        dcc.Store(id='hdi-data')
+    )
+
+    @app.callback(
+        Output('cost-boolean-switch', 'on'),
+        Output('compare-boolean-switch', 'on'),
+        Input("tabs", "active_tab"),
+        Input('cost-boolean-switch', 'on'),
+        Input('compare-boolean-switch', 'on')
+        
+    )
+    def switch_tab(at, cost, compare):
+        if at == new_tab.tab_id:
+            return (True, False)
+        else:
+            return (cost, compare)
+
+    
+    @app.callback(
+        Output('hdi-data', 'data'),
+        Input('ticker-dropdown', 'value')
+    )
+    def _update_hdi_data(values):
+        """
+        process data and save to dcc.Store
+        """
+        tickers = get_tickers(values)
+        return update_hdi_data(tickers, data_hdi)
+        
+    
+    @app.callback(
+        Output('hdi-plot', 'figure'),
+        Input('hdi-data', 'data')
+    )
+    def _update_hdi_plot(data):
+        return update_hdi_plot(data, fund_name, line_width=line_width)
 
 
 
