@@ -359,8 +359,8 @@ def update_hdi_data(tickers, data, sort_by='mean', ascending=False):
     return df_hdi.to_dict()
 
 
-def update_hdi_plot(data, fund_name=None, sort_by='mean', ascending=False,
-                    cols_hdi = ['hdi_3%', 'hdi_97%'], line_width=10):
+def update_hdi_plot(data, fund_name=None, sort_by='mean', ascending=False, line_width=10,
+                    cols_hdi = ['hdi_3%', 'hdi_97%']):
     if data is None:
         return px.line()
     
@@ -621,9 +621,10 @@ def add_density_plot(app, get_tickers,
 
 def add_hdi_plot(app, get_tickers, 
                  file=None, path=None, tickers=None, fund_name=None,
-                 line_width=4):
+                 **kwargs):
     """
     get_tickers: function to get tickers from selected option values
+    kwargs: kwargs for update_hdi_plot
     """
     data_hdi = get_hdi(file, path, tickers=tickers)
 
@@ -672,7 +673,7 @@ def add_hdi_plot(app, get_tickers,
         Input('hdi-data', 'data')
     )
     def _update_hdi_plot(data):
-        return update_hdi_plot(data, fund_name, line_width=line_width)
+        return update_hdi_plot(data, fund_name, **kwargs)
 
 
 
