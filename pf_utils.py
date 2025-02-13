@@ -2509,12 +2509,16 @@ class PortfolioBuilder():
             history = True
         else:
             history = False
-
+    
         date_format = self.date_format
-        col_date = self.cols_record['date']
-        col_tkr = self.cols_record['tkr']
+        cols_record = self.cols_record
+        col_date = cols_record['date']
+        col_tkr = cols_record['tkr']
+        col_net = cols_record['net']
         col_roi = 'roi'
         col_ugl = 'ugl'
+        col_start, col_end = 'start', 'end'
+        col_val = 'value'
     
         # check date by price data
         df_prices = self._update_universe(df_rec, msg=print_msg, download_missing=True)
@@ -2529,8 +2533,6 @@ class PortfolioBuilder():
                 
         # get record to date
         df_rec = df_rec.loc[:date]
-        date_lt = df_rec.index.get_level_values(0).max()
-        
         # calc value
         sr_val = self._calc_value_history(df_rec, df_prices, date, self.name, msg=False, total=total)
         # buy & sell prices to date.
@@ -2549,7 +2551,7 @@ class PortfolioBuilder():
         if not history:
             if total:
                 start = df_m.index.get_level_values(col_date).min().strftime(date_format)
-                sr = pd.Series([start, date], index=['start', 'end'])
+                sr = pd.Series([start, date], index=[col_start, col_end])
                 sr_m = pd.concat([sr, df_m.loc[date]]) # concat data range
                 df_m = sr_m.apply(format_price, digits=0) if int_to_str else sr_m
                 if print_msg or print_summary_only:
@@ -2562,10 +2564,26 @@ class PortfolioBuilder():
                         to_print = PortfolioBuilder.get_title_pnl(df_m[col_roi], df_m[col_ugl], date)
                     print(to_print) 
             else:
-                df = df_m.groupby(col_tkr).apply(lambda x: pd.Series(get_date_minmax(x.dropna()), index=['start', 'end']))
-                df_m = pd.concat([df, df_m.loc[date]], axis=1)
+                # get periods of holding for each assets
+                df_r = df_m.groupby(col_tkr).apply(lambda x: pd.Series(get_date_minmax(x.dropna()), index=[col_start, col_end]))
+                # update end date of assets liquidated on the latest transaction
+                date_lt = df_rec.index.get_level_values(col_date).max()
+                sr_net = record.loc[date_lt, col_net]
+                tkrs = sr_net.loc[sr_net == 0].index
+                if tkrs.size > 0:
+                    df_r.loc[tkrs, col_end] = date_lt
+                # add periods to performance data
+                df_m = pd.concat([df_r, df_m.loc[date]], axis=1)
                 df_m = df_m.sort_values(sort_by, ascending=False) if sort_by else df_m
                 df_m = df_m.map(format_price, digits=0) if int_to_str else df_m
+                # remove assets liquidated before the last transaction
+                df_m = df_m.loc[df_m[col_val].notna()]
+                # add asset name column if given
+                if self.security_names is not None: 
+                    col_name = cols_record['name']
+                    cols = df_m.columns
+                    df_m = df_m.join(pd.Series(self.security_names, name=col_name))
+                    df_m = df_m[cols.insert(0, col_name)]
         return df_m
 
 
@@ -5240,7 +5258,7 @@ class BayesianEstimator():
         create instance from sampled
         kwargs: kwargs of __init__
         """
-        bayesian_data = BayesianEstimator._load(file, path)
+        bayesian_data = BayesianEstimator.load(file, path)
         if bayesian_data is None:
             return None
         df_prices = bayesian_data['data']
@@ -5436,7 +5454,7 @@ class BayesianEstimator():
 
                 
     @staticmethod
-    def _load(file, path='.'):
+    def load(file, path='.'):
         """
         load bayesian_data of bayesian_sample 
         """
