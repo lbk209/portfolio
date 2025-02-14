@@ -2568,7 +2568,7 @@ class PortfolioBuilder():
                 df_r = df_m.groupby(col_tkr).apply(lambda x: pd.Series(get_date_minmax(x.dropna()), index=[col_start, col_end]))
                 # update end date of assets liquidated on the latest transaction
                 date_lt = df_rec.index.get_level_values(col_date).max()
-                sr_net = record.loc[date_lt, col_net]
+                sr_net = df_rec.loc[date_lt, col_net]
                 tkrs = sr_net.loc[sr_net == 0].index
                 if tkrs.size > 0:
                     df_r.loc[tkrs, col_end] = date_lt
@@ -3104,6 +3104,7 @@ class PortfolioBuilder():
          ex) delisted security
         all_transaction: set to True to track exact value histories of sold assets delisted from universe
         """
+        # no msg as df_rec is just for date & tickers
         df_rec = self._check_result(False)
         if df_rec is None:
             return None
@@ -3501,7 +3502,7 @@ class PortfolioBuilder():
             df_res = self.df_rec
 
         col_prc = self.cols_record['prc']
-        if df_res[col_prc].notna().any(): 
+        if df_res[col_prc].notna().any(): # print error regardless of the arg msg 
             # seems like record saved as nshares for editing
             print(f'ERROR: Run update_record first after editing record')
         
@@ -3965,9 +3966,9 @@ class TradingHalts():
     def transaction(self, date, buy=None, sell=None, resume=None, halt=None, date_format='%Y-%m-%d'):
         """
         make new transaction from the latest transaction without price data
-        buy: dict of tickers to buy
+        buy: dict of tickers to buy price
         halt: list of tickers to halt
-        sell: dict or list 
+        sell: dict of tickers to sell price or list 
         resume: dict, list, 'all' 
         """
         record = None if self.record is None else self.record.copy()
