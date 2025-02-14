@@ -2640,10 +2640,25 @@ class PortfolioBuilder():
         """
         date = self._get_data(0, 0, date=date).index.max()
         recs = self.tradinghalts.transaction(date, date_format=self.date_format, **kw_halt) 
-        if recs is not None: # new transaction updated
-            self.df_rec = recs[0] # save before recover 
+        if recs is not None: # new transaction created
+            df_rec, record_halt = recs
+            # update net with the new transaction
+            record = self.record
+            if record is not None:
+                col_net, col_trs = [self.cols_record[x] for x in ['net', 'trs']]
+                # get the date of new transaction
+                date_lt = df_rec.index.get_level_values(0).max()
+                # get value history with record before new transaction
+                df_prc = self._update_universe(record, msg=True, download_missing=True)
+                sr_val = self._calc_value_history(record, df_prc, end_date=date_lt, name=col_net, total=False)
+                # get ticker list of no transaction
+                tkrs = df_rec.loc[df_rec[col_trs]==0].loc[date_lt].index
+                sr_val = sr_val.loc[date_lt:date_lt, tkrs]
+                df_rec.update(sr_val)
+            # save before recover
+            self.df_rec = df_rec
             # recover record with halt before saving or converting to record with num of shares
-            df_rec = self.tradinghalts.recover(*recs)
+            df_rec = self.tradinghalts.recover(df_rec, record_halt)
             if save:
                 self.save_transaction(df_rec) # where self.record updated
             else:
@@ -3279,8 +3294,8 @@ class PortfolioBuilder():
         df_rat = df_rec.loc[df_rec[col_rat].isna()]
         if len(df_rat) == 0: # no calc of ratio
             return df_rec
-    
-        sr_close = df_universe.stack().rename(col_prc)
+        index = [self.cols_record[x] for x in ['date','tkr']]
+        sr_close = df_universe.stack().rename(col_close).rename_axis(index)
         df_rat = df_rat.join(sr_close).apply(lambda x: x[col_close] / x[col_prc], axis=1)
         df_rec.update(df_rat.rename(col_rat))
         return df_rec
