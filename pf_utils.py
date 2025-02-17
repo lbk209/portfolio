@@ -2406,10 +2406,11 @@ class PortfolioBuilder():
         return df_net[cols_all]
 
 
-    def transaction(self, df_net):
+    def transaction(self, df_net, date_actual=None):
         """
         add new transaction to records
         df_net: output of self.allocate
+        date_actual: set actual transaction date
         """
         cols_record = self.cols_record
         col_date = cols_record['date']
@@ -2426,6 +2427,7 @@ class PortfolioBuilder():
         cols_int = [col_trs, col_net]
                 
         date = df_net.index.get_level_values(0).max()
+        date_actual = date if date_actual is None else date_actual
         record = self.record
         if record is None: # no transation record saved
             # allocation is same as transaction for the 1st time
@@ -2464,7 +2466,7 @@ class PortfolioBuilder():
                       .sub(df_nshares.groupby(col_tkr)[col_trs].sum())
                       .mul(df_prc.loc[date]).dropna() # get amount by multiplying price
                       .round() # round very small transaction to zero for the cond later
-                      .to_frame(col_trs).assign(**{col_date:date, col_dttr:date})
+                      .to_frame(col_trs).assign(**{col_date:date, col_dttr:date_actual})
                       .set_index(col_date, append=True).swaplevel())
             # confine tickers on the transaction date
             df_trs = df_trs.loc[df_trs.index.get_level_values(1).isin(tickers_lt)]
@@ -2588,7 +2590,7 @@ class PortfolioBuilder():
 
 
     def transaction_pipeline(self, date=None, capital=10000000, commissions=0, 
-                             save=False, nshares=False):
+                             save=False, nshares=False, date_actual=None):
         """
         nshares: set to True if saving last transaction as num of shares for the convenience of trading
         """        
@@ -2611,7 +2613,7 @@ class PortfolioBuilder():
         if df_net is None:
             return None
             
-        df_rec = self.transaction(df_net)
+        df_rec = self.transaction(df_net, date_actual=date_actual)
         if df_rec is not None: # new transaction updated
             # recover record with halt before saving or converting to record with num of shares
             df_rec = self.tradinghalts.recover(df_rec, self.record_halt)
