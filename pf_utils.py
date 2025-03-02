@@ -979,7 +979,7 @@ class DataManager():
         file: master file of fund data
         """
         fd = FundDownloader(file, path, check_master=True, msg=False)
-        fd.set_tickers()
+        fd.set_tickers(tickers)
         _ = fd.download(start_date, end_date, file=None, msg=msg)
         return fd.df_prices
 
@@ -1505,7 +1505,7 @@ class FundDownloader():
         self.failed = [] # tickers failed to download
         # check missing data for conversion
         _ = self.check_master() if check_master else None
-
+        
 
     def _load_master(self, msg=True):
         """
