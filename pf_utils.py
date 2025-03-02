@@ -979,7 +979,7 @@ class DataManager():
         file: master file of fund data
         """
         fd = FundDownloader(file, path, check_master=True, msg=False)
-        fd.set_tickers()
+        fd.set_tickers(tickers)
         _ = fd.download(start_date, end_date, file=None, msg=msg)
         return fd.df_prices
 
@@ -1503,9 +1503,10 @@ class FundDownloader():
         self.tickers = None # tickers to download rate
         self.df_prices = None
         self.failed = [] # tickers failed to download
+        self.debug_fetch_data = None # for debugging. see _download_data
         # check missing data for conversion
         _ = self.check_master() if check_master else None
-
+        
 
     def _load_master(self, msg=True):
         """
@@ -1950,6 +1951,7 @@ class FundDownloader():
         url = self._check_var(url, self.url)
         headers = self._check_var(headers, self.headers)
         payload = payload.format(**kwargs_payload)
+        self.debug_fetch_data = dict(url=url, headers=headers, data=payload) # for debugging
         xml = FundDownloader.fetch_data(url, headers, payload, msg=msg)
         return None if xml is None else FundDownloader.parse_xml(xml, tag_iter, tags, msg=msg)
 
