@@ -455,12 +455,10 @@ def create_app(df_prices, df_prices_fees, df_categories,
     dropdown_category = [{'label':x, 'value':x, 'title':x, 'search':x} for x in df_categories.columns]
     dm = DropdownManager(tickers, fund_name)
     dm.create_all()
-    #dm.create_tickers()
+    dm.create_tickers()
     dropdown_group = dm.get_options()
-    #dropdown_group = list()
     
     app = Dash(__name__, title=title, external_stylesheets=external_stylesheets)
-
    # tabs
     tabs_contents = [
         dbc.Tab(dcc.Graph(id='price-plot'), label='가격', tab_id='tab-1'),
@@ -477,8 +475,7 @@ def create_app(df_prices, df_prices_fees, df_categories,
                 dcc.Dropdown(
                     id='category-dropdown',
                     options=dropdown_category,
-                    value=[dropdown_category[0]['value']],
-                    multi=True,
+                    value=dropdown_category[0]['value'],
                     placeholder="Select Category",
                 ),
                 #width=3
@@ -487,7 +484,7 @@ def create_app(df_prices, df_prices_fees, df_categories,
                 dcc.Dropdown(
                     id='group-dropdown',
                     options=dropdown_group,
-                    #value=[dropdown_group[0]['value']],
+                    value=[dropdown_group[0]['value']],
                     multi=True,
                     placeholder="Select Group",
                 ),
@@ -530,14 +527,13 @@ def create_app(df_prices, df_prices_fees, df_categories,
         Input('category-dropdown', 'value'),
     )
     def _set_category(values):
-        dm.reset('All')
-        dm.create_all()
+        dm.reset(dm.option_all)
         #dm.create_order(options_order) if options_order is not None else None
         dm.create_from_dict(df_categories[values])
         dm.create_tickers()
         dropdown_group = dm.get_options()
         return (dropdown_group, [dm.option_all])
-
+        
     
     @app.callback(
         Output('group-dropdown', 'options', allow_duplicate=True),
@@ -599,6 +595,7 @@ def create_app(df_prices, df_prices_fees, df_categories,
     app.add_tab = add_tab
     
     return (app, dm.get_tickers)
+    #return (app, None)
 
 
 def add_density_plot(app, get_tickers, 
@@ -720,8 +717,11 @@ class DropdownManager():
         self.tickers = tickers
         self.fund_name = fund_name # dict of ticker to name
         self.prefix_intersection = prefix_intersection
+        self.option_all = None
+        self.data_order = None
         self.reset()
 
+    # TODO: check data_order
     def reset(self, *keep):
         """
         keep: list of values to keep
@@ -729,9 +729,7 @@ class DropdownManager():
         if len(keep) == 0:
             self.options = list()
             self.value_to_ticker = dict() # option value to tickers
-            self.option_all = None
-            self.data_order = None
-        else:
+        else: # reset options except for values in keep
             self.options = [x for x in self.options if x['value'] in keep]
             self.value_to_ticker = {k:v for k,v in self.value_to_ticker.items() if k in keep}
 
@@ -883,6 +881,28 @@ class DropdownManager():
                 select = select_tickers
             )
 
+    def merge(self, values_to_merge=None, value='merged', add=False):
+        """
+        create new value by merging existing values
+        """
+        if ((values_to_merge is not None) and (len(values_to_merge) > 0)
+            and self.option_all not in values_to_merge):
+            tickers = self.get_tickers(values_to_merge)
+            if len(tickers) > 0:
+                value_to_ticker = {value: tickers}
+                option = self._set_option(value)
+                options = [option]
+            else:
+                v = ', '.join(values_to_merge)
+                print(f'ERROR: Failed to merge {v}')
+                value_to_ticker, options = (None, None)
+        else:
+            value_to_ticker, options = (None, None)
+        if add and value_to_ticker is not None:
+            self._add_options(value_to_ticker, options)
+        else: # return None's if failed
+            return (value_to_ticker, options)
+
     def get_options(self):
         """
         export dropdown options created
@@ -962,3 +982,7 @@ class DropdownManager():
         tickers = self.select_by_order(tickers, values_union) 
             
         return self._check_tickers(tickers) # remove tickers not in self.tickers
+
+    def add_options(self, value_to_ticker=None, options=None):
+        if value_to_ticker is not None:
+            return self._add_options(value_to_ticker, options)
