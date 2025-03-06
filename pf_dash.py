@@ -427,7 +427,159 @@ def update_hdi_plot(data, fund_name=None, sort_by='mean', ascending=False, line_
     return fig
 
 
-def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
+def create_app(df_prices, df_prices_fees, df_categories,
+               fund_name=None, tickers=None,
+               title="Managed Funds", height=500, legend=False, length=20,
+               base=1000,
+               external_stylesheets=external_stylesheets,
+               debug=False):
+    """
+    df_prices/df_prices: df of timeindex and col tickers
+    df_categories: df of index ticker and col categories. all columns to be options for catetory
+    """
+    tickers_all = df_prices.columns.intersection(df_prices.columns)
+    tickers_all = tickers_all.intersection(df_categories.index)
+    if tickers is None:
+        tickers = tickers_all.to_list()
+    else:
+        tickers = tickers_all.intersection(tickers).to_list()
+
+    data_prc = {
+        'before fees':df_prices[tickers], 
+        'after fees':df_prices_fees[tickers]
+    }
+    fund_name = {x:x for x in tickers} if fund_name else fund_name
+        
+    # create dropdown options
+    dropdown_category = [{'label':x, 'value':x, 'title':x, 'search':x} for x in df_categories.columns]
+    dropdown_group = list()
+
+    app = Dash(__name__, title=title, external_stylesheets=external_stylesheets)
+
+   # tabs
+    tabs_contents = [
+        dbc.Tab(dcc.Graph(id='price-plot'), label='가격', tab_id='tab-1'),
+        dbc.Tab(dcc.Graph(id='return-plot'), label='수익률', tab_id='tab-2'),
+    ]
+    tabs = dbc.Tabs(tabs_contents, id='tabs')
+    
+    # layout
+    app.layout = dbc.Container([
+        html.Br(),
+        dbc.Row(tabs),
+        dbc.Row([
+            dbc.Col(
+                dcc.Dropdown(
+                    id='category-dropdown',
+                    options=dropdown_category,
+                    value=[dropdown_category[0]['value']],
+                    multi=True,
+                    placeholder="Select Category",
+                ),
+                #width=3
+            ),
+            dbc.Col(
+                dcc.Dropdown(
+                    id='group-dropdown',
+                    options=dropdown_group,
+                    #value=[dropdown_group[0]['value']],
+                    multi=True,
+                    placeholder="Select Group",
+                ),
+                #width=3
+            ),
+            dbc.Col(
+                daq.BooleanSwitch(
+                    id='compare-boolean-switch',
+                    on=False
+                ),
+                width="auto"),
+            dbc.Col(
+                daq.BooleanSwitch(
+                    id='cost-boolean-switch',
+                    on=True
+                ),
+                width="auto"),
+        ],
+            justify="center",
+            align="center",
+            className="mb-3"
+        ),
+        dcc.Store(id='price-data'),
+        dbc.Tooltip(
+            '상대 비교',
+            target='compare-boolean-switch',
+            placement='bottom'
+        ),
+        dbc.Tooltip(
+            '수수료 적용',
+            target='cost-boolean-switch',
+            placement='bottom'
+        )
+    ])
+
+    @app.callback(
+        Output('ticker-dropdown', 'options'),
+        Output('ticker-dropdown', 'value'),
+        Input('ticker-dropdown', 'value'),
+    )
+    def _update_options(values):
+        return dm.update_options(values, dropdown_option)
+    
+    
+    @app.callback(
+        Output('price-data', 'data'),
+        Input('ticker-dropdown', 'value'),
+    )
+    def _update_price_data(values):
+        """
+        process data and save to dcc.Store
+        """
+        tickers = dm.get_tickers(values)
+        #print(f'tickers of {values}: {len(tickers)}') # testing
+        return update_price_data(tickers, data_prc, base=base)
+        
+    
+    @app.callback(
+        Output('price-plot', 'figure'),
+        Input('price-data', 'data'),
+        Input('cost-boolean-switch', 'on'),
+        Input('compare-boolean-switch', 'on')
+    )
+    def _update_price_plot(data, cost, compare):
+        return update_price_plot(data, cost, compare, fund_name=fund_name,
+                                 height=height, legend=legend, length=length)
+
+    @app.callback(
+        Output('return-plot', 'figure'),
+        Input('price-data', 'data'),
+        Input('cost-boolean-switch', 'on'),
+        Input('compare-boolean-switch', 'on')
+    )
+    def _update_return_plot(data, cost, compare):
+        return update_return_plot(data, cost, compare, date_format='%Y-%m-%d', 
+                                  fund_name=fund_name, height=height, length=length)
+
+
+    def add_tab(new_tab):
+        for row in app.layout.children:
+            if isinstance(row, dbc.Row):
+                if isinstance(row.children, dbc.Tabs):
+                    labels = [x.label for x in row.children.children]
+                    if new_tab.label in labels:
+                        print(f"ERROR: tab '{new_tab.label}' already exits")
+                        return False
+                    else:
+                        new_tab.tab_id = f'tab-{len(labels)+1}'
+                        row.children.children.append(new_tab)
+                        return True
+    app.add_tab = add_tab
+    
+    return (app, dm.get_tickers)
+
+
+
+def create_app_old(df_prices, df_prices_fees, tickers=None, fund_name=None,
                options_word=['&TDF', 'IBK', 'KB', '미래에셋', '삼성', '신한', '키움', '한국투자', '한화'], 
                options_df = None, options_order=None,
                title="Managed Funds", height=500, legend=False, length=20,
@@ -435,7 +587,7 @@ def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
                external_stylesheets=external_stylesheets,
                debug=False):
     """
-    options_word: options from words in names of funes (values of fund_name)
+    options_word: options from words in names of funds (values of fund_name)
     options_df: df of index tickers and their option values
     options_order: rank of tickers for create_order
     """
@@ -703,6 +855,25 @@ class DropdownManager():
         """
         return pd.Index(tickers).intersection(self.tickers).to_list()
 
+    def _add_options(self, value_to_ticker, options=None):
+        """
+        add new options without duplicates
+        """
+        if options is None:
+            prefix = self.prefix_intersection
+            options = [self._set_option(x, prefix=prefix) for x in value_to_ticker.keys()]
+        else: # check input consistency
+            v1 = value_to_ticker.keys()
+            v2 = [x['value'] for x in options]
+            if set(v1) != set(v2):
+                return print('ERROR: Check values in both value_to_ticker and options')
+        # set value_to_ticker. existing values updated with new ones     
+        self.value_to_ticker = {**self.value_to_ticker, **value_to_ticker}
+        # set options
+        opt_old = {x['value']:x for x in self.options}
+        options = {**opt_old, **{x['value']:x for x in options}}
+        self.options = list(options.values())
+
     def _set_option(self, value, label=None, title=None, search=None, prefix=None):
         """
         create option item for dropdown list
@@ -714,20 +885,21 @@ class DropdownManager():
         search = search.lower()
         return {'label':label, 'value':value, 'title':title, 'search':search}
 
-    def create_from_df(self, df_values, col_ticker='ticker'):
+    def create_from_dict(self, sr_values):
         """
         set option and its ticker list specifically
-        df_values: df of index ticker and column values
+        sr_values: dict or series of index ticker to value or df of index to categories
         """
-        cols = df_values.columns
-        prefix = self.prefix_intersection
-        if col_ticker not in cols:
-            return None
-        # each col has option values. None for option skipped by the groupby
-        for col in cols.difference([col_ticker]):
-            value_to_ticker = df_values.groupby(col)[col_ticker].apply(list).to_dict()
-            self.options += [self._set_option(x, prefix=prefix) for x in value_to_ticker.keys()]
-            self.value_to_ticker = {**self.value_to_ticker, **value_to_ticker}
+        col_tkr, col_grp = 'ticker', 'group'
+        # unstack df to series
+        sr_values = sr_values.unstack().dropna().droplevel(0) if isinstance(sr_values, pd.DataFrame) else sr_values
+        # convert dict to series
+        sr_values = pd.Series(sr_values) if isinstance(sr_values, dict) else sr_values
+        # create option values to lists of tickers
+        value_to_ticker = (sr_values.rename(col_grp).rename_axis(col_tkr).reset_index()
+                              .groupby(col_grp)[col_tkr].apply(list).to_dict())
+        # add to existig options
+        self._add_options(value_to_ticker)
 
     def create_all(self, option_all='All'):
         """
@@ -735,8 +907,8 @@ class DropdownManager():
         """
         options = [{'label':option_all, 'value':option_all, 
                     'title':option_all, 'search':option_all.lower()}]
-        self.options += options 
-        self.value_to_ticker[option_all] = self.tickers
+        value_to_ticker = {option_all: self.tickers}
+        self._add_options(value_to_ticker, options)
         self.option_all = option_all
 
     def create_tickers(self):
@@ -750,13 +922,12 @@ class DropdownManager():
         
         options = [{'label':k, 'value':k, 'title':v, 'search':v} for k,v in tkr_dict.items()]
         tickers = {x['value']:[x['value']] for x in options}
-        self.options += options 
-        self.value_to_ticker = {**self.value_to_ticker, **tickers}
+        self._add_options(tickers, options)
 
     def create_from_name(self, names):
         """
-        make options of names in fund_name
-        names: list of name to make options
+        make options of words from fund names
+        names: list of words to make options
         """
         fund_name = self.fund_name
         if fund_name is None:
@@ -764,14 +935,17 @@ class DropdownManager():
             
         if isinstance(names, str):
             names = [namses]
+        options, value_to_ticker = list(), dict()
         for value in names:
             option = self._set_option(value, prefix=self.prefix_intersection)
             title = option['title']
             # get ticker list for title
             tickers = [k for k,v in fund_name.items() if title.lower() in v.lower()]
             if len(tickers) > 0:
-                self.options.append(option)
-                self.value_to_ticker[value] = tickers
+                options.append(option)
+                value_to_ticker[value] = tickers
+        if len(options) > 0:
+            self._add_options(value_to_ticker, options)
 
     def create_order(self, sr_rank,
                      value_top='Top20', value_bottom='Bottom20', value_random='Random20',
@@ -802,8 +976,7 @@ class DropdownManager():
             value_to_ticker[value] = list() # set to avoid keyerror in get_tickers
             
         if len(values_order) > 0: # set vars after creating options
-            self.options += options
-            self.value_to_ticker.update(value_to_ticker)
+            self._add_options(value_to_ticker, options)
             
             def select_tickers(tickers, value):
                 # remove tickres not in sr_rank
