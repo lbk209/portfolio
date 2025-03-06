@@ -437,7 +437,7 @@ def create_app(df_prices, df_prices_fees, df_categories,
     df_prices/df_prices: df of timeindex and col tickers
     df_categories: df of index ticker and col categories. all columns to be options for catetory
     """
-    tickers_all = df_prices.columns.intersection(df_prices.columns)
+    tickers_all = df_prices.columns.intersection(df_prices_fees.columns)
     tickers_all = tickers_all.intersection(df_categories.index)
     if tickers is None:
         tickers = tickers_all.to_list()
@@ -448,12 +448,17 @@ def create_app(df_prices, df_prices_fees, df_categories,
         'before fees':df_prices[tickers], 
         'after fees':df_prices_fees[tickers]
     }
-    fund_name = {x:x for x in tickers} if fund_name else fund_name
-        
+    fund_name = {x:x for x in tickers} if fund_name is None else fund_name
+    df_categories = df_categories.loc[tickers]
+    
     # create dropdown options
     dropdown_category = [{'label':x, 'value':x, 'title':x, 'search':x} for x in df_categories.columns]
-    dropdown_group = list()
-
+    dm = DropdownManager(tickers, fund_name)
+    dm.create_all()
+    #dm.create_tickers()
+    dropdown_group = dm.get_options()
+    #dropdown_group = list()
+    
     app = Dash(__name__, title=title, external_stylesheets=external_stylesheets)
 
    # tabs
@@ -518,25 +523,42 @@ def create_app(df_prices, df_prices_fees, df_categories,
         )
     ])
 
+    
     @app.callback(
-        Output('ticker-dropdown', 'options'),
-        Output('ticker-dropdown', 'value'),
-        Input('ticker-dropdown', 'value'),
+        Output('group-dropdown', 'options'),
+        Output('group-dropdown', 'value'),
+        Input('category-dropdown', 'value'),
+    )
+    def _set_category(values):
+        dm.reset('All')
+        dm.create_all()
+        #dm.create_order(options_order) if options_order is not None else None
+        dm.create_from_dict(df_categories[values])
+        dm.create_tickers()
+        dropdown_group = dm.get_options()
+        return (dropdown_group, [dm.option_all])
+
+    
+    @app.callback(
+        Output('group-dropdown', 'options', allow_duplicate=True),
+        Output('group-dropdown', 'value', allow_duplicate=True),
+        Input('group-dropdown', 'value'),
+        prevent_initial_call=True
     )
     def _update_options(values):
-        return dm.update_options(values, dropdown_option)
-    
+        return dm.update_options(values)
+
     
     @app.callback(
         Output('price-data', 'data'),
-        Input('ticker-dropdown', 'value'),
+        Input('group-dropdown', 'value'),
     )
     def _update_price_data(values):
         """
         process data and save to dcc.Store
         """
         tickers = dm.get_tickers(values)
-        #print(f'tickers of {values}: {len(tickers)}') # testing
+        print(f'tickers of {values}: {len(tickers)}') # testing
         return update_price_data(tickers, data_prc, base=base)
         
     
@@ -550,153 +572,7 @@ def create_app(df_prices, df_prices_fees, df_categories,
         return update_price_plot(data, cost, compare, fund_name=fund_name,
                                  height=height, legend=legend, length=length)
 
-    @app.callback(
-        Output('return-plot', 'figure'),
-        Input('price-data', 'data'),
-        Input('cost-boolean-switch', 'on'),
-        Input('compare-boolean-switch', 'on')
-    )
-    def _update_return_plot(data, cost, compare):
-        return update_return_plot(data, cost, compare, date_format='%Y-%m-%d', 
-                                  fund_name=fund_name, height=height, length=length)
-
-
-    def add_tab(new_tab):
-        for row in app.layout.children:
-            if isinstance(row, dbc.Row):
-                if isinstance(row.children, dbc.Tabs):
-                    labels = [x.label for x in row.children.children]
-                    if new_tab.label in labels:
-                        print(f"ERROR: tab '{new_tab.label}' already exits")
-                        return False
-                    else:
-                        new_tab.tab_id = f'tab-{len(labels)+1}'
-                        row.children.children.append(new_tab)
-                        return True
-    app.add_tab = add_tab
     
-    return (app, dm.get_tickers)
-
-
-
-def create_app_old(df_prices, df_prices_fees, tickers=None, fund_name=None,
-               options_word=['&TDF', 'IBK', 'KB', '미래에셋', '삼성', '신한', '키움', '한국투자', '한화'], 
-               options_df = None, options_order=None,
-               title="Managed Funds", height=500, legend=False, length=20,
-               base=1000,
-               external_stylesheets=external_stylesheets,
-               debug=False):
-    """
-    options_word: options from words in names of funds (values of fund_name)
-    options_df: df of index tickers and their option values
-    options_order: rank of tickers for create_order
-    """
-
-    if tickers is None:
-        tickers = df_prices.columns.to_list()
-    data_prc = {
-        'before fees':df_prices[tickers], 
-        'after fees':df_prices_fees[tickers]
-    }
-
-    if fund_name is None:
-        fund_name = {x:x for x in tickers}
-        
-    # create dropdown options
-    dm = DropdownManager(tickers, fund_name)
-    dm.create_all()
-    dm.create_order(options_order) if options_order is not None else None
-    dm.create_from_name(options_word)
-    dm.create_from_df(options_df) if options_df is not None else None
-    dm.create_tickers()
-    dropdown_option = dm.get_options()
-
-    app = Dash(__name__, title=title, external_stylesheets=external_stylesheets)
-
-   # tabs
-    tabs_contents = [
-        dbc.Tab(dcc.Graph(id='price-plot'), label='가격', tab_id='tab-1'),
-        dbc.Tab(dcc.Graph(id='return-plot'), label='수익률', tab_id='tab-2'),
-    ]
-    tabs = dbc.Tabs(tabs_contents, id='tabs')
-    
-    # layout
-    app.layout = dbc.Container([
-        html.Br(),
-        dbc.Row(tabs),
-        dbc.Row([
-            dbc.Col(
-                dcc.Dropdown(
-                    id='ticker-dropdown',
-                    options=dropdown_option,
-                    value=[dropdown_option[0]['value']],
-                    multi=True,
-                    placeholder="Select tickers",
-                ),
-                #width=3
-            ),
-            dbc.Col(
-                daq.BooleanSwitch(
-                    id='compare-boolean-switch',
-                    on=False
-                ),
-                width="auto"),
-            dbc.Col(
-                daq.BooleanSwitch(
-                    id='cost-boolean-switch',
-                    on=True
-                ),
-                width="auto"),
-        ],
-            justify="center",
-            align="center",
-            className="mb-3"
-        ),
-        dcc.Store(id='price-data'),
-        dbc.Tooltip(
-            '상대 비교',
-            target='compare-boolean-switch',
-            placement='bottom'
-        ),
-        dbc.Tooltip(
-            '수수료 적용',
-            target='cost-boolean-switch',
-            placement='bottom'
-        )
-    ])
-
-    @app.callback(
-        Output('ticker-dropdown', 'options'),
-        Output('ticker-dropdown', 'value'),
-        Input('ticker-dropdown', 'value'),
-    )
-    def _update_options(values):
-        return dm.update_options(values, dropdown_option)
-    
-    
-    @app.callback(
-        Output('price-data', 'data'),
-        Input('ticker-dropdown', 'value'),
-    )
-    def _update_price_data(values):
-        """
-        process data and save to dcc.Store
-        """
-        tickers = dm.get_tickers(values)
-        #print(f'tickers of {values}: {len(tickers)}') # testing
-        return update_price_data(tickers, data_prc, base=base)
-        
-    
-    @app.callback(
-        Output('price-plot', 'figure'),
-        Input('price-data', 'data'),
-        Input('cost-boolean-switch', 'on'),
-        Input('compare-boolean-switch', 'on')
-    )
-    def _update_price_plot(data, cost, compare):
-        return update_price_plot(data, cost, compare, fund_name=fund_name,
-                                 height=height, legend=legend, length=length)
-
     @app.callback(
         Output('return-plot', 'figure'),
         Input('price-data', 'data'),
@@ -844,10 +720,20 @@ class DropdownManager():
         self.tickers = tickers
         self.fund_name = fund_name # dict of ticker to name
         self.prefix_intersection = prefix_intersection
-        self.options = list()
-        self.value_to_ticker = dict() # option value to tickers
-        self.option_all = None
-        self.data_order = None # see create_order
+        self.reset()
+
+    def reset(self, *keep):
+        """
+        keep: list of values to keep
+        """
+        if len(keep) == 0:
+            self.options = list()
+            self.value_to_ticker = dict() # option value to tickers
+            self.option_all = None
+            self.data_order = None
+        else:
+            self.options = [x for x in self.options if x['value'] in keep]
+            self.value_to_ticker = {k:v for k,v in self.value_to_ticker.items() if k in keep}
 
     def _check_tickers(self, tickers):
         """
@@ -934,7 +820,7 @@ class DropdownManager():
             return None
             
         if isinstance(names, str):
-            names = [namses]
+            names = [names]
         options, value_to_ticker = list(), dict()
         for value in names:
             option = self._set_option(value, prefix=self.prefix_intersection)
@@ -1006,10 +892,11 @@ class DropdownManager():
         else:
             return self.options
 
-    def update_options(self, values, options):
+    def update_options(self, values):
         """
         disable some options if option_all selected
         """
+        options = self.get_options()
         option_all = self.option_all
         prefix_list = [self.prefix_intersection]
         data_order = self.data_order
@@ -1042,6 +929,7 @@ class DropdownManager():
     def get_tickers(self, values):
         """
         get union/intersection of tickers from list of option values
+        values: list of values
         """
         if len(self.options) == 0:
             return list()
