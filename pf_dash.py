@@ -1,4 +1,4 @@
-from dash import Dash, html, dcc, Output, Input
+from dash import Dash, html, dcc, Output, Input, State
 import dash_bootstrap_components as dbc
 import dash_daq as daq
 import pandas as pd
@@ -427,40 +427,39 @@ def update_hdi_plot(data, fund_name=None, sort_by='mean', ascending=False, line_
     return fig
 
 
-def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
-               options_word=['&TDF', 'IBK', 'KB', '미래에셋', '삼성', '신한', '키움', '한국투자', '한화'], 
-               options_df = None, options_order=None,
+def create_app(df_prices, df_prices_fees, df_categories,
+               fund_name=None, tickers=None,
                title="Managed Funds", height=500, legend=False, length=20,
                base=1000,
                external_stylesheets=external_stylesheets,
                debug=False):
     """
-    options_word: options from words in names of funes (values of fund_name)
-    options_df: df of index tickers and their option values
-    options_order: rank of tickers for create_order
+    df_prices/df_prices: df of timeindex and col tickers
+    df_categories: df of index ticker and col categories. all columns to be options for catetory
     """
-
+    tickers_all = df_prices.columns.intersection(df_prices_fees.columns)
+    tickers_all = tickers_all.intersection(df_categories.index)
     if tickers is None:
-        tickers = df_prices.columns.to_list()
+        tickers = tickers_all.to_list()
+    else:
+        tickers = tickers_all.intersection(tickers).to_list()
+
     data_prc = {
         'before fees':df_prices[tickers], 
         'after fees':df_prices_fees[tickers]
     }
-
-    if fund_name is None:
-        fund_name = {x:x for x in tickers}
-        
+    fund_name = {x:x for x in tickers} if fund_name is None else fund_name
+    df_categories = df_categories.loc[tickers]
+    
     # create dropdown options
+    dropdown_category = [{'label':x, 'value':x, 'title':x, 'search':x} for x in df_categories.columns]
     dm = DropdownManager(tickers, fund_name)
     dm.create_all()
-    dm.create_order(options_order) if options_order is not None else None
-    dm.create_from_name(options_word)
-    dm.create_from_df(options_df) if options_df is not None else None
     dm.create_tickers()
-    dropdown_option = dm.get_options()
-
+    dropdown_group = dm.get_options()
+    group_previous = '&previous_selection'
+    
     app = Dash(__name__, title=title, external_stylesheets=external_stylesheets)
-
    # tabs
     tabs_contents = [
         dbc.Tab(dcc.Graph(id='price-plot'), label='가격', tab_id='tab-1'),
@@ -475,11 +474,21 @@ def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
         dbc.Row([
             dbc.Col(
                 dcc.Dropdown(
-                    id='ticker-dropdown',
-                    options=dropdown_option,
-                    value=[dropdown_option[0]['value']],
+                    id='category-dropdown',
+                    options=dropdown_category,
+                    value=dropdown_category[0]['value'],
+                    clearable=False,
+                    placeholder="Select Category",
+                ),
+                #width=3
+            ),
+            dbc.Col(
+                dcc.Dropdown(
+                    id='group-dropdown',
+                    options=dropdown_group,
+                    value=[dropdown_group[0]['value']],
                     multi=True,
-                    placeholder="Select tickers",
+                    placeholder="Select Group",
                 ),
                 #width=3
             ),
@@ -513,18 +522,48 @@ def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
         )
     ])
 
+
     @app.callback(
-        Output('ticker-dropdown', 'options'),
-        Output('ticker-dropdown', 'value'),
-        Input('ticker-dropdown', 'value'),
+        Output('group-dropdown', 'options'),
+        Output('group-dropdown', 'value'),
+        Input('category-dropdown', 'value'),
+        State('group-dropdown', 'value'),
+    )
+    def _set_category(category, group):
+        if len(group) > 0 and dm.option_all not in group:
+            previous = dm.merge(*group, value=group_previous, add=False)
+        else:
+            previous = None
+        
+        dm.reset(keep_all=True)
+        #dm.create_order(options_order) if options_order is not None else None
+        dm.create_from_dict(df_categories[category])
+        
+        if previous is not None:
+            value_to_ticker, options = previous
+            dm.add_options(value_to_ticker, options)
+            values = [group_previous]
+        else:
+            values = [dm.option_all]
+            
+        dm.create_tickers()
+        dropdown_group = dm.get_options()
+        return (dropdown_group, values)
+
+    
+    @app.callback(
+        Output('group-dropdown', 'options', allow_duplicate=True),
+        Output('group-dropdown', 'value', allow_duplicate=True),
+        Input('group-dropdown', 'value'),
+        prevent_initial_call=True
     )
     def _update_options(values):
-        return dm.update_options(values, dropdown_option)
-    
+        return dm.update_options(values)
+
     
     @app.callback(
         Output('price-data', 'data'),
-        Input('ticker-dropdown', 'value'),
+        Input('group-dropdown', 'value'),
     )
     def _update_price_data(values):
         """
@@ -545,6 +584,7 @@ def create_app(df_prices, df_prices_fees, tickers=None, fund_name=None,
         return update_price_plot(data, cost, compare, fund_name=fund_name,
                                  height=height, legend=legend, length=length)
 
+    
     @app.callback(
         Output('return-plot', 'figure'),
         Input('price-data', 'data'),
@@ -695,7 +735,20 @@ class DropdownManager():
         self.options = list()
         self.value_to_ticker = dict() # option value to tickers
         self.option_all = None
-        self.data_order = None # see create_order
+        self.data_order = None
+        
+    # TODO: check data_order
+    def reset(self, *keep, keep_all=True):
+        """
+        keep: list of values to keep
+        """
+        keep = list(keep) + [self.option_all] if keep_all else keep
+        if len(keep) == 0:
+            self.options = list()
+            self.value_to_ticker = dict() # option value to tickers
+        else: # reset options except for values in keep
+            self.options = [x for x in self.options if x['value'] in keep]
+            self.value_to_ticker = {k:v for k,v in self.value_to_ticker.items() if k in keep}
 
     def _check_tickers(self, tickers):
         """
@@ -703,9 +756,29 @@ class DropdownManager():
         """
         return pd.Index(tickers).intersection(self.tickers).to_list()
 
+    def _add_options(self, value_to_ticker, options=None):
+        """
+        add new options without duplicates
+        """
+        if options is None:
+            prefix = self.prefix_intersection
+            options = [self._set_option(x, prefix=prefix) for x in value_to_ticker.keys()]
+        else: # check input consistency
+            v1 = value_to_ticker.keys()
+            v2 = [x['value'] for x in options]
+            if set(v1) != set(v2):
+                return print('ERROR: Check values in both value_to_ticker and options')
+        # set value_to_ticker. existing values updated with new ones     
+        self.value_to_ticker = {**self.value_to_ticker, **value_to_ticker}
+        # set options
+        opt_old = {x['value']:x for x in self.options}
+        options = {**opt_old, **{x['value']:x for x in options}}
+        self.options = list(options.values())
+
     def _set_option(self, value, label=None, title=None, search=None, prefix=None):
         """
         create option item for dropdown list
+        prefix: prefix of intersection or order
         """
         # prefix sign kept only for value
         label, title, search = [value.lstrip(prefix) if x is None else x for x in [label, title, search]]
@@ -714,20 +787,21 @@ class DropdownManager():
         search = search.lower()
         return {'label':label, 'value':value, 'title':title, 'search':search}
 
-    def create_from_df(self, df_values, col_ticker='ticker'):
+    def create_from_dict(self, sr_values):
         """
         set option and its ticker list specifically
-        df_values: df of index ticker and column values
+        sr_values: dict or series of index ticker to value or df of index to categories
         """
-        cols = df_values.columns
-        prefix = self.prefix_intersection
-        if col_ticker not in cols:
-            return None
-        # each col has option values. None for option skipped by the groupby
-        for col in cols.difference([col_ticker]):
-            value_to_ticker = df_values.groupby(col)[col_ticker].apply(list).to_dict()
-            self.options += [self._set_option(x, prefix=prefix) for x in value_to_ticker.keys()]
-            self.value_to_ticker = {**self.value_to_ticker, **value_to_ticker}
+        col_tkr, col_grp = 'ticker', 'group'
+        # unstack df to series
+        sr_values = sr_values.unstack().dropna().droplevel(0) if isinstance(sr_values, pd.DataFrame) else sr_values
+        # convert dict to series
+        sr_values = pd.Series(sr_values) if isinstance(sr_values, dict) else sr_values
+        # create option values to lists of tickers
+        value_to_ticker = (sr_values.rename(col_grp).rename_axis(col_tkr).reset_index()
+                              .groupby(col_grp)[col_tkr].apply(list).to_dict())
+        # add to existig options
+        self._add_options(value_to_ticker)
 
     def create_all(self, option_all='All'):
         """
@@ -735,8 +809,8 @@ class DropdownManager():
         """
         options = [{'label':option_all, 'value':option_all, 
                     'title':option_all, 'search':option_all.lower()}]
-        self.options += options 
-        self.value_to_ticker[option_all] = self.tickers
+        value_to_ticker = {option_all: self.tickers}
+        self._add_options(value_to_ticker, options)
         self.option_all = option_all
 
     def create_tickers(self):
@@ -750,28 +824,30 @@ class DropdownManager():
         
         options = [{'label':k, 'value':k, 'title':v, 'search':v} for k,v in tkr_dict.items()]
         tickers = {x['value']:[x['value']] for x in options}
-        self.options += options 
-        self.value_to_ticker = {**self.value_to_ticker, **tickers}
+        self._add_options(tickers, options)
 
     def create_from_name(self, names):
         """
-        make options of names in fund_name
-        names: list of name to make options
+        make options of words from fund names
+        names: list of words to make options
         """
         fund_name = self.fund_name
         if fund_name is None:
             return None
             
         if isinstance(names, str):
-            names = [namses]
+            names = [names]
+        options, value_to_ticker = list(), dict()
         for value in names:
             option = self._set_option(value, prefix=self.prefix_intersection)
             title = option['title']
             # get ticker list for title
             tickers = [k for k,v in fund_name.items() if title.lower() in v.lower()]
             if len(tickers) > 0:
-                self.options.append(option)
-                self.value_to_ticker[value] = tickers
+                options.append(option)
+                value_to_ticker[value] = tickers
+        if len(options) > 0:
+            self._add_options(value_to_ticker, options)
 
     def create_order(self, sr_rank,
                      value_top='Top20', value_bottom='Bottom20', value_random='Random20',
@@ -802,8 +878,7 @@ class DropdownManager():
             value_to_ticker[value] = list() # set to avoid keyerror in get_tickers
             
         if len(values_order) > 0: # set vars after creating options
-            self.options += options
-            self.value_to_ticker.update(value_to_ticker)
+            self._add_options(value_to_ticker, options)
             
             def select_tickers(tickers, value):
                 # remove tickres not in sr_rank
@@ -824,6 +899,24 @@ class DropdownManager():
                 select = select_tickers
             )
 
+    def merge(self, *values_to_merge, value='merged', add=False):
+        """
+        create new value by merging existing values
+        """
+        tickers = self.get_tickers(values_to_merge)
+        if len(tickers) > 0:
+            value_to_ticker = {value: tickers}
+            option = self._set_option(value, prefix=self.prefix_intersection)
+            options = [option]
+        else:
+            v = ', '.join(values_to_merge)
+            return print(f'ERROR: Failed to merge {v}')
+        
+        if add:
+            self._add_options(value_to_ticker, options)
+        else:
+            return (value_to_ticker, options)
+
     def get_options(self):
         """
         export dropdown options created
@@ -833,10 +926,11 @@ class DropdownManager():
         else:
             return self.options
 
-    def update_options(self, values, options):
+    def update_options(self, values):
         """
         disable some options if option_all selected
         """
+        options = self.get_options()
         option_all = self.option_all
         prefix_list = [self.prefix_intersection]
         data_order = self.data_order
@@ -869,6 +963,7 @@ class DropdownManager():
     def get_tickers(self, values):
         """
         get union/intersection of tickers from list of option values
+        values: list of values
         """
         if len(self.options) == 0:
             return list()
@@ -901,3 +996,7 @@ class DropdownManager():
         tickers = self.select_by_order(tickers, values_union) 
             
         return self._check_tickers(tickers) # remove tickers not in self.tickers
+
+    def add_options(self, value_to_ticker=None, options=None):
+        if value_to_ticker is not None:
+            return self._add_options(value_to_ticker, options)
