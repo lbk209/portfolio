@@ -1,4 +1,4 @@
-from dash import Dash, html, dcc, Output, Input
+from dash import Dash, html, dcc, Output, Input, State
 import dash_bootstrap_components as dbc
 import dash_daq as daq
 import pandas as pd
@@ -457,6 +457,7 @@ def create_app(df_prices, df_prices_fees, df_categories,
     dm.create_all()
     dm.create_tickers()
     dropdown_group = dm.get_options()
+    group_previous = '&previous_selection'
     
     app = Dash(__name__, title=title, external_stylesheets=external_stylesheets)
    # tabs
@@ -476,6 +477,7 @@ def create_app(df_prices, df_prices_fees, df_categories,
                     id='category-dropdown',
                     options=dropdown_category,
                     value=dropdown_category[0]['value'],
+                    clearable=False,
                     placeholder="Select Category",
                 ),
                 #width=3
@@ -520,20 +522,34 @@ def create_app(df_prices, df_prices_fees, df_categories,
         )
     ])
 
-    
+
     @app.callback(
         Output('group-dropdown', 'options'),
         Output('group-dropdown', 'value'),
         Input('category-dropdown', 'value'),
+        State('group-dropdown', 'value'),
     )
-    def _set_category(values):
-        dm.reset(dm.option_all)
+    def _set_category(category, group):
+        if len(group) > 0 and dm.option_all not in group:
+            previous = dm.merge(*group, value=group_previous, add=False)
+        else:
+            previous = None
+        
+        dm.reset(keep_all=True)
         #dm.create_order(options_order) if options_order is not None else None
-        dm.create_from_dict(df_categories[values])
+        dm.create_from_dict(df_categories[category])
+        
+        if previous is not None:
+            value_to_ticker, options = previous
+            dm.add_options(value_to_ticker, options)
+            values = [group_previous]
+        else:
+            values = [dm.option_all]
+            
         dm.create_tickers()
         dropdown_group = dm.get_options()
-        return (dropdown_group, [dm.option_all])
-        
+        return (dropdown_group, values)
+
     
     @app.callback(
         Output('group-dropdown', 'options', allow_duplicate=True),
@@ -554,7 +570,7 @@ def create_app(df_prices, df_prices_fees, df_categories,
         process data and save to dcc.Store
         """
         tickers = dm.get_tickers(values)
-        print(f'tickers of {values}: {len(tickers)}') # testing
+        #print(f'tickers of {values}: {len(tickers)}') # testing
         return update_price_data(tickers, data_prc, base=base)
         
     
@@ -595,7 +611,6 @@ def create_app(df_prices, df_prices_fees, df_categories,
     app.add_tab = add_tab
     
     return (app, dm.get_tickers)
-    #return (app, None)
 
 
 def add_density_plot(app, get_tickers, 
@@ -717,15 +732,17 @@ class DropdownManager():
         self.tickers = tickers
         self.fund_name = fund_name # dict of ticker to name
         self.prefix_intersection = prefix_intersection
+        self.options = list()
+        self.value_to_ticker = dict() # option value to tickers
         self.option_all = None
         self.data_order = None
-        self.reset()
-
+        
     # TODO: check data_order
-    def reset(self, *keep):
+    def reset(self, *keep, keep_all=True):
         """
         keep: list of values to keep
         """
+        keep = list(keep) + [self.option_all] if keep_all else keep
         if len(keep) == 0:
             self.options = list()
             self.value_to_ticker = dict() # option value to tickers
@@ -761,6 +778,7 @@ class DropdownManager():
     def _set_option(self, value, label=None, title=None, search=None, prefix=None):
         """
         create option item for dropdown list
+        prefix: prefix of intersection or order
         """
         # prefix sign kept only for value
         label, title, search = [value.lstrip(prefix) if x is None else x for x in [label, title, search]]
@@ -881,26 +899,22 @@ class DropdownManager():
                 select = select_tickers
             )
 
-    def merge(self, values_to_merge=None, value='merged', add=False):
+    def merge(self, *values_to_merge, value='merged', add=False):
         """
         create new value by merging existing values
         """
-        if ((values_to_merge is not None) and (len(values_to_merge) > 0)
-            and self.option_all not in values_to_merge):
-            tickers = self.get_tickers(values_to_merge)
-            if len(tickers) > 0:
-                value_to_ticker = {value: tickers}
-                option = self._set_option(value)
-                options = [option]
-            else:
-                v = ', '.join(values_to_merge)
-                print(f'ERROR: Failed to merge {v}')
-                value_to_ticker, options = (None, None)
+        tickers = self.get_tickers(values_to_merge)
+        if len(tickers) > 0:
+            value_to_ticker = {value: tickers}
+            option = self._set_option(value, prefix=self.prefix_intersection)
+            options = [option]
         else:
-            value_to_ticker, options = (None, None)
-        if add and value_to_ticker is not None:
+            v = ', '.join(values_to_merge)
+            return print(f'ERROR: Failed to merge {v}')
+        
+        if add:
             self._add_options(value_to_ticker, options)
-        else: # return None's if failed
+        else:
             return (value_to_ticker, options)
 
     def get_options(self):
