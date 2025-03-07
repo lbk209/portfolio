@@ -427,6 +427,51 @@ def update_hdi_plot(data, fund_name=None, sort_by='mean', ascending=False, line_
     return fig
 
 
+def update_scatter_plot(data, category, n_quantiles=3):
+    if data is None:
+        return px.scatter()
+    
+    df = pd.DataFrame().from_dict(data)
+    fig = px.scatter(df, x='mean', y='sd',
+                 custom_data=['name', 'hdi_3%', 'hdi_97%'],
+                 #hover_data='name',
+                 #color='g1'
+                 #color='seller'
+                 color=category, symbol=category,
+                 #error_x="error_x",
+                 size='sharpe'
+                )
+    # add quantile lines
+    q = np.linspace(0, 1, n_quantiles+1)[1:-1].tolist()
+    kw = dict(line_width=0.5)
+    _ = [fig.add_vline(x=x, **kw) for x in df['mean'].quantile(q)]
+    _ = [fig.add_hline(y=x, **kw) for x in df['sd'].quantile(q)]
+    
+    fig.update_xaxes(autorange='reversed')
+    fig.update_layout(legend = {'title':{'text':''}},
+                      #width=1000, height=500, 
+                      title_text='3년 평균 수익률 순위 (94% 확률 추정)',
+                      xaxis=dict(
+                            title=dict(
+                                text="평균 순위"
+                            )
+                      ),
+                      yaxis=dict(
+                            title=dict(
+                                text="편차 순위"
+                            )
+                      ),
+    )
+    fig.update_traces(
+        hovertemplate =
+                    "%{customdata[0]}<br>" +
+                    "수익률 순위: 평균 %{x}, 편차 %{y}<br>"
+                    "수익률 구간: %{customdata[1]} ~ %{customdata[2]}<extra></extra>"
+    )
+
+    return fig
+
+
 def create_app(df_prices, df_prices_fees, df_categories,
                fund_name=None, tickers=None,
                title="Managed Funds", height=500, legend=False, length=20,
@@ -470,7 +515,6 @@ def create_app(df_prices, df_prices_fees, df_categories,
     # layout
     app.layout = dbc.Container([
         html.Br(),
-        dbc.Row(tabs),
         dbc.Row([
             dbc.Col(
                 dcc.Dropdown(
@@ -519,7 +563,8 @@ def create_app(df_prices, df_prices_fees, df_categories,
             '수수료 적용',
             target='cost-boolean-switch',
             placement='bottom'
-        )
+        ),
+        dbc.Row(tabs),
     ])
 
 
@@ -530,21 +575,23 @@ def create_app(df_prices, df_prices_fees, df_categories,
         State('group-dropdown', 'value'),
     )
     def _set_category(category, group):
+        """
+        make selections in old category into new group in new category
+        """
         if len(group) > 0 and dm.option_all not in group:
-            previous = dm.merge(*group, value=group_previous, add=False)
+            previous = dm.merge(*group, value=group_previous, add=False, msg=False)
         else:
             previous = None
         
         dm.reset(keep_all=True)
         #dm.create_order(options_order) if options_order is not None else None
         dm.create_from_dict(df_categories[category])
-        
+
+        values = [dm.option_all] # default selection of group for new category
         if previous is not None:
             value_to_ticker, options = previous
             dm.add_options(value_to_ticker, options)
-            values = [group_previous]
-        else:
-            values = [dm.option_all]
+            values = [group_previous] + values
             
         dm.create_tickers()
         dropdown_group = dm.get_options()
@@ -552,7 +599,7 @@ def create_app(df_prices, df_prices_fees, df_categories,
 
     
     @app.callback(
-        Output('group-dropdown', 'options', allow_duplicate=True),
+        #Output('group-dropdown', 'options', allow_duplicate=True),
         Output('group-dropdown', 'value', allow_duplicate=True),
         Input('group-dropdown', 'value'),
         prevent_initial_call=True
@@ -651,7 +698,7 @@ def add_density_plot(app, get_tickers,
     
     @app.callback(
         Output('density-data', 'data'),
-        Input('ticker-dropdown', 'value')
+        Input('group-dropdown', 'value')
     )
     def _update_inference_data(values):
         """
@@ -671,7 +718,7 @@ def add_density_plot(app, get_tickers,
 
 def add_hdi_plot(app, get_tickers, 
                  file=None, path=None, tickers=None, fund_name=None,
-                 **kwargs):
+                 badge_new=False, **kwargs):
     """
     get_tickers: function to get tickers from selected option values
     kwargs: kwargs for update_hdi_plot
@@ -679,8 +726,8 @@ def add_hdi_plot(app, get_tickers,
     data_hdi = get_hdi(file, path, tickers=tickers)
 
     # update layout of the app
-    new_tab = dbc.Tab(dcc.Graph(id='hdi-plot'), label='HDI', 
-                      label_class_name="tab-label new-badge-label") # add new badge
+    label_class_name = "tab-label new-badge-label" if badge_new else None # add new badge
+    new_tab = dbc.Tab(dcc.Graph(id='hdi-plot'), label='HDI', label_class_name=label_class_name)
 
     # Locate the Row containing Tabs and append the new Tab
     if not app.add_tab(new_tab):
@@ -708,7 +755,7 @@ def add_hdi_plot(app, get_tickers,
     
     @app.callback(
         Output('hdi-data', 'data'),
-        Input('ticker-dropdown', 'value')
+        Input('group-dropdown', 'value')
     )
     def _update_hdi_data(values):
         """
@@ -725,6 +772,77 @@ def add_hdi_plot(app, get_tickers,
     def _update_hdi_plot(data):
         return update_hdi_plot(data, fund_name, **kwargs)
 
+
+
+def add_scatter_plot(app, get_tickers, 
+                     file=None, path=None, tickers=None, fund_name=None, df_cat=None,
+                     badge_new=False, **kwargs):
+    """
+    get_tickers: function to get tickers from selected option values
+    kwargs: kwargs for update_scatter_plot
+    """
+    # prepare data for plot
+    data_hdi = get_hdi(file, path, tickers=tickers, to_dict=False)
+    data_hdi = data_hdi if fund_name is None else data_hdi.join(pd.Series(fund_name, name='name'))
+    data_hdi = data_hdi if df_cat is None else data_hdi.join(df_cat)
+    xlabel, ylabel = 'mean', 'sd'
+    # add sharpe rank for marker size
+    df_s = data_hdi.apply(lambda x: x[xlabel]/ x[ylabel], axis=1).rank().rename('sharpe')
+    data_hdi = data_hdi.join(df_s)
+    # convert mean/sd into respective ranks
+    data_hdi[xlabel] = data_hdi[xlabel].rank(ascending=False)
+    data_hdi[ylabel] = data_hdi[ylabel].rank()
+    cols = ['name', 'mean', 'sd', 'hdi_3%', 'hdi_97%', 'sharpe'] + df_cat.columns.to_list()
+    data_hdi = data_hdi[cols].to_dict()
+    
+    # update layout of the app
+    label_class_name = "tab-label new-badge-label" if badge_new else None  # add new badge
+    new_tab = dbc.Tab(dcc.Graph(id='scatter-plot'), label='순위', label_class_name=label_class_name)
+
+    # Locate the Row containing Tabs and append the new Tab
+    if not app.add_tab(new_tab):
+        return None # see add_tab for err msg
+        
+    # Add hdi-data Store to the layout
+    app.layout.children.append(
+        dcc.Store(id='scatter-data')
+    )
+
+    @app.callback(
+        Output('cost-boolean-switch', 'on', allow_duplicate=True),
+        Output('compare-boolean-switch', 'on', allow_duplicate=True),
+        Input("tabs", "active_tab"),
+        Input('cost-boolean-switch', 'on'),
+        Input('compare-boolean-switch', 'on'),
+        prevent_initial_call=True
+    )
+    def switch_tab(at, cost, compare):
+        if at == new_tab.tab_id:
+            return (True, False)
+        else:
+            return (cost, compare)
+
+    
+    @app.callback(
+        Output('scatter-data', 'data'),
+        Input('group-dropdown', 'value')
+    )
+    def _update_hdi_data(values):
+        """
+        process data and save to dcc.Store
+        """
+        tickers = get_tickers(values)
+        return update_hdi_data(tickers, data_hdi, sort_by=False)
+        
+    
+    @app.callback(
+        Output('scatter-plot', 'figure'),
+        Input('scatter-data', 'data'),
+        State('category-dropdown', 'value')
+    )
+    def _update_scatter_plot(data, cat):
+        return update_scatter_plot(data, cat, **kwargs)
+        
 
 
 class DropdownManager():
@@ -899,7 +1017,7 @@ class DropdownManager():
                 select = select_tickers
             )
 
-    def merge(self, *values_to_merge, value='merged', add=False):
+    def merge(self, *values_to_merge, value='merged', add=False, msg=True):
         """
         create new value by merging existing values
         """
@@ -910,7 +1028,7 @@ class DropdownManager():
             options = [option]
         else:
             v = ', '.join(values_to_merge)
-            return print(f'ERROR: Failed to merge {v}')
+            return print(f'ERROR: Failed to merge {v}') if msg else None
         
         if add:
             self._add_options(value_to_ticker, options)
@@ -928,7 +1046,7 @@ class DropdownManager():
 
     def update_options(self, values):
         """
-        disable some options if option_all selected
+        update option value by checking option_all
         """
         options = self.get_options()
         option_all = self.option_all
@@ -936,16 +1054,16 @@ class DropdownManager():
         data_order = self.data_order
         if data_order is not None:
             prefix_list.append(data_order['prefix'])
-        if option_all in values:
-            # return True if value starts with any of prefix_list
-            cond = lambda value: pd.Series([value.startswith(x) for x in prefix_list]).any()
-            # disable all options except for prefix_list
-            options = [{**x, 'disabled':False if cond(x['value']) else True} for x in options]
-            # exclude all options except for option_all and prefix_list from values
-            values = [x for x in values if x==option_all or cond(x)]
-        else:
-            options = [{**x, 'disabled':False} for x in options]
-        return options, values
+
+        # return True if value starts with any of prefix_list
+        cond = lambda value: pd.Series([value.startswith(x) for x in prefix_list]).any()
+        vlist = [x for x in values if not cond(x)] # remove options in prefix_list for if-statement
+        if (option_all in vlist) and len(vlist) > 1: 
+            if vlist[0] == option_all: # remove option_all if new options added
+                values.remove(option_all)
+            elif vlist[-1] == option_all: # remove options if option_all added 
+                values = [x for x in values if x==option_all or cond(x)] # keep just option_all & options in prefix_list
+        return values
 
     def select_by_order(self, tickers, values):
         data_order = self.data_order
