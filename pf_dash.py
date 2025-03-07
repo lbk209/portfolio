@@ -530,8 +530,11 @@ def create_app(df_prices, df_prices_fees, df_categories,
         State('group-dropdown', 'value'),
     )
     def _set_category(category, group):
+        """
+        make selections in old category into new group in new category
+        """
         if len(group) > 0 and dm.option_all not in group:
-            previous = dm.merge(*group, value=group_previous, add=False)
+            previous = dm.merge(*group, value=group_previous, add=False, msg=False)
         else:
             previous = None
         
@@ -651,7 +654,7 @@ def add_density_plot(app, get_tickers,
     
     @app.callback(
         Output('density-data', 'data'),
-        Input('ticker-dropdown', 'value')
+        Input('group-dropdown', 'value')
     )
     def _update_inference_data(values):
         """
@@ -671,7 +674,7 @@ def add_density_plot(app, get_tickers,
 
 def add_hdi_plot(app, get_tickers, 
                  file=None, path=None, tickers=None, fund_name=None,
-                 **kwargs):
+                 badge_new=False, **kwargs):
     """
     get_tickers: function to get tickers from selected option values
     kwargs: kwargs for update_hdi_plot
@@ -679,8 +682,8 @@ def add_hdi_plot(app, get_tickers,
     data_hdi = get_hdi(file, path, tickers=tickers)
 
     # update layout of the app
-    new_tab = dbc.Tab(dcc.Graph(id='hdi-plot'), label='HDI', 
-                      label_class_name="tab-label new-badge-label") # add new badge
+    label_class_name = "tab-label new-badge-label" if badge_new else None # add new badge
+    new_tab = dbc.Tab(dcc.Graph(id='hdi-plot'), label='HDI', label_class_name=label_class_name)
 
     # Locate the Row containing Tabs and append the new Tab
     if not app.add_tab(new_tab):
@@ -708,7 +711,7 @@ def add_hdi_plot(app, get_tickers,
     
     @app.callback(
         Output('hdi-data', 'data'),
-        Input('ticker-dropdown', 'value')
+        Input('group-dropdown', 'value')
     )
     def _update_hdi_data(values):
         """
@@ -899,7 +902,7 @@ class DropdownManager():
                 select = select_tickers
             )
 
-    def merge(self, *values_to_merge, value='merged', add=False):
+    def merge(self, *values_to_merge, value='merged', add=False, msg=True):
         """
         create new value by merging existing values
         """
@@ -910,7 +913,7 @@ class DropdownManager():
             options = [option]
         else:
             v = ', '.join(values_to_merge)
-            return print(f'ERROR: Failed to merge {v}')
+            return print(f'ERROR: Failed to merge {v}') if msg else None
         
         if add:
             self._add_options(value_to_ticker, options)
