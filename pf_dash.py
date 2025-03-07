@@ -453,19 +453,19 @@ def update_scatter_plot(data, category, n_quantiles=3):
                       title_text='3년 평균 수익률 순위 (94% 확률 추정)',
                       xaxis=dict(
                             title=dict(
-                                text="평균 순위"
+                                text="평균 %순위"
                             )
                       ),
                       yaxis=dict(
                             title=dict(
-                                text="편차 순위"
+                                text="편차 %순위"
                             )
                       ),
     )
     fig.update_traces(
         hovertemplate =
                     "%{customdata[0]}<br>" +
-                    "수익률 순위: 평균 %{x}, 편차 %{y}<br>"
+                    "수익률 순위(%): 평균 %{x:.0f}, 편차 %{y:.0f}<br>"
                     "수익률 구간: %{customdata[1]} ~ %{customdata[2]}<extra></extra>"
     )
 
@@ -790,8 +790,8 @@ def add_scatter_plot(app, get_tickers,
     df_s = data_hdi.apply(lambda x: x[xlabel]/ x[ylabel], axis=1).rank().rename('sharpe')
     data_hdi = data_hdi.join(df_s)
     # convert mean/sd into respective ranks
-    data_hdi[xlabel] = data_hdi[xlabel].rank(ascending=False)
-    data_hdi[ylabel] = data_hdi[ylabel].rank()
+    data_hdi[xlabel] = data_hdi[xlabel].rank(ascending=False, pct=True).mul(100)
+    data_hdi[ylabel] = data_hdi[ylabel].rank(pct=True).mul(100)
     cols = ['name', 'mean', 'sd', 'hdi_3%', 'hdi_97%', 'sharpe'] + df_cat.columns.to_list()
     data_hdi = data_hdi[cols].to_dict()
     
