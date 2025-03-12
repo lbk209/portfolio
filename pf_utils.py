@@ -8,7 +8,7 @@ import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
 import xml.etree.ElementTree as ET
-import os, time, re, sys, pickle, random
+import os, time, re, sys, pickle, random, io
 import bt
 import warnings
 import seaborn as sns
@@ -504,6 +504,21 @@ def print_list(x, print_str='The items in a list: {}'):
     """
     x = ', '.join(x)
     return print(print_str.format(x))
+
+
+class SuppressPrint:
+    def __init__(self, suppress=True):
+        self.suppress = suppress
+
+    def __enter__(self):
+        if self.suppress:
+            self._stdout = sys.stdout
+            self._buffer = io.StringIO()
+            sys.stdout = self._buffer
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.suppress:
+            sys.stdout = self._stdout  # Restore original stdout
     
 
 class SecurityDict(dict):
@@ -6414,19 +6429,19 @@ class PortfolioManager():
     """
     manage multiple portfolios 
     """
-    def __init__(self, pf_names):
+    def __init__(self, *pf_names, verbose=True):
         """
         pf_names: list of portfolio names
         """
         self.pf_data = PortfolioData()
-        self.portfolios = dict()
-        self.load(pf_names)
+        self.portfolios = dict() # dict of name to PortfolioBuilder instance
+        self.load(*pf_names, verbose=verbose)
         self.names_vals = dict(
             date='date', ttl='TOTAL', start='start', end='end', 
             buy='buy', sell='sell', val='value', ugl='ugl', roi='roi')
 
     
-    def load(self, pf_names, reload=False):
+    def load(self, *pf_names, reload=False, verbose=True):
         """
         loading multiple portfolios (no individual args except for PortfolioData)
         pf_names: list of portfolio names
@@ -6434,7 +6449,7 @@ class PortfolioManager():
         if isinstance(pf_names, str):
             pf_names = [pf_names]
 
-        pf_names = self.check_portfolios(pf_names, loading=True)
+        pf_names = self.check_portfolios(*pf_names, loading=True)
         if len(pf_names) == 0:
             return None
             
@@ -6447,9 +6462,10 @@ class PortfolioManager():
             if name in pf_dict.keys():
                 print(f'{name} already exists')
             else:
-                print(f'{name}:')
-                pf_dict[name] = PortfolioManager.create_portfolio(name)
-                print()
+                print(f'{name}:', end='\n' if verbose else ' ')
+                with SuppressPrint(not verbose):
+                    pf_dict[name] = PortfolioManager.create_portfolio(name)
+                print() if verbose else print('done')
         self.portfolios = pf_dict
         return None
         
@@ -6569,15 +6585,14 @@ class PortfolioManager():
         return CostManager.check_cost(file, path=path, universe=name)
 
 
-    def check_portfolios(self, pf_names=None, loading=False):
+    def check_portfolios(self, *pf_names, loading=False):
         if loading:
             pf_all = self.pf_data.portfolios.keys()
         else:
             pf_all = self.portfolios.keys()
-        if pf_names is None:
+        if len(pf_names) == 0:
             pf_names = pf_all
         else:
-            pf_names = [pf_names] if isinstance(pf_names, str) else pf_names
             out = set(pf_names)-set(pf_all)
             if len(out) > 0:
                 print_list(out, 'ERROR: No portfolio such as {}')
@@ -6587,7 +6602,7 @@ class PortfolioManager():
         return pf_names
 
     
-    def plot(self, pf_names=None, start_date=None, end_date=None, roi=True,
+    def plot(self, *pf_names, start_date=None, end_date=None, roi=True,
              figsize=(10,5), legend=True, colors = plt.cm.Spectral):
         """
         start_date: date of beginning of the return plot
@@ -6595,7 +6610,7 @@ class PortfolioManager():
         roi: ROI plot if True, UGL plot if False
         """
         # check portfolios
-        pf_names = self.check_portfolios(pf_names)
+        pf_names = self.check_portfolios(*pf_names)
         if len(pf_names) == 0:
             return None
 
@@ -6609,12 +6624,12 @@ class PortfolioManager():
         nm_end = nms_v['end']
         
         # get data
-        df_all = self._valuate(pf_names, 'all')
+        df_all = self._valuate(*pf_names, date='all')
         df_all = df_all.loc[start_date:end_date]
         start_date, end_date = get_date_minmax(df_all)
     
         # set plot title
-        df = self.summary(pf_names, end_date, int_to_str=False)
+        df = self.summary(*pf_names, date=end_date, int_to_str=False)
         sr = df[nm_ttl]
         title = PortfolioBuilder.get_title_pnl(sr[nm_roi], sr[nm_ugl], sr[nm_end])
     
@@ -6654,11 +6669,11 @@ class PortfolioManager():
         return None
         
 
-    def summary(self, pf_names=None, date=None, int_to_str=True):
+    def summary(self, *pf_names, date=None, int_to_str=True):
         """
         get cashflow & pnl of portfolios on date
         """       
-        pf_names = self.check_portfolios(pf_names)
+        pf_names = self.check_portfolios(*pf_names)
         if len(pf_names) == 0:
             return None
 
@@ -6670,7 +6685,7 @@ class PortfolioManager():
         nm_ugl = nms_v['ugl']
         nm_buy = nms_v['buy']
     
-        df_res = self._valuate(pf_names, date)
+        df_res = self._valuate(*pf_names, date=date)
         # set total
         df_res[nm_ttl] = [df_res.loc[nm_start].min(), df_res.loc[nm_end].max(), 
                              *df_res.iloc[2:].sum(axis=1).to_list()]
@@ -6679,11 +6694,11 @@ class PortfolioManager():
         return df_res.map(format_price, digits=0) if int_to_str else df_res
 
 
-    def util_print_summary(self, **kwargs):
+    def util_print_summary(self, *pf_names, date=None):
         """
         print summary for bookkeeping
         """
-        df_s = self.summary(int_to_str=False, **kwargs)
+        df_s = self.summary(*pf_names, date=date, int_to_str=False)
         df = df_s.drop(columns=['TOTAL'])
         for p in df.columns:
             sr = df[p].apply(format_price, digits=0, int_to_str=False)
@@ -6691,7 +6706,7 @@ class PortfolioManager():
             print(f"{sr['end']}, {', '.join(p.split('_'))}, , , , 평가, , {', '.join(values)}")
 
 
-    def _valuate(self, pf_names, date):
+    def _valuate(self, *pf_names, date=None):
         """
         return evaluation summary df the portfolios in pf_names
         pf_names: list of portfolio names
