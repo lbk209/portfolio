@@ -6624,7 +6624,7 @@ class PortfolioManager():
         nm_end = nms_v['end']
         
         # get data
-        df_all = self._valuate(*pf_names, date='all')
+        df_all = self._valuate(*pf_names, date='all', total=True)
         df_all = df_all.loc[start_date:end_date]
         start_date, end_date = get_date_minmax(df_all)
     
@@ -6685,13 +6685,25 @@ class PortfolioManager():
         nm_ugl = nms_v['ugl']
         nm_buy = nms_v['buy']
     
-        df_res = self._valuate(*pf_names, date=date)
+        df_res = self._valuate(*pf_names, date=date, total=True)
         # set total
         df_res[nm_ttl] = [df_res.loc[nm_start].min(), df_res.loc[nm_end].max(), 
                              *df_res.iloc[2:].sum(axis=1).to_list()]
         df_ttl = df_res[nm_ttl]
         df_res.loc[nm_roi, nm_ttl] = df_ttl[nm_ugl] / df_ttl[nm_buy]
         return df_res.map(format_price, digits=0) if int_to_str else df_res
+
+
+    def assets(self, *pf_names, date=None, col_ticker='ticker', col_portfolio='portfolio'):
+        """
+        compare peformance of all assets in portfolios
+        """
+        pf_names = self.check_portfolios(*pf_names)
+        if len(pf_names) == 0:
+            return None
+        df = self._valuate(*pf_names, date=date, total=False, col_portfolio=col_portfolio)
+        df = df.swaplevel(col_ticker, col_portfolio)
+        return df
 
 
     def util_print_summary(self, *pf_names, date=None):
@@ -6706,29 +6718,30 @@ class PortfolioManager():
             print(f"{sr['end']}, {', '.join(p.split('_'))}, , , , 평가, , {', '.join(values)}")
 
 
-    def _valuate(self, *pf_names, date=None):
+    def _valuate(self, *pf_names, date=None, total=True, col_portfolio='portfolio'):
         """
         return evaluation summary df the portfolios in pf_names
         pf_names: list of portfolio names
         date: date for values on date, None for values on last date, 'all' for history
         """
-        col_pf = 'portfolio'
         df_all = None
         no_res = []
         for name in pf_names:
             pf = self.portfolios[name]
-            df = pf.valuate(date=date, total=True, int_to_str=False, print_msg=False)
+            df = pf.valuate(date=date, total=total, int_to_str=False, print_msg=False)
             if df is None:
                 no_res.append(name)
             else:
-                if date == 'all':
-                    df = df.assign(**{col_pf:name}).set_index(col_pf, append=True)
+                #if (date == 'all' and total) or (date != 'all' and not total):
+                if (date == 'all') or (date != 'all' and not total):
+                    # add portfolio name as index
+                    df = df.assign(**{col_portfolio:name}).set_index(col_portfolio, append=True)
                     axis = 0
                 else:
                     df = df.to_frame(name)
                     axis = 1
                 df_all = df if df_all is None else pd.concat([df_all, df], axis=axis) 
-    
+        
         df_all = df_all.sort_index() if date == 'all' else df_all
         return df_all
 
