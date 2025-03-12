@@ -2618,7 +2618,7 @@ class PortfolioBuilder():
         df_rec = self.transaction(df_net, date_actual=date_actual)
         if df_rec is not None: # new transaction updated
             # recover record with halt before saving or converting to record with num of shares
-            df_rec = self.tradinghalts.recover(df_rec, self.record_halt)
+            df_rec = df_rec if self.tradinghalts is None else self.tradinghalts.recover(df_rec, self.record_halt)
             if save:
                 # save transaction as num of shares for the convenience of trading
                 if nshares:
@@ -2642,6 +2642,8 @@ class PortfolioBuilder():
         create transaction with TradingHalts instance
         kw_halt: buy/sell/resume/halt
         """
+        if self.record is None:
+            return print('ERROR: No transaction record exits')
         date = self._get_data(0, 0, date=date).index.max()
         recs = self.tradinghalts.transaction(date, date_format=self.date_format, **kw_halt) 
         if recs is not None: # new transaction created
@@ -2944,7 +2946,10 @@ class PortfolioBuilder():
         if df_rec is None:
             df_rec = self._check_result(msg)
         if df_rec is None: # record is None or nshares-based to edit
-            return self.tradinghalts.recover(self.record, self.record_halt) # see _check_result for err msg
+            if self.tradinghalts is None:
+                return None
+            else:
+                return self.tradinghalts.recover(self.record, self.record_halt) # see _check_result for err msg
         if not self._check_record(df_rec, msg=True):
             return None # check df_rec by self.cols_record
 
@@ -3604,7 +3609,8 @@ class PortfolioBuilder():
             df_data = df_data[tickers]
             
         # setting tradinghalts
-        df_data = self.tradinghalts.set_price(df_data, self.record_halt)
+        if self.tradinghalts is not None:
+            df_data = self.tradinghalts.set_price(df_data, self.record_halt)
         # set date range
         date = df_data.index.max()
         dt1 = date - self._get_date_offset(lag, 'weeks')

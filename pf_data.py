@@ -25,6 +25,7 @@ STRATEGIES = dict(
     LIQ = dict(method_select='Selected', method_weigh='Equally'),
     TDF = dict(method_select='Selected', method_weigh='Equally'),
     HANA= dict(method_select='Selected', method_weigh='InvVol', lookback='2y', lag=0), # freq2y
+    SAVE= dict(method_select='Selected', method_weigh='Equally', lookback='6m', lag=0),
     FCTR= dict(method_select='Selected', method_weigh='MeanVar', lookback='1q', lag=0), # freq1q
     KRX = dict(method_select='Momentum', method_weigh='Equally', sort_ascending=False, n_tickers=5, lookback='1y', lag='1m')
 )
@@ -38,7 +39,8 @@ TRANSACTIONS = dict(
     LIQ = dict(file='pf_liq_static'),
     TDF_2406 = dict(file='pf_tdf_static'),
     #TDF = dict(file='test_pf_tdf_static'), # for testing
-    HANA_2408= dict(file='pf_hana_static'),
+    HANA_2408 = dict(file='pf_hana_static'),
+    SAVE_2503 = dict(file='pf_save_static'),
     FCTR= dict(file='pf_fctr_static'),
     #KRX = dict(file='test_pf_krx_momentum'),
     TEST = dict(file='test') # for testing
@@ -55,6 +57,7 @@ PORTFOLIOS = {
     'LIQ': {'strategy': 'LIQ', 'universe': 'UV_LIQ'},
     'TDF_2406': {'strategy': 'TDF', 'universe': 'UV_FUND'},
     'HANA_2408': {'strategy': 'HANA', 'universe': 'UV_FUND'},
+    'SAVE_2503': {'strategy': 'SAVE', 'universe': 'UV_FUND'},
     'FCTR': {'strategy': 'FCTR', 'universe': 'UV_FCTR'},  # factor intesting with etf
     #'KRX': {'strategy': 'KRX', 'universe': 'UV_KRX'}, # for testing
     'TEST': {'strategy': 'PER', 'universe': 'UV_K200'}, # for testing
