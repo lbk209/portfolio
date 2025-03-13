@@ -3087,6 +3087,27 @@ class PortfolioBuilder():
         title = f'ROI: {roi:.1%}, UGL: {format_price(ugl, **kwargs)}'
         return f"{title} ({date})"
 
+    
+    @staticmethod
+    def plot_assets(df_val, roi=True, figsize=None,
+                    col_name='name', col_value='value', col_roi='roi', cpl_ugl='ugl'):
+        """
+        Bar chart displaying the performance of individual assets within the portfolio
+        df_val: output of self.valuate(date=None, total=False, int_to_str=False)
+        """
+        kw = dict(kind='barh', legend=False)
+        fig, axes = plt.subplots(1,2, sharey=True, figsize=figsize)
+        _ = df_val.plot(col_name, col_value, ax=axes[0], title='Value', **kw)
+        if roi:
+            _ = (df_val.assign(roi=df_val[col_roi].mul(100))
+                 .plot(col_name, col_roi, ax=axes[1], color='orange', title='ROI(%)', **kw))
+        else:
+            _ = df_val.plot(col_name, cpl_ugl, ax=axes[1], color='orange', title='UGL', **kw)
+        _ = axes[0].set_ylabel(None)
+        _ = axes[1].axvline(0, lw=0.5, c='gray')
+        plt.subplots_adjust(wspace=0.05)
+        return axes
+
 
     def util_get_prices(self, tickers, update_security_names=True):
         """
@@ -6694,16 +6715,22 @@ class PortfolioManager():
         return df_res.map(format_price, digits=0) if int_to_str else df_res
 
 
-    def assets(self, *pf_names, date=None, col_ticker='ticker', col_portfolio='portfolio'):
+    def assets(self, *pf_names, date=None, 
+               plot=True, roi=True, figsize=None, 
+               col_ticker='ticker', col_portfolio='portfolio'):
         """
         compare peformance of all assets in portfolios
         """
         pf_names = self.check_portfolios(*pf_names)
         if len(pf_names) == 0:
             return None
-        df = self._valuate(*pf_names, date=date, total=False, col_portfolio=col_portfolio)
-        df = df.swaplevel(col_ticker, col_portfolio)
-        return df
+        df_val = self._valuate(*pf_names, date=date, total=False, col_portfolio=col_portfolio)
+        df_val = df_val.swaplevel(col_ticker, col_portfolio)
+
+        if plot:
+            axes = PortfolioBuilder.plot_assets(df_val, roi=roi, figsize=figsize)
+        else:
+            return df_val
 
 
     def util_print_summary(self, *pf_names, date=None):
