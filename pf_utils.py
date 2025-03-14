@@ -6715,17 +6715,21 @@ class PortfolioManager():
         return df_res.map(format_price, digits=0) if int_to_str else df_res
 
 
-    def assets(self, *pf_names, date=None, 
-               plot=True, roi=True, figsize=None, 
+    def assets(self, *pf_names, date=None, sort_by=None,
+               plot=False, roi=True, figsize=None, 
                col_ticker='ticker', col_portfolio='portfolio'):
         """
         compare peformance of all assets in portfolios
+        sort_by: None, 'value', 'roi'
         """
         pf_names = self.check_portfolios(*pf_names)
         if len(pf_names) == 0:
             return None
         df_val = self._valuate(*pf_names, date=date, total=False, col_portfolio=col_portfolio)
         df_val = df_val.swaplevel(col_ticker, col_portfolio)
+
+        if sort_by:
+            df_val = df_val.sort_values(sort_by, ascending=True) if sort_by in df_val.columns else df_val
 
         if plot:
             axes = PortfolioBuilder.plot_assets(df_val, roi=roi, figsize=figsize)
