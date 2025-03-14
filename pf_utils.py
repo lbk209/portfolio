@@ -301,11 +301,11 @@ def save_dataframe(df, file, path='.', overwrite=False,
     """
     f = os.path.join(path, file)
     if os.path.exists(f) and not overwrite:
-        print(msg_fail)
+        print(msg_fail) if msg_fail else None
         return False
     else:
         df.to_csv(f, **kwargs)    
-        print(msg_succeed)
+        print(msg_succeed) if msg_succeed else None
         return True
         
 
@@ -1692,25 +1692,43 @@ class FundDownloader():
             return None
         
 
-    def set_tickers(self, tickers=None, col_ticker='ticker'):
+    def set_tickers(self, tickers=None, col_ticker='ticker', 
+                    iterative=False, file=None):
         """
         set tickers to download prices
+        file: file to update when iterative=True
+        iterative: True to add new price data to existing data 
         """
         data_tickers = self.data_tickers
         if data_tickers is None:
             return print('ERROR')
         else:
             tickers_all = data_tickers.index.to_list()
-
-        if tickers is None:
-            tickers = tickers_all
+    
+        if iterative:
+            if file is None:
+                return print('ERROR: file required for iterative downloading')
+            try:
+                df_prices = pd.read_csv(f'{self.path}/{file}', parse_dates=[0], index_col=[0])
+                tkrs = df_prices.columns
+                self.df_prices = df_prices
+                print(f'Iterative Downloading set with {file}')
+            except FileNotFoundError as e: # assuming 1st running if no file exits
+                print(f'REMINDER: Make sure starting new iterative downloading')
+                tkrs = []
+            tickers = [x for x in tickers_all if x not in tkrs]
+            self.file_iterative = file # turn on iterative downloading
         else:
-            tickers = [tickers] if isinstance(tickers, str) else tickers
-            n = pd.Index(tickers).difference(tickers_all).size
-            if n > 0:
-                print(f'WARNING: {n} funds missing in the data')
-                tickers = pd.Index(tickers).intersection(tickers_all).to_list()
-
+            self.file_iterative = None # reset iterative downloading
+            if tickers is None:
+                tickers = tickers_all
+            else:
+                tickers = [tickers] if isinstance(tickers, str) else tickers
+                n = pd.Index(tickers).difference(tickers_all).size
+                if n > 0:
+                    print(f'WARNING: {n} funds missing in the data')
+                    tickers = pd.Index(tickers).intersection(tickers_all).to_list()
+    
         print(f'{len(tickers)} tickers set to download')
         self.tickers = tickers
         return None
@@ -1724,32 +1742,51 @@ class FundDownloader():
         download rate and convert to price using prices in settlement info
         """
         data_tickers = self.data_tickers
-        # download rates
-        df_rates = self._get_rate(start_date, end_date, freq=freq, 
-                                   url=url, headers=headers, interval=interval, 
-                                   pause_duration=pause_duration, msg=msg)
-        # convert to price
-        df_prices, sr_err = self._get_prices(df_rates, data_tickers, percentage=percentage, msg=msg)
-        if sr_err is not None:
-            self.df_prices = df_prices
-            self.save(file, path) if file is not None else None
-        return sr_err
-        
-    
-    def _get_rate(self, start_date, end_date, freq='monthly',
-                       url=None, headers=None,
-                       interval=5, pause_duration=.1, msg=False):
         tickers = self.tickers
         if tickers is None:
             return print('ERROR: load tickers first')
+    
+        kwargs = dict(freq=freq, url=url, headers=headers, interval=interval, 
+                      pause_duration=pause_duration, msg=msg)
+    
+        if self.file_iterative: # update existing data with downloaded for every interval
+            df_prices = self.df_prices
+            file, path = self.file_iterative, self.path
+            print(f'Starting Iterative Downloading where {file} will be overwritten')
+            kwargs['interval'] += 1 # no pause for iterative downloading 
+            kwargs['msg'] = False
+            blocks = [tickers[i:i + interval] for i in range(0, len(tickers), interval)]
+            tracker = TimeTracker(auto_start=True)
+            for tkrs in tqdm(blocks):
+                df_rates = self._get_rate(tkrs, start_date, end_date, progress_meter=False, **kwargs)
+                df_prc, sr_err = self._get_prices(df_rates, data_tickers, percentage=percentage, msg=False)
+                if sr_err is not None:
+                    df_prices = df_prc if df_prices is None else pd.concat([df_prices, df_prc], axis=1)
+                    _ = save_dataframe(df_prices, file, path, overwrite=True, msg_succeed=None)
+                    self.df_prices = df_prices
+            tracker.stop()
+            return None
+        else:
+            # download rates
+            df_rates = self._get_rate(tickers, start_date, end_date, **kwargs)
+            # convert to price
+            df_prices, sr_err = self._get_prices(df_rates, data_tickers, percentage=percentage, msg=msg)
+            if sr_err is not None:
+                self.df_prices = df_prices
+                self.save(file, path) if file is not None else None
+            return sr_err
         
+    
+    def _get_rate(self, tickers, start_date, end_date, freq='monthly',
+                       url=None, headers=None,
+                       interval=5, pause_duration=.1, msg=False, progress_meter=True):
         url = self._check_var(url, self.url)
         headers = self._check_var(headers, self.headers)
         self.failed = [] # reset for new downloading
     
         tracker = TimeTracker(auto_start=True)
         df_rates = None
-        for x in tqdm(tickers):
+        for x in (tqdm(tickers) if progress_meter else tickers):
             df = self.download_rate(x, start_date, end_date, freq=freq, msg=msg,
                                     url=url, headers=headers)
             if df is None:
@@ -1761,7 +1798,7 @@ class FundDownloader():
                 else:
                     df_rates = pd.concat([df_rates, sr], axis=1)
             tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
-        tracker.stop()
+        tracker.stop(msg=msg)
     
         if df_rates is None:
             return print('ERROR: Set msg to True to see error messages')
@@ -1787,7 +1824,7 @@ class FundDownloader():
                 index_errors.append(x)
                 errors.append(err)
         if len(errors) > 0:
-            print(f'Max error of conversions: {max(errors):.2e}')
+            print(f'Max error of conversions: {max(errors):.2e}') if msg else None
             df_prices = df_prices.sort_index()
             sr_err = pd.Series(errors, index=index_errors, name='error')
         else:
