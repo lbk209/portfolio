@@ -3087,6 +3087,27 @@ class PortfolioBuilder():
         title = f'ROI: {roi:.1%}, UGL: {format_price(ugl, **kwargs)}'
         return f"{title} ({date})"
 
+    
+    @staticmethod
+    def plot_assets(df_val, roi=True, figsize=None,
+                    col_name='name', col_value='value', col_roi='roi', cpl_ugl='ugl'):
+        """
+        Bar chart displaying the performance of individual assets within the portfolio
+        df_val: output of self.valuate(date=None, total=False, int_to_str=False)
+        """
+        kw = dict(kind='barh', legend=False)
+        fig, axes = plt.subplots(1,2, sharey=True, figsize=figsize)
+        _ = df_val.plot(col_name, col_value, ax=axes[0], title='Value', **kw)
+        if roi:
+            _ = (df_val.assign(roi=df_val[col_roi].mul(100))
+                 .plot(col_name, col_roi, ax=axes[1], color='orange', title='ROI(%)', **kw))
+        else:
+            _ = df_val.plot(col_name, cpl_ugl, ax=axes[1], color='orange', title='UGL', **kw)
+        _ = axes[0].set_ylabel(None)
+        _ = axes[1].axvline(0, lw=0.5, c='gray')
+        plt.subplots_adjust(wspace=0.05)
+        return axes
+
 
     def util_get_prices(self, tickers, update_security_names=True):
         """
@@ -6624,7 +6645,7 @@ class PortfolioManager():
         nm_end = nms_v['end']
         
         # get data
-        df_all = self._valuate(*pf_names, date='all')
+        df_all = self._valuate(*pf_names, date='all', total=True)
         df_all = df_all.loc[start_date:end_date]
         start_date, end_date = get_date_minmax(df_all)
     
@@ -6685,13 +6706,35 @@ class PortfolioManager():
         nm_ugl = nms_v['ugl']
         nm_buy = nms_v['buy']
     
-        df_res = self._valuate(*pf_names, date=date)
+        df_res = self._valuate(*pf_names, date=date, total=True)
         # set total
         df_res[nm_ttl] = [df_res.loc[nm_start].min(), df_res.loc[nm_end].max(), 
                              *df_res.iloc[2:].sum(axis=1).to_list()]
         df_ttl = df_res[nm_ttl]
         df_res.loc[nm_roi, nm_ttl] = df_ttl[nm_ugl] / df_ttl[nm_buy]
         return df_res.map(format_price, digits=0) if int_to_str else df_res
+
+
+    def assets(self, *pf_names, date=None, sort_by=None,
+               plot=False, roi=True, figsize=None, 
+               col_ticker='ticker', col_portfolio='portfolio'):
+        """
+        compare peformance of all assets in portfolios
+        sort_by: None, 'value', 'roi'
+        """
+        pf_names = self.check_portfolios(*pf_names)
+        if len(pf_names) == 0:
+            return None
+        df_val = self._valuate(*pf_names, date=date, total=False, col_portfolio=col_portfolio)
+        df_val = df_val.swaplevel(col_ticker, col_portfolio)
+
+        if sort_by:
+            df_val = df_val.sort_values(sort_by, ascending=True) if sort_by in df_val.columns else df_val
+
+        if plot:
+            axes = PortfolioBuilder.plot_assets(df_val, roi=roi, figsize=figsize)
+        else:
+            return df_val
 
 
     def util_print_summary(self, *pf_names, date=None):
@@ -6706,29 +6749,30 @@ class PortfolioManager():
             print(f"{sr['end']}, {', '.join(p.split('_'))}, , , , 평가, , {', '.join(values)}")
 
 
-    def _valuate(self, *pf_names, date=None):
+    def _valuate(self, *pf_names, date=None, total=True, col_portfolio='portfolio'):
         """
         return evaluation summary df the portfolios in pf_names
         pf_names: list of portfolio names
         date: date for values on date, None for values on last date, 'all' for history
         """
-        col_pf = 'portfolio'
         df_all = None
         no_res = []
         for name in pf_names:
             pf = self.portfolios[name]
-            df = pf.valuate(date=date, total=True, int_to_str=False, print_msg=False)
+            df = pf.valuate(date=date, total=total, int_to_str=False, print_msg=False)
             if df is None:
                 no_res.append(name)
             else:
-                if date == 'all':
-                    df = df.assign(**{col_pf:name}).set_index(col_pf, append=True)
+                #if (date == 'all' and total) or (date != 'all' and not total):
+                if (date == 'all') or (date != 'all' and not total):
+                    # add portfolio name as index
+                    df = df.assign(**{col_portfolio:name}).set_index(col_portfolio, append=True)
                     axis = 0
                 else:
                     df = df.to_frame(name)
                     axis = 1
                 df_all = df if df_all is None else pd.concat([df_all, df], axis=axis) 
-    
+        
         df_all = df_all.sort_index() if date == 'all' else df_all
         return df_all
 
