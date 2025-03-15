@@ -1717,6 +1717,7 @@ class FundDownloader():
                 print(f'REMINDER: Make sure starting new iterative downloading')
                 tkrs = []
             tickers = [x for x in tickers_all if x not in tkrs]
+            random.shuffle(tickers) # shuffle to try new tickers before failed tickers
             self.file_iterative = file # turn on iterative downloading
         else:
             self.file_iterative = None # reset iterative downloading
@@ -1759,6 +1760,8 @@ class FundDownloader():
             tracker = TimeTracker(auto_start=True)
             for tkrs in tqdm(blocks):
                 df_rates = self._get_rate(tkrs, start_date, end_date, progress_meter=False, **kwargs)
+                if df_rates is None:
+                    continue
                 df_prc, sr_err = self._get_prices(df_rates, data_tickers, percentage=percentage, msg=False)
                 if sr_err is not None:
                     df_prices = df_prc if df_prices is None else pd.concat([df_prices, df_prc], axis=1)
