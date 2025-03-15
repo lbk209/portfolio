@@ -2908,6 +2908,15 @@ class PortfolioBuilder():
         _ = [self._plot_cashflow(ax, df_cf[x], end_date, **kw(i)) for i, x in enumerate(df_cf.columns)]
         ax.legend(loc=loc)
         return ax  
+
+    
+    def plot_assets(self, date=None, roi=True, sort_by='roi', figsize=None, label=True):
+        df_val = self.valuate(date=date, total=False, int_to_str=False)
+        if df_val is None:
+            return None
+        df_val = df_val.sort_values(sort_by, ascending=True) if sort_by in df_val.columns else df_val
+        _= PortfolioBuilder._plot_assets(df_val, roi=roi, figsize=figsize, label=label)
+        return df_val
     
     
     def performance(self, metrics=METRICS, sort_by=None):
@@ -3129,24 +3138,29 @@ class PortfolioBuilder():
 
     
     @staticmethod
-    def plot_assets(df_val, roi=True, figsize=None,
+    def _plot_assets(df_val, roi=True, figsize=None, label=True,
                     col_name='name', col_value='value', col_roi='roi', cpl_ugl='ugl'):
         """
         Bar chart displaying the performance of individual assets within the portfolio
         df_val: output of self.valuate(date=None, total=False, int_to_str=False)
         """
         kw = dict(kind='barh', legend=False)
-        fig, axes = plt.subplots(1,2, sharey=True, figsize=figsize)
-        _ = df_val.plot(col_name, col_value, ax=axes[0], title='Value', **kw)
+        fig, (ax1, ax2) = plt.subplots(1,2, sharey=True, figsize=figsize)
+        _ = df_val.plot(col_name, col_value, ax=ax1, title='Value', **kw)
         if roi:
             _ = (df_val.assign(roi=df_val[col_roi].mul(100))
-                 .plot(col_name, col_roi, ax=axes[1], color='orange', title='ROI(%)', **kw))
+                 .plot(col_name, col_roi, ax=ax2, color='orange', title='ROI(%)', **kw))
         else:
-            _ = df_val.plot(col_name, cpl_ugl, ax=axes[1], color='orange', title='UGL', **kw)
-        _ = axes[0].set_ylabel(None)
-        _ = axes[1].axvline(0, lw=0.5, c='gray')
+            _ = df_val.plot(col_name, cpl_ugl, ax=ax2, color='orange', title='UGL', **kw)
+        _ = ax1.set_ylabel(None)
+        _ = ax2.axvline(0, lw=0.5, c='gray')
+    
+        if label:
+            _= ax1.bar_label(ax1.containers[0], label_type='center', fmt='{:,g}')
+            _= ax2.bar_label(ax2.containers[0], label_type='center', fmt='{:.1f}' if roi else '{:,g}')
+        
         plt.subplots_adjust(wspace=0.05)
-        return axes
+        return (ax1, ax2)
 
 
     def util_get_prices(self, tickers, update_security_names=True):
@@ -6767,12 +6781,9 @@ class PortfolioManager():
             return None
         df_val = self._valuate(*pf_names, date=date, total=False, col_portfolio=col_portfolio)
         df_val = df_val.swaplevel(col_ticker, col_portfolio)
-
-        if sort_by:
-            df_val = df_val.sort_values(sort_by, ascending=True) if sort_by in df_val.columns else df_val
-
+        df_val = df_val.sort_values(sort_by, ascending=True) if sort_by in df_val.columns else df_val
         if plot:
-            axes = PortfolioBuilder.plot_assets(df_val, roi=roi, figsize=figsize)
+            axes = PortfolioBuilder._plot_assets(df_val, roi=roi, figsize=figsize)
         else:
             return df_val
 
