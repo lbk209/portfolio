@@ -1508,6 +1508,10 @@ class FundDownloader():
         file_historical = None if file_historical is None else get_file_latest(file_historical, path)
         self.file_historical = file_historical
         self.path = path
+        # temp file for cumulative downloading
+        # independent file from file_historical for the case of debugging
+        self.file_rate = None 
+        self.path_rate = None
         self.col_ticker = col_ticker
         self.cols_check = cols_check
         self.cols_commissions = cols_commissions
@@ -1692,92 +1696,134 @@ class FundDownloader():
             return None
         
 
-    def set_tickers(self, tickers=None, col_ticker='ticker', 
-                    iterative=False, file=None):
+    def set_tickers(self, tickers=None, col_ticker='ticker', file_rate=None, path=None):
         """
         set tickers to download prices
-        file: file to update when iterative=True
-        iterative: True to add new price data to existing data 
+        tickers: tickers to download. ignored for continuing cumulative downloading
+        file_rate: file of rate for cumulative downloading
+        path: path for file_rate
         """
         data_tickers = self.data_tickers
         if data_tickers is None:
             return print('ERROR')
         else:
             tickers_all = data_tickers.index.to_list()
-    
-        if iterative:
-            if file is None:
-                return print('ERROR: file required for iterative downloading')
-            try:
-                df_prices = pd.read_csv(f'{self.path}/{file}', parse_dates=[0], index_col=[0])
-                tkrs = df_prices.columns
-                self.df_prices = df_prices
-                print(f'Iterative Downloading set with {file}')
-            except FileNotFoundError as e: # assuming 1st running if no file exits
-                print(f'REMINDER: Make sure starting new iterative downloading')
-                tkrs = []
-            tickers = [x for x in tickers_all if x not in tkrs]
-            random.shuffle(tickers) # shuffle to try new tickers before failed tickers
-            self.file_iterative = file # turn on iterative downloading
+
+        # check tickers to download
+        if tickers is None:
+            tickers = tickers_all
         else:
-            self.file_iterative = None # reset iterative downloading
-            if tickers is None:
-                tickers = tickers_all
-            else:
-                tickers = [tickers] if isinstance(tickers, str) else tickers
-                n = pd.Index(tickers).difference(tickers_all).size
-                if n > 0:
-                    print(f'WARNING: {n} funds missing in the data')
-                    tickers = pd.Index(tickers).intersection(tickers_all).to_list()
+            tickers = [tickers] if isinstance(tickers, str) else tickers
+            n = pd.Index(tickers).difference(tickers_all).size
+            if n > 0:
+                print(f'WARNING: {n} funds unable to process')
+                tickers = pd.Index(tickers).intersection(tickers_all).to_list()
+                
+        if file_rate: # prepare cumulative downloading
+            path = self._check_var(path, self.path)
+            df_rates = self._load(file_rate, path)
+            if df_rates is not None:
+                if df_rates.columns.intersection(tickers).size > 0:
+                    print('WARNING: Specified tickers ignored to complete existing cumulative downloading')
+                    tickers = df_rates.columns.to_list()
+                else: # existing file ignored to start new cumulative downloading
+                    df_rates = None
+            if df_rates is None:
+                print(f'REMINDER: Make sure starting new cumulative downloading')  
+
+            print(f'Cumulative Downloading set with {file_rate}')
+            self.df_prices = df_rates
+            self.file_rate = file_rate # turn on cumulative downloading
+            self.path_rate = path
+        else:
+            self.file_rate = None # reset to normal downloading
     
         print(f'{len(tickers)} tickers set to download')
         self.tickers = tickers
         return None
-
-
+    
     def download(self, start_date, end_date, freq='monthly', percentage=True,
                  url=None, headers=None,
-                 interval=5, pause_duration=.1, msg=False,
-                 file=None, path='.'):
+                 interval=5, pause_duration=.1, msg=False, 
+                 file=None, path=None, save=True, update=False, years=2):
         """
         download rate and convert to price using prices in settlement info
+        file/path: file/path to save price data
+        update: set to True to add new price data to existing date in file 
+        years: unit period for cumulative downloading
         """
         data_tickers = self.data_tickers
         tickers = self.tickers
+        file_rate = self.file_rate
         if tickers is None:
             return print('ERROR: load tickers first')
     
         kwargs = dict(freq=freq, url=url, headers=headers, interval=interval, 
                       pause_duration=pause_duration, msg=msg)
-    
-        if self.file_iterative: # update existing data with downloaded for every interval
-            df_prices = self.df_prices
-            file, path = self.file_iterative, self.path
-            print(f'Starting Iterative Downloading where {file} will be overwritten')
-            kwargs['interval'] += 1 # no pause for iterative downloading 
-            kwargs['msg'] = False
-            blocks = [tickers[i:i + interval] for i in range(0, len(tickers), interval)]
-            tracker = TimeTracker(auto_start=True)
-            for tkrs in tqdm(blocks):
-                df_rates = self._get_rate(tkrs, start_date, end_date, progress_meter=False, **kwargs)
-                if df_rates is None:
-                    continue
-                df_prc, sr_err = self._get_prices(df_rates, data_tickers, percentage=percentage, msg=False)
-                if sr_err is not None:
-                    df_prices = df_prc if df_prices is None else pd.concat([df_prices, df_prc], axis=1)
-                    _ = save_dataframe(df_prices, file, path, overwrite=True, msg_succeed=None)
-                    self.df_prices = df_prices
-            tracker.stop()
-            return None
+        # download rates
+        if file_rate: # cumulative downloading
+            df_rates = self.df_prices
+            print(f'Starting Cumulative Downloading where {file_rate} will be overwritten')
+            df_rates = self._download_cumulative(start_date, end_date, df_rates, tickers, 
+                                                 years, file_rate, self.path_rate, 
+                                                 percentage=percentage, **kwargs)
+            if df_rates.index.duplicated().any():
+                print('ERROR: Check duplicated dates in rate data')
+                return df_rates
+            # remove all the failed tickers 
+            df_rates = df_rates[df_rates.columns.difference(self.failed)]
         else:
-            # download rates
             df_rates = self._get_rate(tickers, start_date, end_date, **kwargs)
-            # convert to price
-            df_prices, sr_err = self._get_prices(df_rates, data_tickers, percentage=percentage, msg=msg)
-            if sr_err is not None:
-                self.df_prices = df_prices
-                self.save(file, path) if file is not None else None
-            return sr_err
+
+        # convert to price
+        df_prices, sr_err = self._get_prices(df_rates, data_tickers, percentage=percentage, msg=msg)
+        if sr_err is not None:
+            self.df_prices = df_prices.round(1)
+            self.save(file, path, update=update) if save else None
+        return sr_err
+
+    
+    def _download_cumulative(self, start_date, end_date, df_rates, tickers, years, file, path, 
+                             percentage=True, **kwargs) :
+        start_date, end_date = pd.DatetimeIndex([start_date, end_date])
+        if df_rates is None:
+            end = end_date
+        else:
+            start, end = get_date_minmax(df_rates)
+            if end != end_date:
+                end, end_date = [x.strftime('%Y-%m-%d') for x in [end, end_date]]
+                return print(f'ERROR: End date {end} of data differs with {end_date}')
+            else:
+                end = start - pd.DateOffset(days=1)
+                # remove tickers from downloading if value of start date is None
+                tickers = df_rates.columns[df_rates.sort_index().iloc[0].notna()]
+                
+        # download rates
+        unit = 100 if percentage else 1
+        while (end >= start_date) and (len(tickers) > 0):
+            # loop for reverse time order to filter out completed tickers
+            start = max(end - pd.DateOffset(years=years), start_date)
+            df_r = self._get_rate(tickers, start, end, **kwargs)
+            if df_r is None:
+                continue
+            else:
+                if df_r.sum().sum() == 0:
+                    break
+            df_r = df_r.sort_index()
+            if df_rates is None:
+                df_rates = df_r
+            else:
+                for tkr in df_r.columns:
+                    ft = (1 + df_r[tkr].dropna().iloc[-1] / unit)
+                    df_rates[tkr] = ft * (unit + df_rates[tkr])  - unit
+                # remove last date of df_r before concat
+                df_rates = pd.concat([df_rates, df_r.iloc[:-1]], axis=0)
+            df_rates = df_rates.sort_index().round(2)
+            _ = save_dataframe(df_rates, file, path, overwrite=True, msg_succeed=None)
+            # remove tickers completed
+            tickers = df_rates.columns[df_rates.iloc[0].notna()]
+            end = df_rates.index.min() # include prv start date
+        return df_rates
         
     
     def _get_rate(self, tickers, start_date, end_date, freq='monthly',
@@ -1835,17 +1881,38 @@ class FundDownloader():
         return df_prices, sr_err
         
 
-    def save(self, file=None, path=None):
+    def _load(self, file, path):
+        """
+        load files such as self.file_historical or self.file_rate
+        """
+        try:
+            return pd.read_csv(f'{path}/{file}', parse_dates=[0], index_col=[0])
+        except FileNotFoundError as e:
+            return None
+
+
+    def save(self, file=None, path=None, update=False, overwrite=False):
         """
         save price data
         """
-        file = self._check_var(file, self.file_historical)
-        path = self._check_var(path, self.path)
         df_prices = self.df_prices
         if df_prices is None:
-            print('ERROR')
-        else:
-            self._save(df_prices, file, path)
+            return print('ERROR')
+        
+        file = self._check_var(file, self.file_historical)
+        path = self._check_var(path, self.path)
+        if update: # add df_prices to existing price file
+            df_prc = self._load(file, path)
+            if df_prc is not None:
+                tkrs = df_prices.columns.intersection(df_prc.columns)
+                if tkrs.size > 0:
+                    print(f'ERROR: Cannot update {file} as some tickers duplicated')
+                    return tkrs.to_list()
+                else:
+                    df_prices = pd.concat([df_prc, df_prices], axis=1)
+                    overwrite = True
+        
+        self._save(df_prices, file, path, overwrite=overwrite)
         return None
 
 
@@ -1853,22 +1920,25 @@ class FundDownloader():
         """
         save master data
         """
-        file = self._check_var(file, self.file_master)
-        path = self._check_var(path, self.path)
         data_tickers = self.data_tickers
         if data_tickers is None:
-            print('ERROR')
-        else:
-            self._save(data_tickers, file, path, overwrite=overwrite)
+            return print('ERROR')
+        file = self._check_var(file, self.file_master)
+        path = self._check_var(path, self.path)
+        self._save(data_tickers, file, path, overwrite=overwrite)
         return None
 
 
     def _save(self, df_result, file, path, date=None, date_format='%y%m%d', overwrite=False):
-        if date is None:
-            date = datetime.now()
-        if not isinstance(date, str):
-            date = date.strftime(date_format)
-        file = get_filename(file, f'_{date}', r"_\d+(?=\.\w+$)")
+        """
+        overwrite: set to False to save df_result to new file of date
+        """
+        if not overwrite:
+            if date is None:
+                date = datetime.now()
+            if not isinstance(date, str):
+                date = date.strftime(date_format)
+            file = get_filename(file, f'_{date}', r"_\d+(?=\.\w+$)")
         _ = save_dataframe(df_result, file, path, overwrite=overwrite,
                            msg_succeed=f'{file} saved',
                            msg_fail=f'ERROR: failed to save as {file} exists')
