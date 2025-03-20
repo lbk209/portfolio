@@ -1800,14 +1800,16 @@ class FundDownloader():
                 
         # download rates
         unit = 100 if percentage else 1
+        pbar = tqdm(total=len(tickers))
         while (end >= start_date) and (len(tickers) > 0):
             # loop for reverse time order to filter out completed tickers
             start = max(end - pd.DateOffset(years=years), start_date)
-            df_r = self._get_rate(tickers, start, end, **kwargs)
+            df_r = self._get_rate(tickers, start, end, progress_meter=False, **kwargs)
             if df_r is None:
                 continue
             else:
                 if df_r.sum().sum() == 0:
+                    pbar.update(len(tickers))
                     break
             df_r = df_r.sort_index()
             if df_rates is None:
@@ -1820,9 +1822,12 @@ class FundDownloader():
                 df_rates = pd.concat([df_rates, df_r.iloc[:-1]], axis=0)
             df_rates = df_rates.sort_index().round(2)
             _ = save_dataframe(df_rates, file, path, overwrite=True, msg_succeed=None)
+            n = len(tickers)
             # remove tickers completed
             tickers = df_rates.columns[df_rates.iloc[0].notna()]
+            pbar.update(n - len(tickers))
             end = df_rates.index.min() # include prv start date
+        pbar.close()
         return df_rates
         
     
