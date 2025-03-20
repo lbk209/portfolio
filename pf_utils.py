@@ -223,7 +223,9 @@ def print_runtime(func):
         start_time = time.time()
         result = func(*args, **kwargs)
         end_time = time.time()
-        print(f"Execution time of {func.__name__}: {end_time - start_time:.2f} secs")
+        t = end_time - start_time
+        t, u = (t/60, 'mins') if t > 100 else (t, 'secs')
+        print(f"Execution time of {func.__name__}: {t:.0f} {u}")
         return result
     return wrapper
 
@@ -5537,7 +5539,7 @@ class BayesianEstimator():
             'cagr': self._calc_mean_return(df_prices, self.days_in_year).to_dict()
         }
 
-
+    @print_runtime
     def bayesian_sample(self, size_batch=50, file=None, path='.', **kwargs):
         """
         batch process for _bayesian_sample
@@ -5666,7 +5668,7 @@ class BayesianEstimator():
                     bayesian_data = BayesianEstimator.combine_bayesian_data(bayesian_data, bdata)
                 except ValueError:
                     return None
-        file = f'{file}*' if len(files) > 1 else file
+        file = f'{file}*' if len(files) > 1 else files[0]
         print(f'{file} loaded')
         return bayesian_data
         
