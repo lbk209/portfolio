@@ -989,13 +989,13 @@ class DataManager():
     @staticmethod
     def download_fund(tickers, start_date, end_date,
                       interval=5, pause_duration=1, msg=False,
-                      file=None, path='.'):
+                      file=None, path='.', file_rate=None):
         """
         file: master file of fund data
         """
         fd = FundDownloader(file, path, check_master=True, msg=False)
-        fd.set_tickers(tickers)
-        _ = fd.download(start_date, end_date, file=None, msg=msg)
+        fd.set_tickers(tickers, file_rate=file_rate)
+        _ = fd.download(start_date, end_date, save=False, msg=msg)
         return fd.df_prices
 
     @staticmethod
@@ -1774,7 +1774,7 @@ class FundDownloader():
             df_rates = df_rates[df_rates.columns.difference(self.failed)]
         else:
             df_rates = self._get_rate(tickers, start_date, end_date, **kwargs)
-
+        
         # convert to price
         df_prices, sr_err = self._get_prices(df_rates, data_tickers, percentage=percentage, msg=msg)
         if sr_err is not None:
@@ -6574,19 +6574,20 @@ class PortfolioManager():
     """
     manage multiple portfolios 
     """
-    def __init__(self, *pf_names, verbose=True):
+    def __init__(self, *pf_names, verbose=True, **kwargs):
         """
         pf_names: list of portfolio names
+        kwargs: see create_portfolio
         """
         self.pf_data = PortfolioData()
         self.portfolios = dict() # dict of name to PortfolioBuilder instance
-        self.load(*pf_names, verbose=verbose)
+        self.load(*pf_names, verbose=verbose, **kwargs)
         self.names_vals = dict(
             date='date', ttl='TOTAL', start='start', end='end', 
             buy='buy', sell='sell', val='value', ugl='ugl', roi='roi')
 
     
-    def load(self, *pf_names, reload=False, verbose=True):
+    def load(self, *pf_names, reload=False, verbose=True, **kwargs):
         """
         loading multiple portfolios (no individual args except for PortfolioData)
         pf_names: list of portfolio names
@@ -6609,7 +6610,7 @@ class PortfolioManager():
             else:
                 print(f'{name}:', end='\n' if verbose else ' ')
                 with SuppressPrint(not verbose):
-                    pf_dict[name] = PortfolioManager.create_portfolio(name)
+                    pf_dict[name] = PortfolioManager.create_portfolio(name, **kwargs)
                 print() if verbose else print('done')
         self.portfolios = pf_dict
         return None
