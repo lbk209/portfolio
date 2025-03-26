@@ -678,13 +678,14 @@ class TimeTracker:
 class DataManager():
     def __init__(self, file=None, path='.', 
                  universe='kospi200', tickers='KRX/INDEX/STOCK/1028', 
-                 to_daily=False, days_in_year=12):
+                 to_daily=False, days_in_year=12, **kwargs):
         """
         universe: kospi200, etf, krx, fund, etc. only for getting tickers. see pf_data for more
         file: price history. set as kw for pf_data
         tickers: ticker for getting pool of tickers. can be a file name for tickers as well.
         to_daily: set to True if convert montly price to daily
         days_in_year: only for convert_to_daily
+        kwargs: additional kwargs for each universe
         """
         file = set_filename(file, 'csv') 
         self.file_historical = get_file_latest(file, path) # latest file
@@ -695,6 +696,7 @@ class DataManager():
         self.df_prices = None
         self.to_daily = to_daily
         self.days_in_year = days_in_year
+        self.kwargs_universe = kwargs
         # update self.df_prices
         self.upload(self.file_historical, get_names=True, convert_to_daily=to_daily)
 
@@ -722,7 +724,6 @@ class DataManager():
     @print_runtime
     def download(self, start_date=None, end_date=None, n_years=3, tickers=None,
                  save=True, date_format='%Y-%m-%d', close_today=False, 
-                 update_master=True, overwrite_master=False, # kwargs for _get_tickers
                  **kwargs_download):
         """
         download df_prices by using FinanceDataReader
@@ -736,7 +737,7 @@ class DataManager():
                                                                close_today, n_years, date_format)
         print('Downloading ...')
         
-        security_names = self._get_tickers(tickers, update_master=update_master, overwrite_master=overwrite_master)
+        security_names = self._get_tickers(tickers)
         if security_names is None:
             return None # see _get_tickers for error msg
         else:
@@ -794,11 +795,12 @@ class DataManager():
         return print(f'{s1}{n} securities from {dt0} to {dt1}{s2}')
 
 
-    def _get_tickers(self, tickers=None, **kwargs):
+    def _get_tickers(self, tickers=None):
         """
         tickers: None for all in new universe, 'selected' for all in df_prices, 
                  or list of tickers in new universe
         """
+        kwargs = self.kwargs_universe
         uv = self.universe.lower()
         if uv == 'kospi200':
             func = self._get_tickers_kospi200
@@ -813,8 +815,10 @@ class DataManager():
         elif uv == 'yahoo':
             func = self._get_tickers_yahoo
         else:
-            func = lambda **x: None
-     
+            print(f'WARNING: kospi200 set as no universe such as {uv}')
+            func = self._get_tickers_kospi200
+            #func = lambda **x: None
+        
         try:
             security_names = func(tickers, **kwargs)
             failed = 'ERROR: Failed to get ticker names' if len(security_names) == 0 else None
@@ -864,23 +868,18 @@ class DataManager():
         return df.set_index(col_ticker)[col_name].to_dict()
 
 
-    def _get_tickers_fund(self, tickers=None, path=None, col_name='name', 
-                          update_master=False, overwrite_master=False, **kw):
+    def _get_tickers_fund(self, tickers=None, path=None, col_name='name', **kw):
         """
         self.fickers: file name for tickers
-        update_master: download data to update master
-        overwrite_master: set to False to only update values that are NA in the master
         """
         file = self.tickers # file of tickers
         path = self._check_var(path, self.path)
-        # check_master set to False to run after init
-        fd = FundDownloader(file, path, check_master=False, msg=False)
-        if fd.check_master(): # True if no duplicated
-            # update conversion data & commissions. proceeds even if update fails
-            if update_master:
-                fd.update_master(save=True, overwrite=overwrite_master)
-        else:
-            raise Exception('See check_master') # duplicates exist
+        # get kwa to init FundDownloader
+        ks = ['check_master', 'msg', 'freq', 'batch_size']
+        kwargs = {k:v for k,v in self.kwargs_universe.items() if k in ks}
+        fd = FundDownloader(file, path, **kwargs)
+        if not fd.check_master(): # True if no duplicated
+            raise Exception('See check_master')
         security_names = fd.data_tickers[col_name].to_dict()
         return self._check_tickers(security_names, tickers)
         
@@ -896,14 +895,18 @@ class DataManager():
         return self._check_tickers(security_names, tickers)
 
 
-    def _get_tickers_yahoo(self, tickers, col_name='longName', **kw):
-        if tickers is None:
+    def _get_tickers_yahoo(self, tickers=None, col_name='longName', **kw):
+        """
+        tickers: subset of self.tickers or None
+        """
+        tkrs_uv = self.tickers # universe as tickers
+        if tkrs_uv is None:
             print('ERROR: Set tickers for names')
             return dict()
-        if isinstance(tickers, str):
+        yft = yf.Tickers(' '.join(tkrs_uv))
+        security_names = {x:yft.tickers[x].info[col_name] for x in tkrs_uv}
+        if isinstance(tickers, str): 
             tickers = [tickers]
-        yft = yf.Tickers(' '.join(tickers))
-        security_names = {x:yft.tickers[x].info[col_name] for x in tickers}
         return self._check_tickers(security_names, tickers)
         
 
@@ -932,12 +935,12 @@ class DataManager():
         args, kwargs: for DataManager.download_*
         """
         universe = self.universe
-        file = self.tickers
-        path = self.path
-        return DataManager.download_universe(universe, *args, file=file, path=path, **kwargs)
+        kwargs = {**self.kwargs_universe, **kwargs, 
+                  'file':self.tickers, 'path':self.path} # see download_fund
+        return DataManager.download_universe(universe, *args, **kwargs)
 
     @staticmethod
-    def download_universe(universe, *args, file=None, path=None, **kwargs):
+    def download_universe(universe, *args, **kwargs):
         """
         return df of price history if multiple tickers set, series if a single ticker set
         universe: krx, yahoo, file, default(fdr)
@@ -950,7 +953,7 @@ class DataManager():
             # use pykrx as fdr seems ineffective to download all tickers in krx
             func = DataManager.download_krx
         elif uv == 'fund':
-            func = lambda *a, **k: DataManager.download_fund(*a, file=file, path=path, **k)
+            func = DataManager.download_fund
         elif uv == 'yahoo':
             func = DataManager.download_yahoo
         elif uv == 'file':
@@ -964,7 +967,10 @@ class DataManager():
             return print(f'ERROR: Failed to download prices as {e}')
 
     @staticmethod
-    def download_fdr(tickers, start_date, end_date, col_price1='Adj Close', col_price2='Close'):
+    def download_fdr(tickers, start_date, end_date, col_price1='Adj Close', col_price2='Close', **kw):
+        """
+        kw: dummy
+        """
         if isinstance(tickers, str):
             tickers = [tickers]
         df_data = fdr.DataReader(tickers, start_date, end_date)
@@ -979,7 +985,7 @@ class DataManager():
         
     @staticmethod
     def download_krx(tickers, start_date, end_date,
-                      interval=5, pause_duration=1, msg=False):
+                      interval=5, pause_duration=1, msg=False, **kw):
         """
         tickers: list of tickers
         """
@@ -991,17 +997,19 @@ class DataManager():
     @staticmethod
     def download_fund(tickers, start_date, end_date,
                       interval=5, pause_duration=1, msg=False,
-                      file=None, path='.',):
+                      file=None, path='.', freq='daily', batch_size=100, **kw):
         """
         file: master file of fund data
         """
-        fd = FundDownloader(file, path=path, check_master=True, msg=False)
+        fd = FundDownloader(file, path=path, check_master=True, 
+                            freq=freq, batch_size=batch_size, msg=False)
         fd.set_tickers(tickers)
-        _ = fd.download(start_date, end_date, save=False, msg=msg)
+        _ = fd.download(start_date, end_date, save=False, msg=msg,
+                        interval=interval, pause_duration=pause_duration)
         return fd.df_prices
 
     @staticmethod
-    def download_yahoo(tickers, start_date, end_date, col_price='Adj Close'):
+    def download_yahoo(tickers, start_date, end_date, col_price='Close', **kw):
         if isinstance(tickers, str):
             tickers = [tickers]
         df_data = yf.download(tickers, start_date, end_date)
@@ -1022,15 +1030,14 @@ class DataManager():
             return print(f'{msg_exception}{e}')
 
     
-    def get_names(self, tickers=None, reset=False, **kwargs):
+    def get_names(self, tickers=None, reset=False):
         """
         tickers: None, 'selected' or list of tickers
         reset: True to get security_names aftre resetting first
-        kwargs: additional args for _get_tickers
         """
         security_names = self.security_names
         if reset or (security_names is None):
-            security_names = self._get_tickers(tickers, **kwargs)
+            security_names = self._get_tickers(tickers)
             if security_names is None:
                 return None
             else: # reset security_names
@@ -1498,7 +1505,7 @@ class KRXDownloader():
 
 
 class FundDownloader():
-    def __init__(self, file, path='.', file_historical=None, check_master=True, msg=True,
+    def __init__(self, file=None, path='.', file_historical=None, check_master=True, msg=True,
                  freq='daily', batch_size=None, # recommended 150 days for daily, 24 months for monthly
                  col_ticker='ticker', 
                  cols_check=['check1_date', 'check1_price', 'check2_date', 'check2_price'],
@@ -1532,7 +1539,7 @@ class FundDownloader():
         # check missing data for conversion
         _ = self.check_master() if check_master else None
         if batch_size is None:
-            print(f'ERROR: Set fold_size for {freq} price data')
+            print(f'ERROR: Set batch_size for {freq} price data')
             print(f'Check {url} first to determine the batch_size')
         
 
@@ -6673,7 +6680,8 @@ class PortfolioManager():
     @staticmethod
     def create_universe(name, *args, **kwargs):
         """
-        args, kwargs: args & kwargs for DataManager
+        name: name of universe for DataManager input
+        args, kwargs: args & kwargs to replace DataManager input
         """
         pfd = PortfolioData()
         universe_data = pfd.review_universe(name)
