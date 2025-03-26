@@ -991,12 +991,12 @@ class DataManager():
     @staticmethod
     def download_fund(tickers, start_date, end_date,
                       interval=5, pause_duration=1, msg=False,
-                      file=None, path='.', file_rate=None):
+                      file=None, path='.',):
         """
         file: master file of fund data
         """
-        fd = FundDownloader(file, path, check_master=True, msg=False)
-        fd.set_tickers(tickers, file_rate=file_rate)
+        fd = FundDownloader(file, path=path, check_master=True, msg=False)
+        fd.set_tickers(tickers)
         _ = fd.download(start_date, end_date, save=False, msg=msg)
         return fd.df_prices
 
@@ -1505,6 +1505,8 @@ class FundDownloader():
                  cols_commissions=['buy', 'sell', 'fee'],
                  url = "https://dis.kofia.or.kr/proframeWeb/XMLSERVICES/",
                  headers = {"Content-Type": "application/xml"}):
+        file = set_filename(file, 'csv')
+        file_historical = set_filename(file_historical, 'csv') 
         # master file of securities with ticker, name, adjusting data, etc
         self.file_master = get_file_latest(file, path)
         # price file name
@@ -1525,7 +1527,7 @@ class FundDownloader():
         # period of a batch for downloading. days if freq is daily, months if monthly
         self.batch_size = batch_size 
         self.interval_min = None # a list of start & end dates just enough to rate conversion
-        self.failed = [] # tickers failed to download
+        self.failed = {} # tickers failed to download
         self.debug_fetch_data = None # for debugging. see _download_data
         # check missing data for conversion
         _ = self.check_master() if check_master else None
@@ -1774,6 +1776,7 @@ class FundDownloader():
         if sr_err is not None:
             self.df_prices = df_prices.round(1)
             self.save(file, path) if save else None
+            _ = [print(f'{len(v)} tickers failed for {k}') for k, v in self.failed.items() if len(v) > 0]    
         return sr_err
 
     
@@ -1782,7 +1785,7 @@ class FundDownloader():
                        interval=5, pause_duration=.1, msg=False, progress_meter=True):
         url = self._check_var(url, self.url)
         headers = self._check_var(headers, self.headers)
-        self.failed = [] # reset for new downloading
+        failed = [] 
     
         tracker = TimeTracker(auto_start=True)
         df_rates = None
@@ -1790,7 +1793,7 @@ class FundDownloader():
             sr_tkr = self.download_rate(x, start_date, end_date, freq=freq, batch_size=batch_size,
                                     msg=msg, url=url, headers=headers)
             if sr_tkr is None:
-                self.failed.append(x)
+                failed.append(x)
             else:
                 if df_rates is None:
                     df_rates = sr_tkr.to_frame() 
@@ -1803,19 +1806,24 @@ class FundDownloader():
             return print('ERROR: Set msg to True to see error messages')
         else:
             df_rates = df_rates.sort_index()
-            n = len(self.failed)
+            n = len(failed)
             print(f'WARNING: {n} tickers failed to download') if n>0 else None
+        self.failed = {} # reset for new downloading
+        self.failed['downloading'] = failed
         return df_rates
         
 
     def _get_prices(self, df_rates, data_tickers, percentage=True, msg=True):
         df_prices = None
+        failed = [] # tickers failed to convert
         # convert nan & NaT to None for to_dict
         data_tickers = data_tickers.map(lambda x: 0 if pd.isna(x) else x).replace(0, None)
         errors, index_errors = list(), list()
         for x in df_rates.columns:
             sr_n_err = self._convert_rate(x, data_tickers, df_rates, percentage=percentage, msg=msg)
-            if sr_n_err is not None: # see _convert_rate for err msg
+            if sr_n_err is None: # see _convert_rate for err msg
+                failed.append(x)
+            else: 
                 sr, err = sr_n_err
                 df_prices = sr.to_frame() if df_prices is None else pd.concat([df_prices, sr], axis=1)
                 index_errors.append(x)
@@ -1826,6 +1834,7 @@ class FundDownloader():
             sr_err = pd.Series(errors, index=index_errors, name='error')
         else:
             sr_err = None
+        self.failed['conversion'] = failed # reset old conversion error
         return df_prices, sr_err
 
 
@@ -2133,7 +2142,7 @@ class FundDownloader():
             try:
                 rat1 = sr_rate.loc[dt1]
             except KeyError as e: # df_rates has no date for conversion
-                return print(f'ERROR: Check data for {ticker}')
+                return print(f'ERROR: Check data for {ticker}') if msg else None
                 
         # calc price from rate
         price_base = prc1 / (rat1 + unit)
@@ -2222,14 +2231,35 @@ class FundDownloader():
             return df_cost
 
 
-    def util_check_price(self):
+    def load_price(self, file=None, path=None):
+        """
+        load data to check result
+        """
+        file = self._check_var(file, self.file_historical)
+        path = self._check_var(path, self.path)
+        try:
+            df_prices = pd.read_csv(f'{path}/{file}', parse_dates=[0], index_col=[0])
+        except FileNotFoundError as e:
+            return print('ERROR: No price data to load')
+        self.df_prices = df_prices
+        return None
+
+
+    def util_check_price(self, tickers=None):
         """
         return rate converted from price to check if price conversion works or not
         """
         df_prices = self.df_prices
         if df_prices is None:
             return None
-        return df_prices.apply(lambda x: 1 - x.dropna().iloc[0]/x.dropna()).mul(100).round(2)
+        if tickers is None:
+            df_prc = df_prices
+        else:
+            try:
+                df_prc = df_prices[tickers]
+            except KeyError as e:
+                return print('ERROR: Check tickers')
+        return df_prc.apply(lambda x: 1 - x.dropna().iloc[0]/x.dropna()).mul(100).round(2)
             
 
 
