@@ -1524,6 +1524,7 @@ class FundDownloader():
         self.freq = freq # price data freq
         # period of a batch for downloading. days if freq is daily, months if monthly
         self.batch_size = batch_size 
+        self.interval_min = None # a list of start & end dates just enough to rate conversion
         self.failed = [] # tickers failed to download
         self.debug_fetch_data = None # for debugging. see _download_data
         # check missing data for conversion
@@ -1634,7 +1635,7 @@ class FundDownloader():
                 failed.append(x)
                 continue
             else:
-                cond = (df['type'] == '결산') # 결산및상환 탭의 구분명 컬럼값
+                cond = (df['type'] == '결산') # "결산 및 상환" 탭의 "구분명" 컬럼값
                 start = df.loc[cond, 'start'].max()
                 end = df.set_index('start').loc[start, 'end']
                 
@@ -1708,6 +1709,7 @@ class FundDownloader():
         set tickers to download prices
         tickers: tickers to download.
         """
+        cols_check = self.cols_check
         data_tickers = self.data_tickers
         if data_tickers is None:
             return print('ERROR')
@@ -1723,6 +1725,12 @@ class FundDownloader():
             if n > 0:
                 print(f'WARNING: {n} funds unable to process')
                 tickers = pd.Index(tickers).intersection(tickers_all).to_list()
+
+        # set start & end dates required for rate conversion
+        col_start, col_end = [cols_check[i] for i in [0,2]]
+        start = data_tickers.loc[tickers, col_start].min()
+        end = data_tickers.loc[tickers, col_start].max()
+        self.interval_min = [start, end]
     
         print(f'{len(tickers)} tickers set to download')
         self.tickers = tickers
@@ -1742,6 +1750,19 @@ class FundDownloader():
         if tickers is None:
             return print('ERROR: load tickers first')
 
+        # date check for rate conversion
+        start, end = pd.DatetimeIndex([start_date, end_date])
+        istart, iend = self.interval_min
+        msgw = False
+        if start > istart:
+            start_date = istart.strftime('%Y-%m-%d')
+            msgw = True
+        if end < iend:
+            end_date = iend.strftime('%Y-%m-%d')
+            msgw = True
+        if msgw:
+            print(f'WARNING: Download period set to {start_date} ~ {end_date} for rate conversion')
+        
         batch_size = self._check_var(batch_size, self.batch_size)
         kwargs = dict(freq=self.freq, batch_size=batch_size, 
                       url=url, headers=headers, interval=interval, 
@@ -2102,18 +2123,16 @@ class FundDownloader():
  
         unit = 100 if percentage else 1
         dt1, prc1, dt2, prc2 = [data[x] for x in self.cols_check]
-        if dt1 is None: # reset all others
+        if dt1 is None: # reset all conversion data for the ticker
             rat1 = sr_rate.iloc[0]
             prc1 = price_init
             dt2 = sr_rate.index.max()
             # set price to get zero for conversion error
             prc2 = prc1 * (sr_rate.loc[dt2] + unit) / unit
         else:
-            print('testing:', dt1)
-            print('testing:', sr_rate)
             try:
                 rat1 = sr_rate.loc[dt1]
-            except KeyError as e:
+            except KeyError as e: # df_rates has no date for conversion
                 return print(f'ERROR: Check data for {ticker}')
                 
         # calc price from rate
@@ -2201,6 +2220,16 @@ class FundDownloader():
             return None
         else:
             return df_cost
+
+
+    def util_check_price(self):
+        """
+        return rate converted from price to check if price conversion works or not
+        """
+        df_prices = self.df_prices
+        if df_prices is None:
+            return None
+        return df_prices.apply(lambda x: 1 - x.dropna().iloc[0]/x.dropna()).mul(100).round(2)
             
 
 
