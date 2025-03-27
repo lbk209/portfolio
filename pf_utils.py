@@ -678,13 +678,14 @@ class TimeTracker:
 class DataManager():
     def __init__(self, file=None, path='.', 
                  universe='kospi200', tickers='KRX/INDEX/STOCK/1028', 
-                 to_daily=False, days_in_year=12):
+                 to_daily=False, days_in_year=12, **kwargs):
         """
         universe: kospi200, etf, krx, fund, etc. only for getting tickers. see pf_data for more
         file: price history. set as kw for pf_data
         tickers: ticker for getting pool of tickers. can be a file name for tickers as well.
         to_daily: set to True if convert montly price to daily
         days_in_year: only for convert_to_daily
+        kwargs: additional kwargs for each universe
         """
         file = set_filename(file, 'csv') 
         self.file_historical = get_file_latest(file, path) # latest file
@@ -695,6 +696,7 @@ class DataManager():
         self.df_prices = None
         self.to_daily = to_daily
         self.days_in_year = days_in_year
+        self.kwargs_universe = kwargs
         # update self.df_prices
         self.upload(self.file_historical, get_names=True, convert_to_daily=to_daily)
 
@@ -722,7 +724,6 @@ class DataManager():
     @print_runtime
     def download(self, start_date=None, end_date=None, n_years=3, tickers=None,
                  save=True, date_format='%Y-%m-%d', close_today=False, 
-                 update_master=True, overwrite_master=False, # kwargs for _get_tickers
                  **kwargs_download):
         """
         download df_prices by using FinanceDataReader
@@ -736,7 +737,7 @@ class DataManager():
                                                                close_today, n_years, date_format)
         print('Downloading ...')
         
-        security_names = self._get_tickers(tickers, update_master=update_master, overwrite_master=overwrite_master)
+        security_names = self._get_tickers(tickers)
         if security_names is None:
             return None # see _get_tickers for error msg
         else:
@@ -794,11 +795,12 @@ class DataManager():
         return print(f'{s1}{n} securities from {dt0} to {dt1}{s2}')
 
 
-    def _get_tickers(self, tickers=None, **kwargs):
+    def _get_tickers(self, tickers=None):
         """
         tickers: None for all in new universe, 'selected' for all in df_prices, 
                  or list of tickers in new universe
         """
+        kwargs = self.kwargs_universe
         uv = self.universe.lower()
         if uv == 'kospi200':
             func = self._get_tickers_kospi200
@@ -813,8 +815,10 @@ class DataManager():
         elif uv == 'yahoo':
             func = self._get_tickers_yahoo
         else:
-            func = lambda **x: None
-     
+            print(f'WARNING: kospi200 set as no universe such as {uv}')
+            func = self._get_tickers_kospi200
+            #func = lambda **x: None
+        
         try:
             security_names = func(tickers, **kwargs)
             failed = 'ERROR: Failed to get ticker names' if len(security_names) == 0 else None
@@ -864,23 +868,18 @@ class DataManager():
         return df.set_index(col_ticker)[col_name].to_dict()
 
 
-    def _get_tickers_fund(self, tickers=None, path=None, col_name='name', 
-                          update_master=False, overwrite_master=False, **kw):
+    def _get_tickers_fund(self, tickers=None, path=None, col_name='name', **kw):
         """
         self.fickers: file name for tickers
-        update_master: download data to update master
-        overwrite_master: set to False to only update values that are NA in the master
         """
         file = self.tickers # file of tickers
         path = self._check_var(path, self.path)
-        # check_master set to False to run after init
-        fd = FundDownloader(file, path, check_master=False, msg=False)
-        if fd.check_master(): # True if no duplicated
-            # update conversion data & commissions. proceeds even if update fails
-            if update_master:
-                fd.update_master(save=True, overwrite=overwrite_master)
-        else:
-            raise Exception('See check_master') # duplicates exist
+        # get kwa to init FundDownloader
+        ks = ['check_master', 'msg', 'freq', 'batch_size']
+        kwargs = {k:v for k,v in self.kwargs_universe.items() if k in ks}
+        fd = FundDownloader(file, path, **kwargs)
+        if not fd.check_master(): # True if no duplicated
+            raise Exception('See check_master')
         security_names = fd.data_tickers[col_name].to_dict()
         return self._check_tickers(security_names, tickers)
         
@@ -896,14 +895,18 @@ class DataManager():
         return self._check_tickers(security_names, tickers)
 
 
-    def _get_tickers_yahoo(self, tickers, col_name='longName', **kw):
-        if tickers is None:
+    def _get_tickers_yahoo(self, tickers=None, col_name='longName', **kw):
+        """
+        tickers: subset of self.tickers or None
+        """
+        tkrs_uv = self.tickers # universe as tickers
+        if tkrs_uv is None:
             print('ERROR: Set tickers for names')
             return dict()
-        if isinstance(tickers, str):
+        yft = yf.Tickers(' '.join(tkrs_uv))
+        security_names = {x:yft.tickers[x].info[col_name] for x in tkrs_uv}
+        if isinstance(tickers, str): 
             tickers = [tickers]
-        yft = yf.Tickers(' '.join(tickers))
-        security_names = {x:yft.tickers[x].info[col_name] for x in tickers}
         return self._check_tickers(security_names, tickers)
         
 
@@ -932,12 +935,12 @@ class DataManager():
         args, kwargs: for DataManager.download_*
         """
         universe = self.universe
-        file = self.tickers
-        path = self.path
-        return DataManager.download_universe(universe, *args, file=file, path=path, **kwargs)
+        kwargs = {**self.kwargs_universe, **kwargs, 
+                  'file':self.tickers, 'path':self.path} # see download_fund
+        return DataManager.download_universe(universe, *args, **kwargs)
 
     @staticmethod
-    def download_universe(universe, *args, file=None, path=None, **kwargs):
+    def download_universe(universe, *args, **kwargs):
         """
         return df of price history if multiple tickers set, series if a single ticker set
         universe: krx, yahoo, file, default(fdr)
@@ -950,7 +953,7 @@ class DataManager():
             # use pykrx as fdr seems ineffective to download all tickers in krx
             func = DataManager.download_krx
         elif uv == 'fund':
-            func = lambda *a, **k: DataManager.download_fund(*a, file=file, path=path, **k)
+            func = DataManager.download_fund
         elif uv == 'yahoo':
             func = DataManager.download_yahoo
         elif uv == 'file':
@@ -964,7 +967,10 @@ class DataManager():
             return print(f'ERROR: Failed to download prices as {e}')
 
     @staticmethod
-    def download_fdr(tickers, start_date, end_date, col_price1='Adj Close', col_price2='Close'):
+    def download_fdr(tickers, start_date, end_date, col_price1='Adj Close', col_price2='Close', **kw):
+        """
+        kw: dummy
+        """
         if isinstance(tickers, str):
             tickers = [tickers]
         df_data = fdr.DataReader(tickers, start_date, end_date)
@@ -979,7 +985,7 @@ class DataManager():
         
     @staticmethod
     def download_krx(tickers, start_date, end_date,
-                      interval=5, pause_duration=1, msg=False):
+                      interval=5, pause_duration=1, msg=False, **kw):
         """
         tickers: list of tickers
         """
@@ -991,17 +997,19 @@ class DataManager():
     @staticmethod
     def download_fund(tickers, start_date, end_date,
                       interval=5, pause_duration=1, msg=False,
-                      file=None, path='.', file_rate=None):
+                      file=None, path='.', freq='daily', batch_size=100, **kw):
         """
         file: master file of fund data
         """
-        fd = FundDownloader(file, path, check_master=True, msg=False)
-        fd.set_tickers(tickers, file_rate=file_rate)
-        _ = fd.download(start_date, end_date, save=False, msg=msg)
+        fd = FundDownloader(file, path=path, check_master=True, 
+                            freq=freq, batch_size=batch_size, msg=False)
+        fd.set_tickers(tickers)
+        _ = fd.download(start_date, end_date, save=False, msg=msg,
+                        interval=interval, pause_duration=pause_duration)
         return fd.df_prices
 
     @staticmethod
-    def download_yahoo(tickers, start_date, end_date, col_price='Adj Close'):
+    def download_yahoo(tickers, start_date, end_date, col_price='Close', **kw):
         if isinstance(tickers, str):
             tickers = [tickers]
         df_data = yf.download(tickers, start_date, end_date)
@@ -1022,15 +1030,14 @@ class DataManager():
             return print(f'{msg_exception}{e}')
 
     
-    def get_names(self, tickers=None, reset=False, **kwargs):
+    def get_names(self, tickers=None, reset=False):
         """
         tickers: None, 'selected' or list of tickers
         reset: True to get security_names aftre resetting first
-        kwargs: additional args for _get_tickers
         """
         security_names = self.security_names
         if reset or (security_names is None):
-            security_names = self._get_tickers(tickers, **kwargs)
+            security_names = self._get_tickers(tickers)
             if security_names is None:
                 return None
             else: # reset security_names
@@ -1498,22 +1505,21 @@ class KRXDownloader():
 
 
 class FundDownloader():
-    def __init__(self, file, path='.', file_historical=None, check_master=True, msg=True,
+    def __init__(self, file=None, path='.', file_historical=None, check_master=True, msg=True,
+                 freq='daily', batch_size=None, # recommended 150 days for daily, 24 months for monthly
                  col_ticker='ticker', 
                  cols_check=['check1_date', 'check1_price', 'check2_date', 'check2_price'],
                  cols_commissions=['buy', 'sell', 'fee'],
                  url = "https://dis.kofia.or.kr/proframeWeb/XMLSERVICES/",
                  headers = {"Content-Type": "application/xml"}):
+        file = set_filename(file, 'csv')
+        file_historical = set_filename(file_historical, 'csv') 
         # master file of securities with ticker, name, adjusting data, etc
         self.file_master = get_file_latest(file, path)
         # price file name
         file_historical = None if file_historical is None else get_file_latest(file_historical, path)
         self.file_historical = file_historical
         self.path = path
-        # temp file for cumulative downloading
-        # independent file from file_historical for the case of debugging
-        self.file_rate = None 
-        self.path_rate = None
         self.col_ticker = col_ticker
         self.cols_check = cols_check
         self.cols_commissions = cols_commissions
@@ -1523,10 +1529,18 @@ class FundDownloader():
         self.headers = headers
         self.tickers = None # tickers to download rate
         self.df_prices = None
-        self.failed = [] # tickers failed to download
+        #self.df_rates = None # rate data downloaded to calc df_prices
+        self.freq = freq # price data freq
+        # period of a batch for downloading. days if freq is daily, months if monthly
+        self.batch_size = batch_size 
+        self.interval_min = None # a list of start & end dates just enough to rate conversion
+        self.failed = {} # tickers failed to download
         self.debug_fetch_data = None # for debugging. see _download_data
         # check missing data for conversion
         _ = self.check_master() if check_master else None
+        if batch_size is None:
+            print(f'ERROR: Set batch_size for {freq} price data')
+            print(f'Check {url} first to determine the batch_size')
         
 
     def _load_master(self, msg=True):
@@ -1571,20 +1585,22 @@ class FundDownloader():
         return True
 
 
-    def update_master(self, save=True, overwrite=False,
+    def update_master(self, save=True, overwrite=False, batch_size=None,
                       interval=5, pause_duration=.1, msg=False):
         """
         update & save the master file
         overwrite: set to False to update only update values that are NA
+        batch_size: adjust if necessary
         """
         data_tickers = self.data_tickers
         if data_tickers is None:
             return print('ERROR: No data_tickers available')
-            
+
+        batch_size = self._check_var(batch_size, self.batch_size)
         kw = dict(interval=interval, pause_duration=pause_duration, 
                   msg=msg, overwrite=overwrite)
         # update data for conversion to price
-        df_up = self._get_master_conversions(data_tickers, **kw)
+        df_up = self._get_master_conversions(data_tickers, batch_size=batch_size, **kw)
         if df_up is not None:
             data_tickers.update(df_up, overwrite=True)
 
@@ -1601,8 +1617,8 @@ class FundDownloader():
         return None
 
 
-    def _get_master_conversions(self, data_tickers, interval=5, pause_duration=.1, 
-                              msg=False, overwrite=False):
+    def _get_master_conversions(self, data_tickers, batch_size=120, interval=5, pause_duration=.1, 
+                                msg=False, overwrite=False):
         """
         download convesion data to update data_tickers
         """
@@ -1628,20 +1644,19 @@ class FundDownloader():
                 failed.append(x)
                 continue
             else:
-                cond = (df['type'] == '결산')
+                cond = (df['type'] == '결산') # "결산 및 상환" 탭의 "구분명" 컬럼값
                 start = df.loc[cond, 'start'].max()
                 end = df.set_index('start').loc[start, 'end']
                 
             # download date & price for conversion from rate to price
-            df = self.download_price(x, start, end, msg=msg)
-            if df is None:
+            sr_p = self.download_price(x, start, end, freq=self.freq, batch_size=batch_size, msg=msg)
+            if sr_p is None:
                 failed.append(x)
                 continue
             else:
-                sr = df['price']
-                start = sr.index.min()
-                end = sr.index.max()
-                data.append([x, start, sr[start], end, sr[end]])
+                start = sr_p.index.min()
+                end = sr_p.index.max()
+                data.append([x, start, sr_p[start], end, sr_p[end]])
             tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
         tracker.stop()
         
@@ -1659,7 +1674,7 @@ class FundDownloader():
 
 
     def _get_master_commissions(self, data_tickers, interval=5, pause_duration=.1, 
-                                   msg=False, overwrite=False):
+                                msg=False, overwrite=False):
         """
         download commission data to update data_tickers
         """
@@ -1698,13 +1713,12 @@ class FundDownloader():
             return None
         
 
-    def set_tickers(self, tickers=None, col_ticker='ticker', file_rate=None, path=None):
+    def set_tickers(self, tickers=None, col_ticker='ticker'):
         """
         set tickers to download prices
-        tickers: tickers to download. ignored for continuing cumulative downloading
-        file_rate: file of rate for cumulative downloading
-        path: path for file_rate
+        tickers: tickers to download.
         """
+        cols_check = self.cols_check
         data_tickers = self.data_tickers
         if data_tickers is None:
             return print('ERROR')
@@ -1720,139 +1734,78 @@ class FundDownloader():
             if n > 0:
                 print(f'WARNING: {n} funds unable to process')
                 tickers = pd.Index(tickers).intersection(tickers_all).to_list()
-                
-        if file_rate: # prepare cumulative downloading
-            path = self._check_var(path, self.path)
-            df_rates = self._load(file_rate, path)
-            if df_rates is not None:
-                if df_rates.columns.intersection(tickers).size > 0:
-                    print('WARNING: Specified tickers ignored to complete existing cumulative downloading')
-                    tickers = df_rates.columns.to_list()
-                else: # existing file ignored to start new cumulative downloading
-                    df_rates = None
-            if df_rates is None:
-                print(f'REMINDER: Make sure starting new cumulative downloading')  
 
-            print(f'Cumulative Downloading set with {file_rate}')
-            self.df_prices = df_rates
-            self.file_rate = file_rate # turn on cumulative downloading
-            self.path_rate = path
-        else:
-            self.file_rate = None # reset to normal downloading
+        # set start & end dates required for rate conversion
+        col_start, col_end = [cols_check[i] for i in [0,2]]
+        start = data_tickers.loc[tickers, col_start].min()
+        end = data_tickers.loc[tickers, col_start].max()
+        self.interval_min = [start, end]
     
         print(f'{len(tickers)} tickers set to download')
         self.tickers = tickers
         return None
-    
-    def download(self, start_date, end_date, freq='monthly', percentage=True,
+
+
+    def download(self, start_date, end_date, percentage=True,
                  url=None, headers=None,
-                 interval=5, pause_duration=.1, msg=False, 
-                 file=None, path=None, save=True, update=False, years=2):
+                 interval=5, pause_duration=.1, msg=False, batch_size=None,
+                 file=None, path=None, save=True):
         """
         download rate and convert to price using prices in settlement info
         file/path: file/path to save price data
-        update: set to True to add new price data to existing date in file 
-        years: unit period for cumulative downloading
         """
         data_tickers = self.data_tickers
         tickers = self.tickers
-        file_rate = self.file_rate
         if tickers is None:
             return print('ERROR: load tickers first')
-    
-        kwargs = dict(freq=freq, url=url, headers=headers, interval=interval, 
+
+        # date check for rate conversion
+        start, end = pd.DatetimeIndex([start_date, end_date])
+        istart, iend = self.interval_min
+        msgw = False
+        if start > istart:
+            start_date = istart.strftime('%Y-%m-%d')
+            msgw = True
+        if end < iend:
+            end_date = iend.strftime('%Y-%m-%d')
+            msgw = True
+        if msgw:
+            print(f'WARNING: Download period set to {start_date} ~ {end_date} for rate conversion')
+        
+        batch_size = self._check_var(batch_size, self.batch_size)
+        kwargs = dict(freq=self.freq, batch_size=batch_size, 
+                      url=url, headers=headers, interval=interval, 
                       pause_duration=pause_duration, msg=msg)
-        # download rates
-        if file_rate: # cumulative downloading
-            df_rates = self.df_prices
-            print(f'Starting Cumulative Downloading where {file_rate} will be overwritten')
-            df_rates = self._download_cumulative(start_date, end_date, df_rates, tickers, 
-                                                 years, file_rate, self.path_rate, 
-                                                 percentage=percentage, **kwargs)
-            if df_rates.index.duplicated().any():
-                print('ERROR: Check duplicated dates in rate data')
-                return df_rates
-            # remove all the failed tickers 
-            df_rates = df_rates[df_rates.columns.difference(self.failed)]
-        else:
-            df_rates = self._get_rate(tickers, start_date, end_date, **kwargs)
+        df_rates = self._get_rate(tickers, start_date, end_date, **kwargs)
         
         # convert to price
         df_prices, sr_err = self._get_prices(df_rates, data_tickers, percentage=percentage, msg=msg)
         if sr_err is not None:
             self.df_prices = df_prices.round(1)
-            self.save(file, path, update=update) if save else None
+            self.save(file, path) if save else None
+            _ = [print(f'{len(v)} tickers failed for {k}') for k, v in self.failed.items() if len(v) > 0]    
         return sr_err
 
     
-    def _download_cumulative(self, start_date, end_date, df_rates, tickers, years, file, path, 
-                             percentage=True, **kwargs) :
-        start_date, end_date = pd.DatetimeIndex([start_date, end_date])
-        if df_rates is None:
-            end = end_date
-        else:
-            start, end = get_date_minmax(df_rates)
-            if end != end_date:
-                end, end_date = [x.strftime('%Y-%m-%d') for x in [end, end_date]]
-                return print(f'ERROR: End date {end} of data differs with {end_date}')
-            else:
-                end = start - pd.DateOffset(days=1)
-                # remove tickers from downloading if value of start date is None
-                tickers = df_rates.columns[df_rates.sort_index().iloc[0].notna()]
-                
-        # download rates
-        unit = 100 if percentage else 1
-        pbar = tqdm(total=len(tickers))
-        while (end >= start_date) and (len(tickers) > 0):
-            # loop for reverse time order to filter out completed tickers
-            start = max(end - pd.DateOffset(years=years), start_date)
-            df_r = self._get_rate(tickers, start, end, progress_meter=False, **kwargs)
-            if df_r is None:
-                continue
-            else:
-                if df_r.sum().sum() == 0:
-                    pbar.update(len(tickers))
-                    break
-            df_r = df_r.sort_index()
-            if df_rates is None:
-                df_rates = df_r
-            else:
-                for tkr in df_r.columns:
-                    ft = (1 + df_r[tkr].dropna().iloc[-1] / unit)
-                    df_rates[tkr] = ft * (unit + df_rates[tkr])  - unit
-                # remove last date of df_r before concat
-                df_rates = pd.concat([df_rates, df_r.iloc[:-1]], axis=0)
-            df_rates = df_rates.sort_index().round(2)
-            _ = save_dataframe(df_rates, file, path, overwrite=True, msg_succeed=None)
-            n = len(tickers)
-            # remove tickers completed
-            tickers = df_rates.columns[df_rates.iloc[0].notna()]
-            pbar.update(n - len(tickers))
-            end = df_rates.index.min() # include prv start date
-        pbar.close()
-        return df_rates
-        
-    
-    def _get_rate(self, tickers, start_date, end_date, freq='monthly',
+    def _get_rate(self, tickers, start_date, end_date, freq='monthly', batch_size=24,
                        url=None, headers=None,
                        interval=5, pause_duration=.1, msg=False, progress_meter=True):
         url = self._check_var(url, self.url)
         headers = self._check_var(headers, self.headers)
-        self.failed = [] # reset for new downloading
+        failed = [] 
     
         tracker = TimeTracker(auto_start=True)
         df_rates = None
         for x in (tqdm(tickers) if progress_meter else tickers):
-            df = self.download_rate(x, start_date, end_date, freq=freq, msg=msg,
-                                    url=url, headers=headers)
-            if df is None:
-                self.failed.append(x)
+            sr_tkr = self.download_rate(x, start_date, end_date, freq=freq, batch_size=batch_size,
+                                    msg=msg, url=url, headers=headers)
+            if sr_tkr is None:
+                failed.append(x)
             else:
-                sr = df['rate'].rename(x)
                 if df_rates is None:
-                    df_rates = sr.to_frame() 
+                    df_rates = sr_tkr.to_frame() 
                 else:
-                    df_rates = pd.concat([df_rates, sr], axis=1)
+                    df_rates = pd.concat([df_rates, sr_tkr], axis=1)
             tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
         tracker.stop(msg=msg)
     
@@ -1860,21 +1813,24 @@ class FundDownloader():
             return print('ERROR: Set msg to True to see error messages')
         else:
             df_rates = df_rates.sort_index()
-            n = len(self.failed)
+            n = len(failed)
             print(f'WARNING: {n} tickers failed to download') if n>0 else None
+        self.failed = {} # reset for new downloading
+        self.failed['downloading'] = failed
         return df_rates
         
 
     def _get_prices(self, df_rates, data_tickers, percentage=True, msg=True):
         df_prices = None
+        failed = [] # tickers failed to convert
         # convert nan & NaT to None for to_dict
         data_tickers = data_tickers.map(lambda x: 0 if pd.isna(x) else x).replace(0, None)
         errors, index_errors = list(), list()
         for x in df_rates.columns:
             sr_n_err = self._convert_rate(x, data_tickers, df_rates, percentage=percentage, msg=msg)
-            if sr_n_err is None:
-                print(f'ERROR: check data for {x}')
-            else:
+            if sr_n_err is None: # see _convert_rate for err msg
+                failed.append(x)
+            else: 
                 sr, err = sr_n_err
                 df_prices = sr.to_frame() if df_prices is None else pd.concat([df_prices, sr], axis=1)
                 index_errors.append(x)
@@ -1885,20 +1841,77 @@ class FundDownloader():
             sr_err = pd.Series(errors, index=index_errors, name='error')
         else:
             sr_err = None
+        self.failed['conversion'] = failed # reset old conversion error
         return df_prices, sr_err
+
+
+    def download_rate(self, ticker, start_date, end_date, freq='monthly', batch_size=24, 
+                       percentage=True, **kwargs):
+        """
+        download rate data of ticker
+        kwargs: additional args for _download_rate
+        """
+        start_date, end_date = pd.DatetimeIndex([start_date, end_date])
+        kw_offset = {'months' if freq=='monthly' else 'days': batch_size}
+        unit = 100 if percentage else 1
+        end = end_date
+        sr_rates = None
+        while end >= start_date:
+            start = max(end - pd.DateOffset(**kw_offset), start_date)
+            sr_p = self._download_rate(ticker, start, end, freq=freq, **kwargs)
+            if (sr_p is None) or sr_p.sum() == 0:
+                break
+    
+            if sr_rates is None:
+                sr_rates = sr_p
+            else:
+                if sr_p.index.min() == sr_rates.index.min():
+                        break
+                else:
+                    sr_p = sr_p.sort_index()
+                    # convert sr_rates based on sr_p
+                    ft = (1 + sr_p.dropna().iloc[-1] / unit)
+                    sr_rates = ft * (unit + sr_rates)  - unit
+                    # remove last date of sr_p before concat
+                    sr_p = sr_p.iloc[:-1] if sr_p.index.max() == sr_rates.index.min() else sr_p
+                    sr_rates = pd.concat([sr_rates, sr_p], axis=0)
+            end = sr_rates.index.min() # include prv start date
+        return sr_rates.sort_index().round(2) if sr_rates is not None else None
+
+
+    def download_price(self, ticker, start_date, end_date, freq='daily', batch_size=120, 
+                       percentage=True, **kwargs):
+        """
+        download price data of ticker
+        kwargs: additional args for _download_price
+        """
+        start_date, end_date = pd.DatetimeIndex([start_date, end_date])
+        kw_offset = {'months' if freq=='monthly' else 'days': batch_size}
+        end = end_date
+        sr_prices = None
+        while end >= start_date:
+            start = max(end - pd.DateOffset(**kw_offset), start_date)
+            sr_p = self._download_price(ticker, start, end, freq=freq, **kwargs)
+            if sr_p is None:
+                break
+            else:
+                sr_p = sr_p['price']
+    
+            if sr_prices is None:
+                sr_prices = sr_p
+            else:
+                if sr_p.index.min() == sr_prices.index.min():
+                    break
+                else:
+                    sr_p = sr_p.sort_index()
+                    # remove last date of sr_p before concat
+                    sr_p = sr_p.iloc[:-1] if sr_p.index.max() == sr_prices.index.min() else sr_p
+                    sr_prices = pd.concat([sr_prices, sr_p], axis=0)
+            end = sr_prices.index.min() # include prv start date
+        return sr_prices.sort_index().round(1) if sr_prices is not None else None
         
 
-    def _load(self, file, path):
-        """
-        load files such as self.file_historical or self.file_rate
-        """
-        try:
-            return pd.read_csv(f'{path}/{file}', parse_dates=[0], index_col=[0])
-        except FileNotFoundError as e:
-            return None
-
-
-    def save(self, file=None, path=None, update=False, overwrite=False):
+    def save(self, file=None, path=None, overwrite=False):
         """
         save price data
         """
@@ -1908,17 +1921,6 @@ class FundDownloader():
         
         file = self._check_var(file, self.file_historical)
         path = self._check_var(path, self.path)
-        if update: # add df_prices to existing price file
-            df_prc = self._load(file, path)
-            if df_prc is not None:
-                tkrs = df_prices.columns.intersection(df_prc.columns)
-                if tkrs.size > 0:
-                    print(f'ERROR: Cannot update {file} as some tickers duplicated')
-                    return tkrs.to_list()
-                else:
-                    df_prices = pd.concat([df_prc, df_prices], axis=1)
-                    overwrite = True
-        
         self._save(df_prices, file, path, overwrite=overwrite)
         return None
 
@@ -1952,7 +1954,7 @@ class FundDownloader():
         return None
 
 
-    def download_rate(self, ticker, start_date, end_date, freq='m',
+    def _download_rate(self, ticker, start_date, end_date, freq='m',
                        msg=False, url=None, headers=None, date_format='%Y%m%d',
                        payload="""<?xml version="1.0" encoding="utf-8"?>
                                     <message>
@@ -1981,7 +1983,7 @@ class FundDownloader():
         if df is not None:
             df = df.set_index('date')
             df.index = pd.to_datetime(df.index)
-            df['rate'] = df['rate'].astype('float')
+            df = df['rate'].astype('float').rename(ticker)
         return df
         
 
@@ -2012,7 +2014,7 @@ class FundDownloader():
         return df
 
 
-    def download_price(self, ticker, start_date, end_date, freq='m',
+    def _download_price(self, ticker, start_date, end_date, freq='m',
                         msg=False, url=None, headers=None, date_format='%Y%m%d',
                         payload = """<?xml version="1.0" encoding="utf-8"?>
                                     <message>
@@ -2137,7 +2139,7 @@ class FundDownloader():
  
         unit = 100 if percentage else 1
         dt1, prc1, dt2, prc2 = [data[x] for x in self.cols_check]
-        if dt1 is None: # reset all others
+        if dt1 is None: # reset all conversion data for the ticker
             rat1 = sr_rate.iloc[0]
             prc1 = price_init
             dt2 = sr_rate.index.max()
@@ -2146,8 +2148,8 @@ class FundDownloader():
         else:
             try:
                 rat1 = sr_rate.loc[dt1]
-            except KeyError as e:
-                return print(f'ERROR: Check data for {ticker}')
+            except KeyError as e: # df_rates has no date for conversion
+                return print(f'ERROR: Check data for {ticker}') if msg else None
                 
         # calc price from rate
         price_base = prc1 / (rat1 + unit)
@@ -2234,6 +2236,37 @@ class FundDownloader():
             return None
         else:
             return df_cost
+
+
+    def load_price(self, file=None, path=None):
+        """
+        load data to check result
+        """
+        file = self._check_var(file, self.file_historical)
+        path = self._check_var(path, self.path)
+        try:
+            df_prices = pd.read_csv(f'{path}/{file}', parse_dates=[0], index_col=[0])
+        except FileNotFoundError as e:
+            return print('ERROR: No price data to load')
+        self.df_prices = df_prices
+        return None
+
+
+    def util_check_price(self, tickers=None):
+        """
+        return rate converted from price to check if price conversion works or not
+        """
+        df_prices = self.df_prices
+        if df_prices is None:
+            return None
+        if tickers is None:
+            df_prc = df_prices
+        else:
+            try:
+                df_prc = df_prices[tickers]
+            except KeyError as e:
+                return print('ERROR: Check tickers')
+        return df_prc.apply(lambda x: 1 - x.dropna().iloc[0]/x.dropna()).mul(100).round(2)
             
 
 
@@ -6647,7 +6680,8 @@ class PortfolioManager():
     @staticmethod
     def create_universe(name, *args, **kwargs):
         """
-        args, kwargs: args & kwargs for DataManager
+        name: name of universe for DataManager input
+        args, kwargs: args & kwargs to replace DataManager input
         """
         pfd = PortfolioData()
         universe_data = pfd.review_universe(name)

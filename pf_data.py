@@ -1,20 +1,20 @@
 path_data = 'data'
 path_tran = 'transaction'
 
-# Universe: equity pool, price file, daily/monthly, ticker
-kwargs_dm = ['universe', 'file', 'tickers', 'to_daily'] # kwargs of DataManager
+# Universe: init data for DataManager
 UNIVERSES = dict(
-    UV_K200 = ['kospi200', 'kospi200_prices', 'KRX/INDEX/STOCK/1028', False],
-    UV_KRX = ['krx', 'krx_prices', 'KOSPI,KOSDAQ', False],
-    UV_LIQ = ['krx', 'krx_liq_prices', 'KOSPI,KOSDAQ', False],
-    UV_WTR = ['etf', 'etfs_weather', 'ETF/KR', False],
-    UV_ETF = ['etf', 'etfs_all', 'ETF/KR', False],
-    UV_FUND = ['fund', 'funds_prices', 'funds_info', True],
-    #UV_FUND = ['fund', 'test_funds_prices', 'test_funds_info', False], # for testing
-    UV_FCTR = ['yahoo', 'etfs_factors', None, False]
+    UV_K200 = dict(universe='kospi200', file='kospi200_prices', tickers='KRX/INDEX/STOCK/1028'),
+    UV_KRX = dict(universe='krx', file='krx_prices', tickers='KOSPI,KOSDAQ'),
+    UV_LIQ = dict(universe='krx', file='krx_liq_prices', tickers='KOSPI,KOSDAQ'),
+    UV_WTR = dict(universe='etf', file='etfs_weather', tickers='ETF/KR'),
+    UV_ETF = dict(universe='etf', file='etfs_all', tickers='ETF/KR'),
+    UV_FUND = dict(universe='fund', file='funds_prices', tickers='funds_info',
+                   freq='daily', batch_size=100, check_master=True),
+    UV_FNDM = dict(universe='fund', file='fundm_prices', tickers='fundm_info',
+                   freq='monthly', batch_size=12, check_master=True), # fund data of monthly bassis
+    UV_FCTR = dict(universe='yahoo', file='etfs_factors', tickers=None) # universe defined by tickers each time
 )
-UNIVERSES = {k: {**dict(zip(kwargs_dm, v)), 'path':path_data} for k,v in UNIVERSES.items()}
-
+UNIVERSES = {k: {**v, 'path':path_data} for k,v in UNIVERSES.items()}
 
 # Portfolio strategy: strategy name to data
 STRATEGIES = dict(
