@@ -17,6 +17,7 @@ import requests
 import plotly.express as px
 import plotly.graph_objects as go
 import xarray as xr
+import asyncio, nest_asyncio
 
 from datetime import datetime, timedelta
 from datetime import date as datetime_date
@@ -60,6 +61,8 @@ METRICS = [
 
 WEEKS_IN_YEAR = 51
 
+# allows asyncio.run() inside an already running event loop
+nest_asyncio.apply()
 
 def valuate_bond(face, rate, year, ytm, n_pay=1):
     """
@@ -1749,10 +1752,12 @@ class FundDownloader():
     def download(self, start_date, end_date, percentage=True,
                  url=None, headers=None,
                  interval=5, pause_duration=.1, msg=False, batch_size=None,
-                 file=None, path=None, save=True):
+                 file=None, path=None, save=True, n_retry=3, timeout=60):
         """
         download rate and convert to price using prices in settlement info
         file/path: file/path to save price data
+        n_retry: total num of retry of downloading rate
+        timeout: time to wait to reserve a ticker for later retry
         """
         data_tickers = self.data_tickers
         tickers = self.tickers
@@ -1775,8 +1780,9 @@ class FundDownloader():
         batch_size = self._check_var(batch_size, self.batch_size)
         kwargs = dict(freq=self.freq, batch_size=batch_size, 
                       url=url, headers=headers, interval=interval, 
-                      pause_duration=pause_duration, msg=msg)
-        df_rates = self._get_rate(tickers, start_date, end_date, **kwargs)
+                      pause_duration=pause_duration, msg=msg,
+                      n_retry=n_retry, timeout=timeout)
+        df_rates = asyncio.run(self._get_rate(tickers, start_date, end_date, **kwargs))
         
         # convert to price
         df_prices, sr_err = self._get_prices(df_rates, data_tickers, percentage=percentage, msg=msg)
@@ -1787,28 +1793,48 @@ class FundDownloader():
         return sr_err
 
     
-    def _get_rate(self, tickers, start_date, end_date, freq='monthly', batch_size=24,
-                       url=None, headers=None,
-                       interval=5, pause_duration=.1, msg=False, progress_meter=True):
+    async def _get_rate(self, tickers, start_date, end_date, freq='monthly', batch_size=24,
+                   url=None, headers=None,
+                   interval=5, pause_duration=.1, msg=False, progress_meter=True, 
+                   n_retry=3, timeout=60):
         url = self._check_var(url, self.url)
         headers = self._check_var(headers, self.headers)
-        failed = [] 
-    
-        tracker = TimeTracker(auto_start=True)
-        df_rates = None
-        for x in (tqdm(tickers) if progress_meter else tickers):
-            sr_tkr = self.download_rate(x, start_date, end_date, freq=freq, batch_size=batch_size,
-                                    msg=msg, url=url, headers=headers)
-            if sr_tkr is None:
-                failed.append(x)
-            else:
-                if df_rates is None:
-                    df_rates = sr_tkr.to_frame() 
+        kw_dr = dict(freq=freq, batch_size=batch_size, msg=msg, url=url, headers=headers)
+        
+        async def func(tkrs, df_rates, failed, tkrs_tout, tracker):
+            for x in (tqdm(tkrs) if progress_meter else tkrs):
+                try:
+                    sr_tkr = await asyncio.wait_for(
+                                                self.download_rate(x, start_date, end_date, **kw_dr), 
+                                                timeout=timeout)
+                except asyncio.TimeoutError:
+                    tkrs_tout.append(x)
+                    
+                if sr_tkr is None:
+                    failed.append(x)
                 else:
-                    df_rates = pd.concat([df_rates, sr_tkr], axis=1)
-            tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
+                    if df_rates is None:
+                        df_rates = sr_tkr.to_frame() 
+                    else:
+                        df_rates = pd.concat([df_rates, sr_tkr], axis=1)
+                tracker.pause(interval=interval, pause_duration=pause_duration, msg=msg)
+            return df_rates, failed, tkrs_tout
+            
+        tracker = TimeTracker(auto_start=True)
+        df_rates, failed, tkrs_tout, i_try = None, [], [], 0
+        tkrs = tickers
+        while True:
+            df_rates, failed, tkrs_tout = await func(tkrs, df_rates, failed, tkrs_tout, tracker)
+            if len(tkrs_tout) > 0:
+                tkrs = tkrs_tout
+                tkrs_tout = []
+                i_try += 1
+                if i_try > n_try:
+                    break
+            else:
+                break
         tracker.stop(msg=msg)
-    
+        
         if df_rates is None:
             return print('ERROR: Set msg to True to see error messages')
         else:
@@ -1845,7 +1871,7 @@ class FundDownloader():
         return df_prices, sr_err
 
 
-    def download_rate(self, ticker, start_date, end_date, freq='monthly', batch_size=24, 
+    async def download_rate(self, ticker, start_date, end_date, freq='monthly', batch_size=24, 
                        percentage=True, **kwargs):
         """
         download rate data of ticker
