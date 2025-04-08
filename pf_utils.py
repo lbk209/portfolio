@@ -732,7 +732,6 @@ class DataManager():
         tickers: None for all in new universe, 'selected' for all in df_prices, 
                  or list of tickers in new universe
         kwargs_download: args for krx. ex) interval=5, pause_duration=1, msg=False
-        update_master, overwrite_master: see _get_tickers_fund
         """
         df_prices = self.df_prices
         start_date, end_date = DataManager.get_start_end_dates(start_date, end_date, 
@@ -1619,8 +1618,8 @@ class FundDownloader():
         if df_up is not None:
             # assign before saving updated
             self.data_tickers = data_tickers 
-            # overwite only file with name of today
-            self.save_master(overwrite=True) if save else None 
+            # create new master file with today
+            self.save_master(overwrite=False) if save else None 
         return None
 
 
@@ -2218,14 +2217,16 @@ class FundDownloader():
             return pd.Index(dates).strftime(date_format)
 
     @staticmethod
-    def create(file, path='.'):
+    def create(file, path='.', **kwargs):
         """
         file: master file or instance of DataManager
         """
         if isinstance(file, DataManager):
             path = file.path
+            kwargs = {**file.kwargs_universe, **kwargs}
+            # get file name at the end
             file = file.tickers
-        return FundDownloader(file, path)
+        return FundDownloader(file, path, **kwargs)
 
     
     @staticmethod
@@ -2239,7 +2240,7 @@ class FundDownloader():
     
     def export_cost(self, universe, file=None, path='.', update=True,
                     cols_cost=['buy', 'sell', 'fee', 'tax'],
-                    col_uv='universe', col_ticker='ticker'):
+                    col_uv='universe', col_ticker='ticker', universes=UNIVERSES):
         """
         universe: universe name. see keys of UNIVERSES
         update: True to update the file with new cost data
@@ -2249,9 +2250,11 @@ class FundDownloader():
             return print('ERROR: no ticker data loaded yet')
 
         cols = [col_ticker, *cols_cost]
+        # get universe name for cost data
+        univ = PortfolioData.get_universe(universe, universes=universes) if universes else universe
         df_cost = (data_tickers.reset_index().loc[:, cols]
                    .fillna(0)
-                   .assign(universe=universe)
+                   .assign(universe=univ)
                    .loc[:, [col_uv, *cols]])
        
         if file: # save cost data 
@@ -3868,8 +3871,7 @@ class PortfolioBuilder():
 
 
 class CostManager():
-    def __init__(self, df_rec, cols_record, date_format='%Y-%m-%d',
-                 file=None, path='.'):
+    def __init__(self, df_rec, cols_record, date_format='%Y-%m-%d'):
         """
         df_rec: transaction record from PortfolioBuilder
         cols_record: dict of var name to col name of df_rec
@@ -4108,7 +4110,7 @@ class CostManager():
 
     
     @staticmethod
-    def load_cost(file, path='.', col_uv='universe', col_ticker='ticker'):
+    def load_cost(file, path='.', col_ticker='ticker'):
         """
         load cost data of strategy, universe & ticker
         """
@@ -4124,7 +4126,7 @@ class CostManager():
     @staticmethod
     def get_cost(universe, file, path='.', 
                  cols_cost=['buy', 'sell', 'fee', 'tax'],
-                 col_uv='universe', col_ticker='ticker'):
+                 col_uv='universe', col_ticker='ticker', universes=UNIVERSES):
         """
         load cost file and get dict of commission for the universe
         """
@@ -4132,7 +4134,8 @@ class CostManager():
         if df_kw is None:
             #return print('ERROR: Load cost file first')
             return None
-
+        # get universe name for cost data
+        universe = PortfolioData.get_universe(universe, universes=universes) if universes else universe
         df_kw = df_kw.loc[df_kw[col_uv] == universe]
         if (len(df_kw) == 1) and df_kw[col_ticker].isna().all(): # same cost for all tickers
             return df_kw[cols_cost].to_dict('records')[0]
@@ -4144,7 +4147,7 @@ class CostManager():
 
     @staticmethod
     def check_cost(file, path='.', universe=None,
-                   col_uv='universe', col_ticker='ticker'):
+                   col_uv='universe', col_ticker='ticker', universes=UNIVERSES):
         """
         check cost file and cost data for the universe
         """
@@ -4154,9 +4157,11 @@ class CostManager():
             return None
     
         # check cost data for given univese
-        if universe is not None:
+        if universe:
+            # get universe name in cost data
+            univ = PortfolioData.get_universe(universe, universes=universes) if universes else universe
             # check if universe in cost data
-            df_cst_uv = df_cst.loc[df_cst[col_uv] == universe]
+            df_cst_uv = df_cst.loc[df_cst[col_uv] == univ]
             if len(df_cst_uv) == 0:
                 print(f'ERROR: No cost data for {universe} exists')
                 return df_cst
@@ -4182,6 +4187,13 @@ class CostManager():
             print(f'ERROR: Check duplicates for {key}')
             return df_cst.loc[dupli]
 
+
+    @staticmethod
+    def save_cost(df_cost, file, path='.'):
+        save_dataframe(df_cost, file, path, 
+                      msg_succeed=f'Cost data saved to {file}',
+                      index=False)
+        return None
 
 
 class TradingHalts():
@@ -6797,7 +6809,7 @@ class PortfolioManager():
     @staticmethod
     def get_cost(name, file, path='.'):
         """
-        name: universe name
+        name: universe name. see keys of UNIVERSES
         """
         return CostManager.get_cost(name, file, path=path)
 
@@ -7066,3 +7078,7 @@ class PortfolioData():
         except KeyError as e:
             names = ', '.join(data.keys())
             return print(f'ERROR: No {e}. select one of {names}')
+
+    @staticmethod
+    def get_universe(universe, universes=UNIVERSES):
+        return universes[universe]['universe']
