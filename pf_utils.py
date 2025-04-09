@@ -739,7 +739,7 @@ class DataManager():
         if check_end and (df_prices is not None):
             if pd.to_datetime(end_date) <= df_prices.index.max():
                 return print(f'ERROR: end_date {end_date} matches the existing data. Set check_end=True to overwrite')
-        
+
         print('Downloading ...')
         security_names = self._get_tickers(tickers)
         if security_names is None:
@@ -788,7 +788,7 @@ class DataManager():
     
     def _check_var(self, var_arg, var_self):
         return var_self if var_arg is None else var_arg
-
+                
 
     @staticmethod
     def print_info(df_prices, str_pfx='', str_sfx='', date_format='%Y-%m-%d'):
