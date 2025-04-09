@@ -724,34 +724,42 @@ class DataManager():
 
     @print_runtime
     def download(self, start_date=None, end_date=None, n_years=3, tickers=None,
-                 save=True, date_format='%Y-%m-%d', close_today=False, check_end=False,
+                 save=True, date_format='%Y-%m-%d', close_today=False, append=False,
                  **kwargs_download):
         """
         download df_prices by using FinanceDataReader
         n_years: int
         tickers: None for all in new universe, 'selected' for all in df_prices, 
                  or list of tickers in new universe
+        append: set to True to just donwload new tickers to update existing price data
         kwargs_download: args for krx. ex) interval=5, pause_duration=1, msg=False
         """
         df_prices = self.df_prices
         start_date, end_date = DataManager.get_start_end_dates(start_date, end_date, 
                                                                close_today, n_years, date_format)
-        if check_end and (df_prices is not None):
-            if pd.to_datetime(end_date) <= df_prices.index.max():
-                return print(f'ERROR: end_date {end_date} matches the existing data. Set check_end=True to overwrite')
-        
         print('Downloading ...')
         security_names = self._get_tickers(tickers)
         if security_names is None:
             return None # see _get_tickers for error msg
         else:
             tickers = list(security_names.keys())
+
+        if append and (df_prices is not None):
+            tickers = pd.Index(tickers).difference(df_prices.columns)
+            if tickers.size > 0:
+                print(f'Update existing data with {tickers.size} tickers')
+                tickers = tickers.to_list()
+            else:
+                return print('ERROR: No new tickers to download. Set append=False to download all')
+        else:
+            append = False # set to False to avoid later appending 
                    
         try:
-            df_prices = self._download_universe(tickers, start_date, end_date, **kwargs_download)
+            df_prices_new = self._download_universe(tickers, start_date, end_date, **kwargs_download)
             if not close_today: # market today not closed yet
-                df_prices = df_prices.loc[:datetime.today() - timedelta(days=1)]
+                df_prices_new = df_prices_new.loc[:datetime.today() - timedelta(days=1)]
             print('... done')
+            df_prices = pd.concat([df_prices, df_prices_new], axis=1) if append else df_prices_new
             DataManager.print_info(df_prices, str_sfx='downloaded.')
         except Exception as e:
             return print(f'ERROR: {e}')
@@ -788,7 +796,7 @@ class DataManager():
     
     def _check_var(self, var_arg, var_self):
         return var_self if var_arg is None else var_arg
-
+                
 
     @staticmethod
     def print_info(df_prices, str_pfx='', str_sfx='', date_format='%Y-%m-%d'):
