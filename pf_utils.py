@@ -1575,7 +1575,7 @@ class FundDownloader():
         cols = pd.Index(cols_check).difference(data_tickers.columns)
         if cols.size > 0:
             data_tickers[cols] = None
-        print(f'Data for {len(data_tickers)} funds loaded.') if msg else None
+        print(f'Master data for {len(data_tickers)} funds loaded.') if msg else None
         return data_tickers
         
 
@@ -3032,7 +3032,8 @@ class PortfolioBuilder():
             #yl.set_rotation(-90)
             ax1.margins(0)
             ax1.set_xlabel('')
-            ax1.legend(title=None)
+            leg = ax1.legend(title=None, bbox_to_anchor=(1.05, 1))
+            leg.set_visible(False) if not legend else None
             #cashflow = False
     
         # plot cashflow
@@ -5642,7 +5643,7 @@ class BayesianEstimator():
         
         for i in range(0, len(tickers), size_batch):
             j = i + size_batch
-            print(f'Running batch {j//size_batch} ...')
+            print(f'Running batch {j//size_batch} ...') if len(tickers) > size_batch else None
             tkrs_i = tickers[i:j]
             df_prc = df_prices[tkrs_i]
             res_dict = self._bayesian_sample(df_prc, dim_ticker=dim_ticker, **kwargs)
@@ -5730,7 +5731,7 @@ class BayesianEstimator():
         file = set_filename(file, 'pkl')
         f = os.path.join(path, file)
         if os.path.exists(f):
-            return print(f'{f} exists')
+            return print(f'ERROR: {f} exists')
         with open(f, 'wb') as handle:
             pickle.dump(self.bayesian_data, handle)
         return print(f'{f} saved')

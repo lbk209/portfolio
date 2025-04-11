@@ -38,12 +38,10 @@ TRANSACTIONS = dict(
     WTR_2412 = dict(file='pf_wtr2412_static'),
     LIQ = dict(file='pf_liq_static'),
     TDF_2406 = dict(file='pf_tdf_static'),
-    #TDF = dict(file='test_pf_tdf_static'), # for testing
     HANA_2408 = dict(file='pf_hana_static'),
     SAVE_2503 = dict(file='pf_save_static'),
     FCTR= dict(file='pf_fctr_static'),
     #KRX = dict(file='test_pf_krx_momentum'),
-    TEST = dict(file='test') # for testing
 )
 TRANSACTIONS = {k: {**v, 'path':path_tran} for k,v in TRANSACTIONS.items()}
 
@@ -58,8 +56,7 @@ PORTFOLIOS = {
     'TDF_2406': {'strategy': 'TDF', 'universe': 'UV_FUND'},
     'HANA_2408': {'strategy': 'HANA', 'universe': 'UV_FUND'},
     'SAVE_2503': {'strategy': 'SAVE', 'universe': 'UV_FUND'},
-    'FCTR': {'strategy': 'FCTR', 'universe': 'UV_FCTR'},  # factor intesting with etf
+    'FCTR': {'strategy': 'FCTR', 'universe': 'UV_FCTR'},  # factor investing with etf
     #'KRX': {'strategy': 'KRX', 'universe': 'UV_KRX'}, # for testing
-    'TEST': {'strategy': 'PER', 'universe': 'UV_K200'}, # for testing
 }
 PORTFOLIOS = {k: {**v, **TRANSACTIONS[k]} for k,v in PORTFOLIOS.items()}
