@@ -2334,6 +2334,7 @@ class PortfolioBuilder():
         method_select: 'all', 'selected' for static, 'momentum', 'k-ratio', 'f-ratio' for dynamic
         lookback_w, lag_w: for weigh. reuse those for select if None
         sort_ascending: set to False for momentum & k-ratio, True for PER of f-ratio
+        n_tickers: num of tickers to select
         security_names: dict of ticker to name
         cols_record: all the data fields of transaction file
         """
@@ -2419,6 +2420,25 @@ class PortfolioBuilder():
         if (n_tickers is not None) and (tickers is not None):
             if n_tickers > len(tickers):
                 return print('ERROR: n_tickers greater than length of tickers')
+
+        # check tickers
+        if tickers is not None:
+            # check duplicates
+            tickers = pd.Index(tickers)
+            if tickers.duplicated().any():
+                tickers = tickers.drop_duplicates()
+                print('WARNING: Duplicate tickers removed')
+            # check universe
+            dup = tickers.difference(self.df_universe.columns)
+            if dup.size > 0:
+                dup = ', '.join(dup)
+                return print(f'ERROR: {dup} not in universe') 
+            # check portfolio size
+            if (n_tickers is not None) and n_tickers > tickers.size:
+                return print(f'ERROR: n_tickers greater than ticker size {tickers.size}')
+            else: # back to list
+                tickers = tickers.to_list()
+            
         
         # search transaction date from universe
         kwa = dict(date=date, tickers=tickers)
@@ -2540,7 +2560,8 @@ class PortfolioBuilder():
     def allocate(self, capital=10000000, commissions=0, int_nshares=True):
         """
         calc amount of each security for net on the transaction date 
-        capital: rebalance tickers without cash flows if set to 0
+        capital: amount of cash for rebalance. int if money, float if ratio to portfolio values, 
+                 postitive to add, negative to reduce
         commissions: percentage
         int_nshares: True if transaction by number of shares, False for fund
         """
@@ -2573,13 +2594,18 @@ class PortfolioBuilder():
         if self.record is None:
             if capital == 0:
                 return print('ERROR: Neither capital nor tickers to rebalance exists')
-        else:
+        else: # determine total cash for rebalance
             if self.check_new_transaction(date):
-                # the arg capital is now cash flows
-                print(f'New cash inflows of {capital:,}' ) if capital > 0 else None
                 self.df_rec = None # reset df_rec to calc capital
                 sr = self.valuate(date, total=True, int_to_str=False, print_msg=False)
-                capital += sr['value'] # add porfolio value to capital
+                val = sr['value']
+                st = 'adding' if capital > 0 else 'selling'
+                if abs(capital) > 1:
+                    print(f'Rebalancing by {st} {abs(capital):,}')
+                    capital += val 
+                else:
+                    print(f'Rebalancing by {st} {abs(capital):.0%} of the portfolio value')
+                    capital = (1 + capital) * val
 
         # calc amount of each security by weights and capital
         df_prc = self.df_universe # no _update_universe to work on tickers in the universe
@@ -4119,17 +4145,21 @@ class CostManager():
 
     
     @staticmethod
-    def load_cost(file, path='.', col_ticker='ticker'):
+    def load_cost(file, path='.', col_universe='universe', col_ticker='ticker'):
         """
         load cost data of strategy, universe & ticker
         """
         try:
             file = get_file_latest(file, path)
             df_cost = pd.read_csv(f'{path}/{file}', dtype={col_ticker:str}, comment='#')
-            print(f'Cost data {file} loaded')
         except FileNotFoundError:
             return print('ERROR: Failed to load')
-        return df_cost
+    
+        if df_cost[[col_universe, col_ticker]].duplicated().any():
+            return print('ERROR: Check cost data for duplicates')
+        else:
+            print(f'Cost data {file} loaded')
+            return df_cost
 
     
     @staticmethod
