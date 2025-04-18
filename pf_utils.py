@@ -2604,7 +2604,8 @@ class PortfolioBuilder():
                     print(f'Rebalancing by {st} {abs(capital):,}')
                     capital += val 
                 else:
-                    print(f'Rebalancing by {st} {abs(capital):.0%} of the portfolio value')
+                    x = round(capital* val)
+                    print(f'Rebalancing by {st} {abs(capital):.0%} of the portfolio value ({x:,})')
                     capital = (1 + capital) * val
 
         # calc amount of each security by weights and capital
@@ -2879,7 +2880,7 @@ class PortfolioBuilder():
     def transaction_halt(self, date=None, save=False, **kw_halt):
         """
         create transaction with TradingHalts instance
-        kw_halt: buy/sell/resume/halt
+        kw_halt: kwargs for tradinghalts.transaction
         """
         if self.record is None:
             return print('ERROR: No transaction record exits')
@@ -2900,6 +2901,7 @@ class PortfolioBuilder():
                 tkrs = df_rec.loc[df_rec[col_trs]==0].loc[date_lt].index
                 sr_val = sr_val.loc[date_lt:date_lt, tkrs]
                 df_rec.update(sr_val)
+            df_rec = self._update_ticker_name(df_rec) # update name for buy case.
             # save before recover
             self.df_rec = df_rec
             # recover record with halt before saving or converting to record with num of shares
@@ -4276,7 +4278,8 @@ class TradingHalts():
         return None
 
 
-    def transaction(self, date, buy=None, sell=None, resume=None, halt=None, date_format='%Y-%m-%d'):
+    def transaction(self, date, buy=None, sell=None, resume=None, halt=None, 
+                    date_actual=None, date_format='%Y-%m-%d'):
         """
         make new transaction from the latest transaction without price data
         buy: dict of tickers to buy price
@@ -4329,7 +4332,9 @@ class TradingHalts():
             record, record_halt = self._set_to_halt(halt, record, record_halt)
         
         # copy record of date_lt to date
-        kw = {col_date:date, col_trs:0, col_rat:1, col_dttr:date}
+        # cast date_actual of new transaction to datetime like existing transactions 
+        date_actual = date if date_actual is None else pd.to_datetime(date_actual)
+        kw = {col_date:date, col_trs:0, col_rat:1, col_dttr:date_actual}
         record_date_lt = record.loc[date_lt, :]
         record_date = (record_date_lt.loc[record_date_lt[col_net] > 0].assign(**kw)
                            .set_index(col_date, append=True).reorder_levels([col_date, col_tkr]))
