@@ -2322,7 +2322,7 @@ class PortfolioBuilder():
     def __init__(self, df_universe, file=None, path='.', name='portfolio',
                  method_select='all', sort_ascending=False, n_tickers=0, lookback=0, lag=0, tickers=None, 
                  method_weigh='Equally', weights=None, lookback_w=None, lag_w=None, weight_min=0,
-                 df_additional=None, security_names=None, 
+                 df_additional=None, security_names=None, unit_fund=False,
                  cols_record = {'date':'date', 'tkr':'ticker', 'name':'name', 'rat':'ratio',
                                 'trs':'transaction', 'net':'net', 'wgt':'weight', 'dttr':'date*', 'prc':'price'},
                  date_format='%Y-%m-%d', cost=None
@@ -2358,6 +2358,7 @@ class PortfolioBuilder():
         self.weight_min = weight_min
         self.df_additional = df_additional # addtional data except for price
         self.security_names = security_names
+        self.unit_fund = unit_fund # True for managed fund. see allocate
         self.name = name # portfolio name
         self.cols_record = cols_record
         self.date_format = date_format # date str format for record & printing
@@ -2552,7 +2553,7 @@ class PortfolioBuilder():
             w = redistribute_weights(weights, weight_min, n_min=1, none_if_fail=True)
             weights = pd.Series(0, index=weights.index) if w is None else pd.Series(w)
         
-        self.selected['weights'] = np.round(weights, 4) # weights is series
+        self.selected['weights'] = weights # weights is series
         print(f'Weights of tickers determined by {method}.')
         return weights
         
@@ -2604,7 +2605,8 @@ class PortfolioBuilder():
                     print(f'Rebalancing by {st} {abs(capital):,}')
                     capital += val 
                 else:
-                    print(f'Rebalancing by {st} {abs(capital):.0%} of the portfolio value')
+                    x = round(capital* val)
+                    print(f'Rebalancing by {st} {abs(capital):.0%} of the portfolio value ({x:,})')
                     capital = (1 + capital) * val
 
         # calc amount of each security by weights and capital
@@ -2628,11 +2630,12 @@ class PortfolioBuilder():
         # calc error of weights
         wa = self._calc_weight_actual(sr_net, decimals=3)
         mae = (wa.to_frame(col_wgta).join(wi)
-               .apply(lambda x: x[col_wgta]/x[col_wgt] - 1, axis=1)
+               # set errot zero if denominator is zero
+               .apply(lambda x: 0 if x[col_wgt] == 0 else x[col_wgta]/x[col_wgt] - 1, axis=1)
                .abs().mean() * 100)
         print(f'Mean absolute error of weights: {mae:.0f} %')
         
-        df_net = (sr_net.to_frame().join(wi)
+        df_net = (sr_net.to_frame().join(wi.round(4)) # round weights after finishing calc
                   .assign(**{col_rat: 1, col_dttr:date, col_prc:None})) # assigning default values
         df_net = df_net.loc[df_net[col_net]>0] # drop equities of zero net
         if len(df_net) == 0:
@@ -2834,6 +2837,8 @@ class PortfolioBuilder():
                              save=False, nshares=False, date_actual=None):
         """
         nshares: set to True if saving last transaction as num of shares for the convenience of trading
+        capital: int, float if adding capital. 
+                 dict of ticker to money to buy where all assets not in dict to sell 
         """        
         rank = self.select(date=date)
         if rank is None:
@@ -2845,12 +2850,22 @@ class PortfolioBuilder():
             _ = self.valuate(dt, total=True, int_to_str=True, print_msg=True)
             # add tickers of halt to recover original record
             return self.tradinghalts.recover(self.record, self.record_halt)  
+
+        # check capital if given as asset to capital to buy
+        # all assets not in dict will be sold
+        if isinstance(capital, dict):
+            method = 'specified'
+            ttl = sum(capital.values())
+            weights = {k:v/ttl for k,v in capital.items()}
+            capital = ttl # set capital for allocate
+        else:
+            method, weights = None, None
             
-        weights = self.weigh()
+        weights = self.weigh(method=method, weights=weights)
         if weights is None:
             return None
         
-        df_net = self.allocate(capital=capital, commissions=commissions)
+        df_net = self.allocate(capital=capital, commissions=commissions, int_nshares=not self.unit_fund)
         if df_net is None:
             return None
             
@@ -2879,7 +2894,7 @@ class PortfolioBuilder():
     def transaction_halt(self, date=None, save=False, **kw_halt):
         """
         create transaction with TradingHalts instance
-        kw_halt: buy/sell/resume/halt
+        kw_halt: kwargs for tradinghalts.transaction
         """
         if self.record is None:
             return print('ERROR: No transaction record exits')
@@ -2900,6 +2915,7 @@ class PortfolioBuilder():
                 tkrs = df_rec.loc[df_rec[col_trs]==0].loc[date_lt].index
                 sr_val = sr_val.loc[date_lt:date_lt, tkrs]
                 df_rec.update(sr_val)
+            df_rec = self._update_ticker_name(df_rec) # update name for buy case.
             # save before recover
             self.df_rec = df_rec
             # recover record with halt before saving or converting to record with num of shares
@@ -4276,7 +4292,8 @@ class TradingHalts():
         return None
 
 
-    def transaction(self, date, buy=None, sell=None, resume=None, halt=None, date_format='%Y-%m-%d'):
+    def transaction(self, date, buy=None, sell=None, resume=None, halt=None, 
+                    date_actual=None, date_format='%Y-%m-%d'):
         """
         make new transaction from the latest transaction without price data
         buy: dict of tickers to buy price
@@ -4329,7 +4346,9 @@ class TradingHalts():
             record, record_halt = self._set_to_halt(halt, record, record_halt)
         
         # copy record of date_lt to date
-        kw = {col_date:date, col_trs:0, col_rat:1, col_dttr:date}
+        # cast date_actual of new transaction to datetime like existing transactions 
+        date_actual = date if date_actual is None else pd.to_datetime(date_actual)
+        kw = {col_date:date, col_trs:0, col_rat:1, col_dttr:date_actual}
         record_date_lt = record.loc[date_lt, :]
         record_date = (record_date_lt.loc[record_date_lt[col_net] > 0].assign(**kw)
                            .set_index(col_date, append=True).reorder_levels([col_date, col_tkr]))

@@ -1,7 +1,7 @@
 path_data = 'data'
 path_tran = 'transaction'
 
-# Universe: init data for DataManager
+# Universe: data for DataManager
 UNIVERSES = dict(
     UV_K200 = dict(universe='kospi200', file='kospi200_prices', tickers='KRX/INDEX/STOCK/1028'),
     UV_KRX = dict(universe='krx', file='krx_prices', tickers='KOSPI,KOSDAQ'),
@@ -23,9 +23,9 @@ STRATEGIES = dict(
     # 'Selected' works with additional ticker list
     WTR = dict(method_select='Selected', method_weigh='Equally'), # freq6m
     LIQ = dict(method_select='Selected', method_weigh='Equally'),
-    TDF = dict(method_select='Selected', method_weigh='Equally'),
-    HANA= dict(method_select='Selected', method_weigh='InvVol', lookback='2y', lag=0), # freq2y
-    SAVE= dict(method_select='Selected', method_weigh='Equally', lookback='6m', lag=0),
+    TDF = dict(method_select='Selected', method_weigh='Equally', unit_fund=True),
+    HANA= dict(method_select='Selected', method_weigh='InvVol', lookback='2y', lag=0, unit_fund=True), # freq2y
+    SAVE= dict(method_select='Selected', method_weigh='Equally', lookback='6m', lag=0, unit_fund=True),
     FCTR= dict(method_select='Selected', method_weigh='MeanVar', lookback='1q', lag=0), # freq1q
     KRX = dict(method_select='Momentum', method_weigh='Equally', sort_ascending=False, n_tickers=5, lookback='1y', lag='1m')
 )
@@ -40,6 +40,7 @@ TRANSACTIONS = dict(
     TDF_2406 = dict(file='pf_tdf_static'),
     HANA_2408 = dict(file='pf_hana_static'),
     SAVE_2503 = dict(file='pf_save_static'),
+    SAVE_2504 = dict(file='pf_save2_static'),
     FCTR= dict(file='pf_fctr_static'),
     #KRX = dict(file='test_pf_krx_momentum'),
 )
@@ -56,6 +57,7 @@ PORTFOLIOS = {
     'TDF_2406': {'strategy': 'TDF', 'universe': 'UV_FUND'},
     'HANA_2408': {'strategy': 'HANA', 'universe': 'UV_FUND'},
     'SAVE_2503': {'strategy': 'SAVE', 'universe': 'UV_FUND'},
+    'SAVE_2504': {'strategy': 'SAVE', 'universe': 'UV_FUND'},
     'FCTR': {'strategy': 'FCTR', 'universe': 'UV_FCTR'},  # factor investing with etf
     #'KRX': {'strategy': 'KRX', 'universe': 'UV_KRX'}, # for testing
 }
