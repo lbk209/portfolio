@@ -2604,7 +2604,8 @@ class PortfolioBuilder():
                     print(f'Rebalancing by {st} {abs(capital):,}')
                     capital += val 
                 else:
-                    print(f'Rebalancing by {st} {abs(capital):.0%} of the portfolio value')
+                    x = round(capital* val)
+                    print(f'Rebalancing by {st} {abs(capital):.0%} of the portfolio value ({x:,})')
                     capital = (1 + capital) * val
 
         # calc amount of each security by weights and capital
