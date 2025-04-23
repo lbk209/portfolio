@@ -2675,7 +2675,7 @@ class PortfolioBuilder():
         record = self.record
         if record is None: # no transation record saved
             # allocation is same as transaction for the 1st time
-            df_rec = df_net.assign(**{col_trs: df_net[col_net]})
+            df_rec = df_net.assign(**{col_trs: df_net[col_net], col_dttr:date_actual})
         else:
             # check input record by self.cols_record
             if not self._check_record(record, msg=True):
@@ -2768,6 +2768,8 @@ class PortfolioBuilder():
     
         # check date by price data
         df_prices = self._update_universe(df_rec, msg=print_msg, download_missing=True)
+        if df_prices is None:
+            return None
         date = df_prices.loc[:date].index.max() # works even if date None
         date_ft = df_rec.index.get_level_values(0).min()
         if date_ft > date:
@@ -2910,6 +2912,8 @@ class PortfolioBuilder():
                 date_lt = df_rec.index.get_level_values(0).max()
                 # get value history with record before new transaction
                 df_prc = self._update_universe(record, msg=True, download_missing=True)
+                if df_prc is None:
+                    return None
                 sr_val = self._calc_value_history(record, df_prc, end_date=date_lt, name=col_net, total=False)
                 # get ticker list of no transaction
                 tkrs = df_rec.loc[df_rec[col_trs]==0].loc[date_lt].index
@@ -2939,7 +2943,10 @@ class PortfolioBuilder():
             return None
         else:
             df_prices = self._update_universe(df_rec, msg=True, download_missing=True)
-            return self._calc_value_history(df_rec, df_prices, name=self.name, msg=True)
+            if df_prices is None:
+                return None
+            else:
+                return self._calc_value_history(df_rec, df_prices, name=self.name, msg=True)
 
 
     def get_cash_history(self, cost_excluded=False, cumsum=True, date_actual=False):
@@ -3128,6 +3135,8 @@ class PortfolioBuilder():
         if df_rec is None:
             return None
         df_prices = self._update_universe(df_rec, msg=True, download_missing=True)
+        if df_prices is None:
+            return None
         sr_val = self._calc_value_history(df_rec, df_prices, name=self.name)
         if sr_val is None:
             return None
@@ -3398,7 +3407,11 @@ class PortfolioBuilder():
                 # check saved before downloading
                 df_m = self.df_prices_missing
                 if df_m is None or tkr_m.difference(df_m.columns).size > 0:
-                    df_m = self.util_get_prices(tkr_m)
+                    try:
+                        df_m = self.util_get_prices(tkr_m)
+                    except:
+                        tkrs = ', '.join(tkr_m)
+                        return print(f'ERROR: Failed to download {tkrs}')
                     self.df_prices_missing = df_m
                     print_list(tkr_m, 'Data of tickers {} downloaded')
                 df_prices = pd.concat([df_prices, df_m], axis=1)
@@ -7017,6 +7030,22 @@ class PortfolioManager():
             sr = df[p].apply(format_price, digits=0, int_to_str=False)
             values = sr.iloc[2:].astype(str).tolist()
             print(f"{sr['end']}, {', '.join(p.split('_'))}, , , , 평가, , {', '.join(values)}")
+
+
+    def util_get_tickers(self, *pf_names, col_ticker='ticker', col_net='net'):
+        """
+        get ticker list of all portfolios
+        """
+        pf_names = self.check_portfolios(*pf_names)
+        if len(pf_names) == 0:
+            return None
+        tickers = list()
+        for name in pf_names:
+            pf = self.portfolios[name]
+            df = pf.view_record(-1)
+            tkrs = df.loc[df[col_net] > 0].index.get_level_values(col_ticker).to_list()
+            tickers.extend(tkrs)
+        return list(set(tickers))
 
 
     def _valuate(self, *pf_names, date=None, total=True, col_portfolio='portfolio'):
