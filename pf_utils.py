@@ -4153,7 +4153,8 @@ class CostManager():
             sr_fee = sr_fee.apply(lambda x: -1 + (1+x)**(period/12)) # get equivalent rate of fee for period
             days = check_days_in_year(df, msg=False) # get days fo a year
             days = days.mul(period/12).round().astype(int) # get dats for a period
-            return df.apply(lambda x: x.dropna().iloc[::days[x.name]] * sr_fee[x.name]).fillna(0)
+            return df.apply(lambda x: x.dropna().iloc[::days[x.name]] * sr_fee[x.name] 
+                            if x.count() >= period else 0).fillna(0)
 
         # convert fee to series
         if isinstance(fee, dict):
