@@ -4310,9 +4310,9 @@ class TradingHalts():
                     date_actual=None, date_format='%Y-%m-%d'):
         """
         make new transaction from the latest transaction without price data
-        buy: dict of tickers to buy price
+        buy: dict of tickers to total buy price
         halt: list of tickers to halt
-        sell: dict of tickers to sell price or list 
+        sell: dict of tickers to total sell price or list 
         resume: dict, list, 'all' 
         """
         record = None if self.record is None else self.record.copy()
@@ -4330,6 +4330,7 @@ class TradingHalts():
         col_rat = cols_record['rat']
         col_dttr = cols_record['dttr']
         idx = pd.IndexSlice
+        print_reminder = lambda x: print(f'REMINDER: For the {x} price, use the total amount, not the unit price.')
     
         # set transaction date
         date = pd.to_datetime(date)
@@ -4369,6 +4370,7 @@ class TradingHalts():
         record = pd.concat([record, record_date]).sort_index()
     
         if buy is not None:
+            print_reminder('buy')
             tkr = record.loc[date].index.intersection(buy.keys())
             if record_halt is not None:
                 tkr2 = record_halt.loc[date_lt].index.map(self.toggle_prefix).intersection(buy.keys())
@@ -4391,6 +4393,8 @@ class TradingHalts():
             if isinstance(sell, list):
                 # get sell price from net if not spec after the size check
                 sell = {x: record.loc[idx[date, x], col_net] for x in sell}
+            else: # assuming sell is dict
+                print_reminder('sell')
             index = pd.MultiIndex.from_product([[date], sell.keys()], names=[col_date, col_tkr])
             kw = {col_net:0, col_rat:1, col_dttr:date}
             df_sell = (pd.DataFrame(sell, index=[col_trs]).mul(-1).T
