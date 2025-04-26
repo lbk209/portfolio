@@ -34,6 +34,7 @@ STRATEGIES = dict(
 TRANSACTIONS = dict(
     MMT_2407 = dict(file='pf_k200_momentum'),
     PER_2410 = dict(file='pf_k200_per'),
+    PER_2505 = dict(file='pf_k200_per2'),
     WTR_2407 = dict(file='pf_wtr_static'),
     WTR_2412 = dict(file='pf_wtr2412_static'),
     LIQ = dict(file='pf_liq_static'),
@@ -52,6 +53,7 @@ TRANSACTIONS = {k: {**v, 'path':path_tran} for k,v in TRANSACTIONS.items()}
 PORTFOLIOS = {
     'MMT_2407': {'strategy': 'MMT', 'universe': 'UV_K200'},
     'PER_2410': {'strategy': 'PER', 'universe': 'UV_K200'},
+    'PER_2505': {'strategy': 'PER', 'universe': 'UV_K200'},
     'WTR_2407': {'strategy': 'WTR', 'universe': 'UV_WTR'}, # modified all weather
     'WTR_2412': {'strategy': 'WTR', 'universe': 'UV_WTR'},
     'LIQ': {'strategy': 'LIQ', 'universe': 'UV_LIQ'},
