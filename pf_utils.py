@@ -759,7 +759,13 @@ class DataManager():
             if not close_today: # market today not closed yet
                 df_prices_new = df_prices_new.loc[:datetime.today() - timedelta(days=1)]
             print('... done')
-            df_prices = pd.concat([df_prices, df_prices_new], axis=1) if append else df_prices_new
+
+            if append:
+                dt = df_prices.index.max() # follow the last date of existing data
+                df_prices = pd.concat([df_prices, df_prices_new.loc[:dt]], axis=1)
+            else:
+                df_prices = df_prices_new
+            
             DataManager.print_info(df_prices, str_sfx='downloaded.')
         except Exception as e:
             return print(f'ERROR: {e}')
