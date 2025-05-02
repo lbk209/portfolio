@@ -3846,14 +3846,30 @@ class PortfolioBuilder():
 
     def _check_record(self, df_rec, msg=False):
         """
-        check df_rec by self.cols_record
+        check if transaction df_rec right format
         """
-        cols = df_rec.columns.union(df_rec.index.names).difference(self.cols_record.values())
+        # check columns
+        cols_record = self.cols_record
+        cols = df_rec.columns.union(df_rec.index.names).difference(cols_record.values())
         if cols.size > 0:
             print('ERROR: Record is not default form') if msg else None
             return False
-        else:
-            return True
+
+        # check if the assets of no transaction written as well with new transaction 
+        col_date = cols_record['date']
+        col_net = cols_record['net']
+        dates = df_rec.index.get_level_values(col_date).unique() # all dates of transaction
+        prv = dates[0]
+        for date in dates[1:]:
+            df_p = df_rec.loc[prv]
+            tkrs = df_p.loc[df_p[col_net] > 0].index.difference(df_rec.loc[date].index)
+            if tkrs.size > 0:
+                dt = date.strftime(self.date_format)
+                print(f'ERROR: Held assets missing in Transaction on {dt}')
+                return False
+            else:
+                prv = date
+        return True
     
 
     def _load_transaction(self, file, path, print_msg=True):
