@@ -2392,7 +2392,7 @@ class PortfolioBuilder():
         if record is None:
             record = self._load_transaction(self.file, self.path, print_msg=msg)
         else:
-            if not self._check_record(record, msg=True):
+            if not self._check_record(record):
                 return None # check df_rec by self.cols_record
         
         if record is None:
@@ -2684,7 +2684,7 @@ class PortfolioBuilder():
             df_rec = df_net.assign(**{col_trs: df_net[col_net], col_dttr:date_actual})
         else:
             # check input record by self.cols_record
-            if not self._check_record(record, msg=True):
+            if not self._check_record(record):
                 return None 
             # check if new transaction added
             if self.check_new_transaction(date):
@@ -3110,7 +3110,7 @@ class PortfolioBuilder():
             df_rec = self._check_result()
         if df_rec is None:
             return None
-        if not self._check_record(df_rec, msg=True):
+        if not self._check_record(df_rec):
             return None # check df_rec by self.cols_record
 
         cost = None if cost_excluded else self.cost
@@ -3230,7 +3230,7 @@ class PortfolioBuilder():
                 return None
             else:
                 return self.tradinghalts.recover(self.record, self.record_halt) # see _check_result for err msg
-        if not self._check_record(df_rec, msg=True):
+        if not self._check_record(df_rec):
             return None # check df_rec by self.cols_record
 
         if weight_actual:# add actual weights
@@ -3844,15 +3844,15 @@ class PortfolioBuilder():
         return df_res.copy() 
 
 
-    def _check_record(self, df_rec, msg=False):
+    def _check_record(self, df_rec):
         """
-        check if transaction df_rec right format
+        check if df_rec follows transaction format
         """
         # check columns
         cols_record = self.cols_record
         cols = df_rec.columns.union(df_rec.index.names).difference(cols_record.values())
         if cols.size > 0:
-            print('ERROR: Record is not default form') if msg else None
+            print('ERROR: Record is not default form')
             return False
 
         # check if the assets of no transaction written as well with new transaction 
