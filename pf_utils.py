@@ -252,7 +252,7 @@ def get_file_latest(file, path='.', msg=False, file_type=None):
         if msg and (file is not None):
             name, ext = splitext(file)
             name = name if file_type is None else f'{file_type} {name}'
-            print(f'WARNING: no {name}*{ext} exists')
+            print(f'WARNING: No {name}*{ext} exists')
         return file
     else:
         return files[-1] # latest file
@@ -337,7 +337,7 @@ def performance_stats(df_prices, metrics=METRICS, sort_by=None, align_period=Tru
         try:
             df_stats = df_stats.sort_values(sort_by, axis=1, ascending=False)
         except KeyError as e:
-            print(f'WARNING: no sorting as {e}')
+            print(f'WARNING: No sorting as {e}')
 
     return df_stats
 
@@ -2391,13 +2391,16 @@ class PortfolioBuilder():
         """
         if record is None:
             record = self._load_transaction(self.file, self.path, print_msg=msg)
-        # run _check_record instead of _check_result as self.record not yet set
-        if not self._check_record(record):
-            return record if return_on_fail else None
         
         if record is None:
             return print('REMINDER: make sure this is 1st transaction as no records provided')
-        elif record[self.cols_record['prc']].notna().any(): # check record is amount-based
+        
+        # run _check_record instead of _check_result as self.record not yet set
+        if not self._check_record(record):
+            return record if return_on_fail else None
+
+        # check record is amount-based
+        if record[self.cols_record['prc']].notna().any(): 
             print('WARNING: Run update_record first after editing record') if msg else None
             return record
         else:
@@ -5348,7 +5351,7 @@ class BacktestManager():
             try:
                 df_stats = df_stats.sort_values(sort_by, axis=1, ascending=False)
             except KeyError as e:
-                print(f'WARNING: no sorting as {e}')
+                print(f'WARNING: No sorting as {e}')
 
         return df_stats
 
@@ -6798,7 +6801,11 @@ class PortfolioManager():
             else:
                 print(f'{name}:', end='\n' if verbose else ' ')
                 with SuppressPrint(not verbose):
-                    pf_dict[name] = PortfolioManager.create_portfolio(name, **kwargs)
+                    pf = PortfolioManager.create_portfolio(name, **kwargs)
+                if pf.record is None:
+                    print(f'WARNING: Portfolio {name} not loaded')
+                else:
+                    pf_dict[name] = pf
                 print() if verbose else print('done')
         self.portfolios = pf_dict
         return None
