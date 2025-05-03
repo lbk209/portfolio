@@ -2376,7 +2376,7 @@ class PortfolioBuilder():
         # see import_record for its init
         self.tradinghalts = None 
         # records of all trading except for halted
-        self.record = self.import_record() 
+        self.record = self.import_record(return_on_fail=False) 
         # record of halted after new transaction
         self.record_halt = None if self.tradinghalts is None else self.tradinghalts.record_halt
         # price data not in universe but in record. see _update_universe
@@ -2384,16 +2384,16 @@ class PortfolioBuilder():
         _ = self.check_universe(msg=True)
             
 
-    def import_record(self, record=None, halt=True, msg=True):
+    def import_record(self, record=None, halt=True, msg=True, return_on_fail=True):
         """
         read record from file and update transaction dates
         halt: set to False before saving
         """
         if record is None:
             record = self._load_transaction(self.file, self.path, print_msg=msg)
-        else:
-            if not self._check_record(record, msg=True):
-                return None # check df_rec by self.cols_record
+        # run _check_record instead of _check_result as self.record not yet set
+        if not self._check_record(record):
+            return record if return_on_fail else None
         
         if record is None:
             return print('REMINDER: make sure this is 1st transaction as no records provided')
@@ -2684,7 +2684,7 @@ class PortfolioBuilder():
             df_rec = df_net.assign(**{col_trs: df_net[col_net], col_dttr:date_actual})
         else:
             # check input record by self.cols_record
-            if not self._check_record(record, msg=True):
+            if not self._check_record(record):
                 return None 
             # check if new transaction added
             if self.check_new_transaction(date):
@@ -3009,7 +3009,8 @@ class PortfolioBuilder():
         if df_all is None:
             return None
         else: # necessary to get tickers of end_date and plot vlines for trasaction dates
-            df_rec = self._check_result(False)
+            # unnecessary to check record as df_all must have passed the check_record
+            df_rec = self._check_result(False, check_record=False)
     
         # reset start & end dates
         func = lambda x: x.loc[start_date:end_date]
@@ -3110,8 +3111,6 @@ class PortfolioBuilder():
             df_rec = self._check_result()
         if df_rec is None:
             return None
-        if not self._check_record(df_rec, msg=True):
-            return None # check df_rec by self.cols_record
 
         cost = None if cost_excluded else self.cost
         df_cf = self._calc_cashflow_history(df_rec, cost)
@@ -3181,7 +3180,7 @@ class PortfolioBuilder():
         file, path = self.file, self.path
         self.file = self._save_transaction(df_rec, file, path)
         if self.file is not None:
-            self.record = self.import_record(df_rec)
+            self.record = self.import_record(df_rec, return_on_fail=False)
             self.record_halt = self.tradinghalts.record_halt
         return df_rec
         
@@ -3192,7 +3191,7 @@ class PortfolioBuilder():
         save: overwrite record file if True
         """
         # reload record w/ full transaction history first
-        record = self.import_record(halt=False, msg=False)
+        record = self.import_record(halt=False, msg=False, return_on_fail=False)
         if record is None:
             return None
         else:
@@ -3230,8 +3229,6 @@ class PortfolioBuilder():
                 return None
             else:
                 return self.tradinghalts.recover(self.record, self.record_halt) # see _check_result for err msg
-        if not self._check_record(df_rec, msg=True):
-            return None # check df_rec by self.cols_record
 
         if weight_actual:# add actual weights
             df_rec = self.insert_weight_actual(df_rec)
@@ -3304,7 +3301,7 @@ class PortfolioBuilder():
             df_add = df_add.loc[start_date:]
     
         # get prices
-        df_rec = self._check_result()
+        df_rec = self._check_result(False) # no err msg as df_rec is just for df_prc
         if df_rec is None:
             df_prc = self.df_universe
         else:
@@ -3438,7 +3435,7 @@ class PortfolioBuilder():
          ex) delisted security
         all_transaction: set to True to track exact value histories of sold assets delisted from universe
         """
-        # no msg as df_rec is just for date & tickers
+        # no err msg as df_rec is just for date & tickers
         df_rec = self._check_result(False)
         if df_rec is None:
             return None
@@ -3826,7 +3823,7 @@ class PortfolioBuilder():
             return sr_ugl.to_frame().join(sr_roi)
         
 
-    def _check_result(self, msg=True):
+    def _check_result(self, msg=True, check_record=True):
         if self.df_rec is None:
             if self.record is None:
                 return print('ERROR: No transaction record') if msg else None
@@ -3834,6 +3831,10 @@ class PortfolioBuilder():
                 df_res = self.record
         else:
             df_res = self.df_rec
+        # check record of df_rec which must be not None now
+        if check_record:
+            if not self._check_record(df_res):
+                return None
 
         col_prc = self.cols_record['prc']
         if df_res[col_prc].notna().any(): # print error regardless of the arg msg 
@@ -3844,9 +3845,9 @@ class PortfolioBuilder():
         return df_res.copy() 
 
 
-    def _check_record(self, df_rec, msg=False):
+    def _check_record(self, df_rec, msg=True):
         """
-        check if transaction df_rec right format
+        check if df_rec follows transaction format
         """
         # check columns
         cols_record = self.cols_record
@@ -3865,7 +3866,7 @@ class PortfolioBuilder():
             tkrs = df_p.loc[df_p[col_net] > 0].index.difference(df_rec.loc[date].index)
             if tkrs.size > 0:
                 dt = date.strftime(self.date_format)
-                print(f'ERROR: Held assets missing in Transaction on {dt}')
+                print(f'ERROR: Held assets missing in Transaction on {dt}') if msg else None
                 return False
             else:
                 prv = date
