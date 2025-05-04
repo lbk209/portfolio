@@ -3791,8 +3791,6 @@ class PortfolioBuilder():
         result: ROI, UGL or 'all'
         """
         col_tkr = self.cols_record['tkr']
-        col_roi = 'roi'
-        col_ugl = 'ugl'
         
         conds = [col_tkr in df.index.names for df in [sr_val, df_cashflow_history]]
         if sum(conds) == 1: # both of sr_val & df_cashflow_history be total or by tickers
@@ -3803,6 +3801,22 @@ class PortfolioBuilder():
         df_his = df_his.groupby(col_tkr) if sum(conds) == 2 else df_his
         df_his = df_his.ffill().fillna(0)
     
+        return PortfolioBuilder.calc_profit(df_his, result=result, roi_log=roi_log,
+                           col_val=col_val, col_sell=col_sell, col_buy=col_buy)
+
+        
+    @staticmethod
+    def calc_profit(df_his, result='ROI', roi_log=False,
+                    col_val='value', col_sell='sell', col_buy='buy'):
+        """
+        calc ROI/UGL from df_his of col_val, col_sell and col_buy
+        """
+        if pd.Index([col_buy, col_sell, col_val]).difference(df_his.columns).size > 0:
+            return print("ERROR")
+        
+        col_roi = 'roi'
+        col_ugl = 'ugl'
+        
         # calc ROI
         ratio = lambda x: (x[col_val] + x[col_sell]) / x[col_buy]
         if roi_log:
@@ -3814,7 +3828,7 @@ class PortfolioBuilder():
         # calc unrealized gain/loss
         sr_ugl = (df_his.apply(lambda x: x[col_val] + x[col_sell] - x[col_buy], axis=1)
                         .rename(col_ugl))
-    
+        
         result = result.lower()
         if result == col_roi:
             return sr_roi
