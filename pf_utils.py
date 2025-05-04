@@ -2797,7 +2797,7 @@ class PortfolioBuilder():
         df_cf = self._calc_cashflow_history(df_rec, cost, total=total)
     
         # calc profit
-        df_pnl = self._calc_profit(sr_val, df_cf, result='all', roi_percent=False)
+        df_pnl = self._calc_profit(sr_val, df_cf, result='all')
         
         if total:
             df_m = df_cf.join(sr_val.rename('value'), how='right').join(df_pnl).ffill()
@@ -3782,8 +3782,7 @@ class PortfolioBuilder():
         return df_cf.sort_index().ffill().fillna(0).loc[start_date:end_date]
 
 
-    def _calc_profit(self, sr_val, df_cashflow_history, result='ROI', 
-                     roi_log=False, roi_percent=True,
+    def _calc_profit(self, sr_val, df_cashflow_history, result='ROI', roi_log=False,
                      col_val='value', col_sell='sell', col_buy='buy'):
         """
         calc history of roi or unrealized gain/loss
@@ -3806,7 +3805,6 @@ class PortfolioBuilder():
     
         # calc ROI
         ratio = lambda x: (x[col_val] + x[col_sell]) / x[col_buy]
-        m = 100 if roi_percent else 1
         if roi_log:
             sr_roi = df_his.apply(lambda x: np.log(ratio(x)), axis=1)
         else:
