@@ -2740,12 +2740,13 @@ class PortfolioBuilder():
         return df_rec
 
 
-    def valuate(self, date=None, cost_excluded=False, total=True, 
+    def valuate(self, date=None, cost_excluded=False, total=True, exclude_sold=True,
                 print_msg=False, print_summary_only=False,
                 sort_by='ugl', int_to_str=True, join_str=False):
         """
         calc date, buy/sell prices & portfolio value from self.record or self.df_rec
         date: date, None, 'all'
+        exclude_sold: set to True to exclude assets that are no longer held when calculating individual asset performance.
         sort_by: sort value of date (total=False) by one of 'start', 'end', 'buy', 'sell', 
                 'value', 'ugl', 'roi' in descending order
         int_to_str: applied only if date != 'all'
@@ -2834,7 +2835,7 @@ class PortfolioBuilder():
                 df_m = df_m.sort_values(sort_by, ascending=False) if sort_by else df_m
                 df_m = df_m.map(format_price, digits=0) if int_to_str else df_m
                 # remove assets liquidated before the last transaction
-                df_m = df_m.loc[df_m[col_val].notna()]
+                df_m = df_m.loc[df_m[col_val].notna()] if exclude_sold else df_m
                 # add asset name column if given
                 if self.security_names is not None: 
                     col_name = cols_record['name']
@@ -6777,12 +6778,14 @@ class PortfolioManager():
     """
     manage multiple portfolios 
     """
-    def __init__(self, *pf_names, col_portfolio='portfolio', verbose=True, **kwargs):
+    def __init__(self, *pf_names, col_ticker='ticker', col_portfolio='portfolio', 
+                 verbose=True, **kwargs):
         """
         pf_names: list of portfolio names
         kwargs: see create_portfolio
         """
         self.pf_data = PortfolioData()
+        self.col_ticker = col_ticker
         self.col_portfolio = col_portfolio
         self.portfolios = dict() # dict of name to PortfolioBuilder instance
         self.load(*pf_names, verbose=verbose, **kwargs)
@@ -6965,7 +6968,7 @@ class PortfolioManager():
         return pf_names
 
     
-    def plot(self, *pf_names, start_date=None, end_date=None, roi=True,
+    def plot(self, *pf_names, start_date=None, end_date=None, roi=True, category=None,
              figsize=(10,5), legend=True, colors = plt.cm.Spectral):
         """
         start_date: date of beginning of the return plot
@@ -6976,7 +6979,7 @@ class PortfolioManager():
         pf_names = self.check_portfolios(*pf_names)
         if len(pf_names) == 0:
             return None
-
+    
         nms_v = self.names_vals
         nm_val = nms_v['value']
         nm_buy = nms_v['buy']
@@ -6987,7 +6990,9 @@ class PortfolioManager():
         nm_end = nms_v['end']
         
         # get data
-        df_all = self._valuate(*pf_names, date='all', total=True)
+        category = category or self.col_portfolio
+        df_all = self._valuate(*pf_names, date='all', category=category)
+        #return df_all
         df_all = df_all.loc[start_date:end_date]
         start_date, end_date = get_date_minmax(df_all)
     
@@ -7033,9 +7038,9 @@ class PortfolioManager():
         
 
     def summary(self, *pf_names, date=None, int_to_str=True, category=None, sort_by=None, 
-                plot=False, roi=True, figsize=None, col_ticker='ticker'):
+                plot=False, roi=True, figsize=None):
         """
-        get cashflow & pnl of portfolios on date
+        get cashflow & pnl of groups in category (default portfolio) on date
         """       
         pf_names = self.check_portfolios(*pf_names)
         if len(pf_names) == 0:
@@ -7063,7 +7068,7 @@ class PortfolioManager():
                                  *df_val.iloc[2:].sum(axis=1).to_list()]
             df_ttl = df_val[nm_ttl]
             df_val.loc[nm_roi, nm_ttl] = df_ttl[nm_ugl] / df_ttl[nm_buy]
-            return df_val.map(format_price, digits=0) if int_to_str else df_res
+            return df_val.map(format_price, digits=0) if int_to_str else df_val
 
 
     def import_category(self, file, path='.', col_ticker='ticker'):
@@ -7073,7 +7078,10 @@ class PortfolioManager():
         """
         if isinstance(file, str): # file is file of category
             try:
-                df_cat = pd.read_csv(f'{path}/{file}').set_index(col_ticker)
+                df_cat = (pd.read_csv(f'{path}/{file}')
+                            # rename col_ticker to join with tickers in portfolios
+                            .rename(columns={col_ticker:self.col_ticker})
+                            .set_index(self.col_ticker))
             except Exception as e:
                 return print('ERROR:', e)
         elif isinstance(file, dict): # file is dict of category to ticker list
@@ -7105,7 +7113,7 @@ class PortfolioManager():
             print(f"{sr['end']}, {', '.join(p.split('_'))}, , , , 평가, , {', '.join(values)}")
 
 
-    def util_asset_tickers(self, *pf_names, col_ticker='ticker', col_net='net'):
+    def util_asset_tickers(self, *pf_names, col_net='net'):
         """
         get ticker list of assets in all portfolios
         """
@@ -7116,7 +7124,7 @@ class PortfolioManager():
         for name in pf_names:
             pf = self.portfolios[name]
             df = pf.view_record(-1)
-            tkrs = df.loc[df[col_net] > 0].index.get_level_values(col_ticker).to_list()
+            tkrs = df.loc[df[col_net] > 0].index.get_level_values(self.col_ticker).to_list()
             tickers.extend(tkrs)
         return list(set(tickers))
 
@@ -7135,6 +7143,7 @@ class PortfolioManager():
         nm_buy = nms_v['buy']
         nm_start = nms_v['start']
         nm_end = nms_v['end']
+        nm_date = nms_v['date']
         
         df_all = None
         no_res = []
@@ -7151,7 +7160,7 @@ class PortfolioManager():
         category = category or col_portfolio
         if category not in df_all.columns:
             if (df_cat is not None) and category in df_cat.columns:
-                if df_all.index.difference(df_cat.index).size > 0:
+                if df_all.index.get_level_values(self.col_ticker).unique().difference(df_cat.index).size > 0:
                     print(f'WARNING: Reset category to {col_portfolio} as some tickers missing in {category}')
                     category = col_portfolio
                 else:
@@ -7159,18 +7168,20 @@ class PortfolioManager():
             else:
                 print(f'WARNING: Reset category to {col_portfolio} as no {category} exists in the category')
                 category = col_portfolio            
-        
+    
         # construct result according to category
-        sr_start = df_all.groupby(category)[nm_start].min().dt.strftime(format_date)
-        sr_end = df_all.groupby(category)[nm_end].max().dt.strftime(format_date)
-        cols = [nm_val, nm_sell, nm_buy]
-        df_all = sr_start.to_frame().join(sr_end).join(df_all.groupby(category)[cols].sum())
+        cols = [nm_buy, nm_sell, nm_val]
+        if date == 'all':
+            df_all = df_all.groupby([nm_date, category])[cols].sum().sort_index()
+        else:
+            sr_start = df_all.groupby(category)[nm_start].min().dt.strftime(format_date)
+            sr_end = df_all.groupby(category)[nm_end].max().dt.strftime(format_date)
+            df_all = sr_start.to_frame().join(sr_end).join(df_all.groupby(category)[cols].sum())
+    
         # add profit columns
         df_prf = PortfolioBuilder.calc_profit(df_all, result='both', 
                                      col_val=nm_val, col_sell=nm_sell, col_buy=nm_buy)
         df_all = pd.concat([df_all, df_prf], axis=1)
-        # sort by index
-        df_all = df_all.set_index(category, append=True).sort_index() if date == 'all' else df_all
         return df_all
     
     
