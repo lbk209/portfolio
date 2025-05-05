@@ -3356,7 +3356,8 @@ class PortfolioBuilder():
     
     @staticmethod
     def _plot_assets(df_val, roi=True, figsize=None, label=True,
-                     col_name='name', col_value='value', col_roi='roi', cpl_ugl='ugl'):
+                     col_name='name', col_value='value', col_roi='roi', cpl_ugl='ugl',
+                     height_bar=0.3, height_padding=0):
         """
         Bar chart displaying the performance of individual assets within the portfolio
         df_val: output of self.valuate(date=None, total=False, int_to_str=False)
@@ -3371,9 +3372,16 @@ class PortfolioBuilder():
             _ = df_val.plot(col_name, cpl_ugl, ax=ax2, color='orange', title='UGL', **kw)
         _ = ax1.set_ylabel(None)
         _ = ax2.axvline(0, lw=0.5, c='gray')
+
+        # Update the figure height
+        n_bars = df_val[col_name].nunique()
+        height_tmp = n_bars * height_bar + height_padding
+        width, height = fig.get_size_inches()
+        if height_tmp > height:
+            fig.set_size_inches(width, height_tmp)
     
         if label:
-            _= ax1.bar_label(ax1.containers[0], label_type='center', fmt='{:,g}')
+            _= ax1.bar_label(ax1.containers[0], label_type='center', fmt='{:,.3g}')
             _= ax2.bar_label(ax2.containers[0], label_type='center', fmt='{:.1f}' if roi else '{:,g}')
         
         plt.subplots_adjust(wspace=0.05)
@@ -7060,7 +7068,8 @@ class PortfolioManager():
             df_val = df_val.reset_index()
             df_val = df_val.sort_values(sort_by, ascending=True) if sort_by in df_val.columns else df_val
             category = category or self.col_portfolio
-            axes = PortfolioBuilder._plot_assets(df_val.reset_index(), col_name=category, roi=roi, figsize=figsize)
+            #axes = PortfolioBuilder._plot_assets(df_val.reset_index(), col_name=category, roi=roi, figsize=figsize)
+            axes = PortfolioBuilder._plot_assets(df_val, col_name=category, roi=roi, figsize=figsize)
             return None
         else:
             # set total
@@ -7186,7 +7195,7 @@ class PortfolioManager():
                                          col_val=nm_val, col_sell=nm_sell, col_buy=nm_buy)
             return pd.concat([df_all, df_prf], axis=1)
         else:
-            return df_all.set_index(category).sort_index()
+            return df_all.set_index(category, append=True).sort_index()
     
     
 
