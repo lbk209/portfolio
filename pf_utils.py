@@ -7045,7 +7045,8 @@ class PortfolioManager():
         pf_names = self.check_portfolios(*pf_names)
         if len(pf_names) == 0:
             return None
-    
+        # history not supported in summary
+        date = None if date == 'all' else date
         nms_v = self.names_vals
         nm_ttl = nms_v['ttl']
         nm_start = nms_v['start']
@@ -7054,12 +7055,12 @@ class PortfolioManager():
         nm_ugl = nms_v['ugl']
         nm_buy = nms_v['buy']
     
-        category = category or self.col_portfolio
         df_val = self._valuate(*pf_names, date=date, category=category)
         if plot:
             df_val = df_val.reset_index()
             df_val = df_val.sort_values(sort_by, ascending=True) if sort_by in df_val.columns else df_val
-            axes = PortfolioBuilder._plot_assets(df_val, col_name=category, roi=roi, figsize=figsize)
+            category = category or self.col_portfolio
+            axes = PortfolioBuilder._plot_assets(df_val.reset_index(), col_name=category, roi=roi, figsize=figsize)
             return None
         else:
             # set total
@@ -7135,8 +7136,9 @@ class PortfolioManager():
         pf_names: list of portfolio names
         date: date for values on date, None for values on last date, 'all' for history
         """
-        col_portfolio = self.col_portfolio
         df_cat = self.df_category
+        col_portfolio = self.col_portfolio
+        col_ticker = self.col_ticker
         nms_v = self.names_vals
         nm_val = nms_v['value']
         nm_sell = nms_v['sell']
@@ -7144,45 +7146,47 @@ class PortfolioManager():
         nm_start = nms_v['start']
         nm_end = nms_v['end']
         nm_date = nms_v['date']
-        
+    
+        # get data from each portfolio
         df_all = None
+        # custom category not supported for history
+        total = True if date == 'all' else False
         no_res = []
         for name in pf_names:
             pf = self.portfolios[name]
-            df = pf.valuate(date=date, total=False, int_to_str=False, print_msg=False)
+            df = pf.valuate(date=date, total=total, int_to_str=False, 
+                            print_msg=False, exclude_sold=False)
             if df is None:
                 no_res.append(name)
             else:
-                # add portfolio name as index
+                # add portfolio name
                 df = df.assign(**{col_portfolio:name})
                 df_all = df if df_all is None else pd.concat([df_all, df], axis=0) 
     
+        # set custom category
         category = category or col_portfolio
-        if category not in df_all.columns:
-            if (df_cat is not None) and category in df_cat.columns:
-                if df_all.index.get_level_values(self.col_ticker).unique().difference(df_cat.index).size > 0:
-                    print(f'WARNING: Reset category to {col_portfolio} as some tickers missing in {category}')
-                    category = col_portfolio
+        if date != 'all':
+            if category not in df_all.columns:
+                if (df_cat is not None) and category in df_cat.columns:
+                    if df_all.index.get_level_values(col_ticker).unique().difference(df_cat.index).size > 0:
+                        print(f'WARNING: Reset category to {col_portfolio} as some tickers missing in {category}')
+                        category = col_portfolio
+                    else:
+                        df_all = df_all.join(df_cat[category])
                 else:
-                    df_all = df_all.join(df_cat[category])
-            else:
-                print(f'WARNING: Reset category to {col_portfolio} as no {category} exists in the category')
-                category = col_portfolio            
-    
-        # construct result according to category
-        cols = [nm_buy, nm_sell, nm_val]
-        if date == 'all':
-            df_all = df_all.groupby([nm_date, category])[cols].sum().sort_index()
-        else:
+                    print(f'WARNING: Reset category to {col_portfolio} as no {category} exists in the category')
+                    category = col_portfolio
+            # construct result according to category
             sr_start = df_all.groupby(category)[nm_start].min().dt.strftime(format_date)
             sr_end = df_all.groupby(category)[nm_end].max().dt.strftime(format_date)
+            cols = [nm_buy, nm_sell, nm_val]
             df_all = sr_start.to_frame().join(sr_end).join(df_all.groupby(category)[cols].sum())
-    
-        # add profit columns
-        df_prf = PortfolioBuilder.calc_profit(df_all, result='both', 
-                                     col_val=nm_val, col_sell=nm_sell, col_buy=nm_buy)
-        df_all = pd.concat([df_all, df_prf], axis=1)
-        return df_all
+            # add profit columns
+            df_prf = PortfolioBuilder.calc_profit(df_all, result='both', 
+                                         col_val=nm_val, col_sell=nm_sell, col_buy=nm_buy)
+            return pd.concat([df_all, df_prf], axis=1)
+        else:
+            return df_all.set_index(category).sort_index()
     
     
 
