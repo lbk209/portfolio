@@ -2747,6 +2747,7 @@ class PortfolioBuilder():
         calc date, buy/sell prices & portfolio value from self.record or self.df_rec
         date: date, None, 'all'
         exclude_sold: set to True to exclude assets that are no longer held when calculating individual asset performance.
+            effective when date!='all' & total=False
         sort_by: sort value of date (total=False) by one of 'start', 'end', 'buy', 'sell', 
                 'value', 'ugl', 'roi' in descending order
         int_to_str: applied only if date != 'all'
@@ -2834,7 +2835,7 @@ class PortfolioBuilder():
                 df_m = pd.concat([df_r, df_m.loc[date]], axis=1)
                 df_m = df_m.sort_values(sort_by, ascending=False) if sort_by else df_m
                 df_m = df_m.map(format_price, digits=0) if int_to_str else df_m
-                # remove assets liquidated before the last transaction
+                # remove past (disposed) assets if exclude_sod = True
                 df_m = df_m.loc[df_m[col_val].notna()] if exclude_sold else df_m
                 # add asset name column if given
                 if self.security_names is not None: 
@@ -3127,8 +3128,11 @@ class PortfolioBuilder():
         return ax  
 
     
-    def plot_assets(self, date=None, roi=True, sort_by='roi', figsize=None, label=True):
-        df_val = self.valuate(date=date, total=False, int_to_str=False)
+    def plot_assets(self, date=None, roi=True, sort_by='roi', figsize=None, label=True, exclude_sold=True):
+        """
+        exclude_sold: set to False to include all historical assets
+        """
+        df_val = self.valuate(date=date, total=False, int_to_str=False, exclude_sold=exclude_sold)
         if df_val is None:
             return None
         df_val = df_val.sort_values(sort_by, ascending=True) if sort_by in df_val.columns else df_val
@@ -7065,10 +7069,9 @@ class PortfolioManager():
     
         df_val = self._valuate(*pf_names, date=date, category=category)
         if plot:
+            category = df_val.index.name # reset category according to result df_val
             df_val = df_val.reset_index()
             df_val = df_val.sort_values(sort_by, ascending=True) if sort_by in df_val.columns else df_val
-            category = category or self.col_portfolio
-            #axes = PortfolioBuilder._plot_assets(df_val.reset_index(), col_name=category, roi=roi, figsize=figsize)
             axes = PortfolioBuilder._plot_assets(df_val, col_name=category, roi=roi, figsize=figsize)
             return None
         else:
@@ -7163,8 +7166,8 @@ class PortfolioManager():
         no_res = []
         for name in pf_names:
             pf = self.portfolios[name]
-            df = pf.valuate(date=date, total=total, int_to_str=False, 
-                            print_msg=False, exclude_sold=False)
+            df = pf.valuate(date=date, total=total, int_to_str=False, print_msg=False, 
+                            exclude_sold=False) # Including all historical assets to calculate total profit
             if df is None:
                 no_res.append(name)
             else:
