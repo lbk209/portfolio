@@ -6980,7 +6980,7 @@ class PortfolioManager():
         return pf_names
 
     
-    def plot(self, *pf_names, start_date=None, end_date=None, roi=True, category=None,
+    def plot(self, *pf_names, start_date=None, end_date=None, roi=True,
              figsize=(10,5), legend=True, colors = plt.cm.Spectral):
         """
         start_date: date of beginning of the return plot
@@ -7002,8 +7002,7 @@ class PortfolioManager():
         nm_end = nms_v['end']
         
         # get data
-        category = category or self.col_portfolio
-        df_all = self._valuate(*pf_names, date='all', category=category)
+        df_all = self._valuate(*pf_names, date='all', category=None)
         #return df_all
         df_all = df_all.loc[start_date:end_date]
         start_date, end_date = get_date_minmax(df_all)
@@ -7126,20 +7125,16 @@ class PortfolioManager():
             print(f"{sr['end']}, {', '.join(p.split('_'))}, , , , 평가, , {', '.join(values)}")
 
 
-    def util_asset_tickers(self, *pf_names, col_net='net'):
+    def util_performance_by_asset(self, *pf_names, date=None):
         """
         get ticker list of assets in all portfolios
         """
         pf_names = self.check_portfolios(*pf_names)
         if len(pf_names) == 0:
             return None
-        tickers = list()
-        for name in pf_names:
-            pf = self.portfolios[name]
-            df = pf.view_record(-1)
-            tkrs = df.loc[df[col_net] > 0].index.get_level_values(self.col_ticker).to_list()
-            tickers.extend(tkrs)
-        return list(set(tickers))
+    
+        df_all = self._performance_by_asset(*pf_names, date=date)
+        return df_all
 
 
     def _valuate(self, *pf_names, date=None, category=None, format_date='%Y-%m-%d'):
@@ -7160,24 +7155,12 @@ class PortfolioManager():
         nm_date = nms_v['date']
     
         # get data from each portfolio
-        df_all = None
-        # custom category not supported for history
-        total = True if date == 'all' else False
-        no_res = []
-        for name in pf_names:
-            pf = self.portfolios[name]
-            df = pf.valuate(date=date, total=total, int_to_str=False, print_msg=False, 
-                            exclude_sold=False) # Including all historical assets to calculate total profit
-            if df is None:
-                no_res.append(name)
-            else:
-                # add portfolio name
-                df = df.assign(**{col_portfolio:name})
-                df_all = df if df_all is None else pd.concat([df_all, df], axis=0) 
+        df_all = self._performance_by_asset(*pf_names, date=date)
     
         # set custom category
-        category = category or col_portfolio
         if date != 'all':
+            # check category
+            category = category or col_portfolio
             if category not in df_all.columns:
                 if (df_cat is not None) and category in df_cat.columns:
                     if df_all.index.get_level_values(col_ticker).unique().difference(df_cat.index).size > 0:
@@ -7198,7 +7181,30 @@ class PortfolioManager():
                                          col_val=nm_val, col_sell=nm_sell, col_buy=nm_buy)
             return pd.concat([df_all, df_prf], axis=1)
         else:
-            return df_all.set_index(category, append=True).sort_index()
+            return df_all.set_index(col_portfolio, append=True).sort_index()
+
+
+    def _performance_by_asset(self, *pf_names, date=None):
+        """
+        pf_names: list of portfolio names
+        date: date for values on date, None for values on last date, 'all' for history
+        """
+        # get data from each portfolio
+        df_all = None
+        # custom category not supported for history
+        total = True if date == 'all' else False
+        no_res = []
+        for name in pf_names:
+            pf = self.portfolios[name]
+            df = pf.valuate(date=date, total=total, int_to_str=False, print_msg=False, 
+                            exclude_sold=False) # Including all historical assets to calculate total profit
+            if df is None:
+                no_res.append(name)
+            else:
+                # add portfolio name
+                df = df.assign(**{self.col_portfolio:name})
+                df_all = df if df_all is None else pd.concat([df_all, df], axis=0) 
+        return df_all
     
     
 
