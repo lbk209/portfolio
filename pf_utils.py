@@ -7106,6 +7106,12 @@ class PortfolioManager():
             df_cat = file
         else:
             return print('ERROR: Input must be file name, dict, series or dataframe of category')
+    
+        df_all = self.util_performance_by_asset(date=None)
+        cats = df_cat.columns.intersection(df_all.columns)
+        if cats.size > 0:
+            cats = ', '.join(cats)
+            return print(f'ERROR: Failed to import custom category. Rename column {cats}')
         
         cats = ', '.join(df_cat.columns)
         print(f'Custom category loaded: {cats}')
