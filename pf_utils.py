@@ -496,7 +496,7 @@ def format_price(x, digits=3, min_x=1000, int_to_str=True):
         y = int(round(x, -digits))
         y = f'{y:,.0f}' if int_to_str else y
     else:
-        y = x
+        y = round(x) # Round the number up after decimal point
     return y
 
 
@@ -4225,6 +4225,10 @@ class CostManager():
         df_fee.update(calc_fee(df_val, fee)) # get fee for every period
         df_fee = df_fee.fillna(0).cumsum() # get history of fees
         return df_val.sub(df_fee)
+
+
+    @staticmethod
+    def get_value_after_cost(df_val,)
 
     
     @staticmethod
