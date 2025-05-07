@@ -4007,31 +4007,35 @@ class CostManager():
         df_rec = self.df_rec
         if df_rec is None:
             return None
-        else:
-            cols_record = self.cols_record
-            col_date = cols_record['date']
-            col_tkr = cols_record['tkr']
+        
+        cols_record = self.cols_record
+        col_date = cols_record['date']
+        col_tkr = cols_record['tkr']
+        col_buy, col_sell, col_tax, col_fee = 'buy', 'sell', 'tax', 'fee'
+        col_bcost = 'cost_buy'
+        col_scost = 'cost_sell'
     
         # force to total to calc df_net
-        df_cf = CostManager._calc_cashflow_history(df_rec, cols_record, total=False)
+        df_cf = CostManager._calc_cashflow_history(df_rec, cols_record, total=False,
+                                                   col_buy=col_buy, col_sell=col_sell)
         df_cf = df_cf.loc[:date]
         if cost is None: # cashflow without cost
             return df_cf.groupby(col_date).sum() if total else df_cf
     
         # calc cost
         df_cost = self.calc_cost(date=date, percent=percent, **cost)
-        df_cost = df_cost.rename(columns={'buy':'cost_buy'})
-        df_cost['cost_sell'] = df_cost['sell'] + df_cost['fee'] + df_cost['tax']
-        df_cost = df_cost[['cost_buy', 'cost_sell']]
+        df_cost = df_cost.rename(columns={col_buy:col_bcost})
+        df_cost[col_scost] = df_cost[col_sell] + df_cost[col_fee] + df_cost[col_tax]
+        df_cost = df_cost[[col_bcost, col_scost]]
         df_cost = df_cost.unstack(col_tkr).cumsum().ffill().stack()
         
         # calc net cashflow
         df_net = (df_cf.join(df_cost, how='outer')
                   # ffill cost for the date of no new transaction from halt
                   .groupby(col_tkr).ffill()) 
-        df_net['buy']  = df_net['buy'] + df_net['cost_buy']
-        df_net['sell']  = df_net['sell'] - df_net['cost_sell']
-        df_net = df_net[['buy', 'sell']]
+        df_net[col_buy]  = df_net[col_buy] - df_net[col_bcost]
+        df_net[col_sell]  = df_net[col_sell] - df_net[col_scost]
+        df_net = df_net[[col_buy, col_sell]]
     
         if total: 
             df_net = df_net.groupby(col_date).sum()
@@ -4100,7 +4104,7 @@ class CostManager():
 
 
     @staticmethod
-    def _calc_cashflow_history(df_rec, cols_record, total=True):
+    def _calc_cashflow_history(df_rec, cols_record, col_buy='buy', col_sell='sell', total=True):
         """
         Returns df of cumulative buy and sell prices at each transaction.
         total: set to False to get histories of individual tickers
@@ -4108,8 +4112,6 @@ class CostManager():
         col_trs = cols_record['trs']
         col_tkr = cols_record['tkr']
         col_date = cols_record['date']
-        col_buy = 'buy'
-        col_sell = 'sell'
         col_keep = 'keep' # for the case of date of no transaction except for halt
         col_cf = 'cf'
     
