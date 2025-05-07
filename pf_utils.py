@@ -1134,14 +1134,14 @@ class DataManager():
 
     def performance(self, tickers=None, metrics=None, 
                     sort_by=None, start_date=None, end_date=None,
-                    fee=None, period_fee=3, percent_fee=True):
+                    cost=None, period_fee=3, percent_fee=True):
         df_prices = self._get_prices(tickers=tickers, start_date=start_date, 
                                       end_date=end_date, n_max=-1)
         if df_prices is None:
             return None
 
-        if fee is not None:
-            df_p = self._get_prices_after_fee(df_prices, fee, 
+        if cost is not None:
+            df_p = self._get_prices_after_fee(df_prices, cost=cost, 
                                               period=period_fee, percent=percent_fee)
             df_prices = df_prices if df_p is None else df_p
             
@@ -1171,20 +1171,22 @@ class DataManager():
 
 
     def plot(self, tickers, start_date=None, end_date=None, metric='cagr', compare_fees=[True, True],
-             base=1000, fee=None, period_fee=3, percent_fee=True,
+             base=1000, cost=None, period_fee=3, percent_fee=True,
              length=20, ratio=1,
              figsize=(12,4), ratios=(7, 3)):
         """
         plot total returns of tickers and bar chart of metric
         """
         kw_tkrs = dict(tickers=tickers, start_date=start_date, end_date=end_date)
-        kw_fees = dict(fee=fee, period_fee=period_fee, percent_fee=percent_fee)
+        kw_fees = dict(cost=cost, period_fee=period_fee, percent_fee=percent_fee)
         # create gridspec
         ax1, ax2 = create_split_axes(figsize=figsize, ratios=ratios, vertical_split=False)
         
         # plot total returns
         kw = dict(base=base, compare_fees=compare_fees[0], length=length, ratio=ratio)
         ax1 = self.plot_return(ax=ax1, **kw_tkrs, **kw_fees, **kw)
+        if ax1 is None:
+            return
         
         # plot bar chart of metric
         kw_tkrs.update({'start_date':mldate(ax1.get_xlim()[0])}) # update start date according to price adjustment
@@ -1199,7 +1201,7 @@ class DataManager():
 
     def plot_return(self, tickers=None, start_date=None, end_date=None,
              base=-1, n_max=-1, 
-             fee=None, period_fee=3, percent_fee=True, compare_fees=True,
+             cost=None, period_fee=3, percent_fee=True, compare_fees=True,
              ax=None, figsize=(8,5), lw=1, loc='upper left', length=20, ratio=1):
         """
         compare tickers by plot
@@ -1214,10 +1216,10 @@ class DataManager():
             return None
 
         title = 'Total returns'
-        if fee is None:
+        if cost is None:
             df_tf = None
         else: # df_tf is None if fee of dict or series missing any ticker
-            df_tf = self._get_prices_after_fee(df_tickers, fee, period=period_fee, 
+            df_tf = self._get_prices_after_fee(df_tickers, cost=cost, period=period_fee, 
                                                percent=percent_fee)
         if df_tf is None:
             compare_fees = False # force to False as no fee provided for comparison
@@ -1272,7 +1274,7 @@ class DataManager():
 
 
     def plot_bar(self, tickers=None, start_date=None, end_date=None, metric='cagr', n_max=-1, 
-                 fee=None, period_fee=3, percent_fee=True, compare_fees=True,
+                 cost=None, period_fee=3, percent_fee=True, compare_fees=True,
                  ax=None, figsize=(6,4), length=20, ratio=1,
                  colors=None, alphas=[0.4, 0.8]):
         df_tickers = self._get_prices(tickers=tickers, start_date=start_date, 
@@ -1280,10 +1282,10 @@ class DataManager():
         if df_tickers is None:
             return None
 
-        if fee is None:
+        if cost is None:
             df_tf = None
         else:
-            df_tf = self._get_prices_after_fee(df_tickers, fee, 
+            df_tf = self._get_prices_after_fee(df_tickers, cost=cost, 
                                                period=period_fee, percent=percent_fee)
         label = metric.upper()
         if df_tf is None:
@@ -1353,11 +1355,15 @@ class DataManager():
         
         if isinstance(tickers, str):
             tickers = [tickers]
-        tickers = self._check_var(tickers, self.df_prices.columns.to_list())
+        tickers = self._check_var(tickers, df_prices.columns.to_list())
         if len(tickers) > n_max > 0:
             tickers = random.sample(tickers, n_max)
-    
-        df_tickers = df_prices[tickers]
+        
+        try:
+            df_tickers = df_prices[tickers]
+        except KeyError:
+            return print('ERROR: Check tickers')
+
         dts = df_tickers.apply(lambda x: x.dropna().index.min()) # start date of each tickers
         if base > 0: # adjust price of tickers
             dt_adj = df_tickers.index.min()
@@ -1369,12 +1375,13 @@ class DataManager():
         return df_tickers.loc[dt_adj:] 
 
 
-    def _get_prices_after_fee(self, df_prices, fee, period=3, percent=True):
+    def _get_prices_after_fee(self, df_prices, cost=None, period=3, percent=True):
         """
-        get df_prices after annual fee
-        fee: number, dict or series of ticker to annual fee. rate
+        get df_prices after cost
+        cost: dict of buy/sell commissions, fee and tax. see CostManager
         """
-        return CostManager.get_history_with_fee(df_prices, fee, period=period, percent=percent)
+        cost = cost or dict()
+        return CostManager.get_history_with_fee(df_prices, period=period, percent=percent, **cost)
 
     
     @staticmethod
@@ -4045,7 +4052,7 @@ class CostManager():
 
     def calc_cost(self, date=None, buy=0, sell=0, tax=0, fee=0, percent=True):
         """
-        buy, sell, tax, fee: float, series or dict of ticker to annual fee
+        buy, sell, tax, fee: float, series or dict of ticker to cost
         """
         df_rec = self.df_rec
         if df_rec is None:
@@ -4194,41 +4201,57 @@ class CostManager():
 
 
     @staticmethod
-    def get_history_with_fee(df_val, fee, period=3, percent=True):
+    def get_history_with_fee(df_val, buy=0, sell=0, tax=0, fee=0, period=3, percent=True):
         """
         df_val: history of single value or price to apply fee. ex) DataManager.df_prices
-        fee: number, dict or series of ticker to annual fee. rate
+        buy: float, series or dict of ticker to cost to buy
+        sell: float, series or dict of ticker to cost to sell
+        tax: float, series or dict of ticker to tax
+        fee: float, series or dict of ticker to annual fee
         period: add fee every period of months
         """
         # calc fee every period
-        def calc_fee(df, sr_fee, period=period, percent=percent):
-            sr_fee = sr_fee/100 if percent else sr_fee
+        def calc_fee(df, sr_fee, period=period):
             sr_fee = sr_fee.apply(lambda x: -1 + (1+x)**(period/12)) # get equivalent rate of fee for period
             days = check_days_in_year(df, msg=False) # get days fo a year
             days = days.mul(period/12).round().astype(int) # get dats for a period
             return df.apply(lambda x: x.dropna().iloc[::days[x.name]] * sr_fee[x.name] 
                             if x.count() >= period else 0).fillna(0)
 
-        # convert fee to series
-        if isinstance(fee, dict):
-            fee = pd.Series(fee)
-        elif isinstance(fee, Number):
-            fee = pd.Series(fee, index=df_val.columns)
+        # convert cost data to series
+        def convert_to_series(cost, percent=percent):
+            if isinstance(cost, dict):
+                cost = pd.Series(cost)
+            elif isinstance(cost, Number):
+                cost = pd.Series(cost, index=df_val.columns)
+            n = df_val.columns.difference(cost.index).size
+            if n > 0:
+                return print(f'ERROR: Missing cost data for {n} tickers')
+            else:
+                return cost/100 if percent else cost
 
-        n = df_val.columns.difference(fee.index).size
-        if n > 0:
-            return print(f'ERROR: Missing fee data for {n} tickers')
-        
-        # add fees to value history
+        converted = [convert_to_series(x) for x in [buy, sell, tax, fee]]
+        for x in converted:
+            if x is None:
+                return
+        else:
+            buy, sell, tax, fee = converted
+            cost = buy + sell + tax
+            
+        # calc buy + sell + tax
+        df_cost = df_val.apply(lambda x: x * cost[x.name])
+        # calc annual fee
         df_fee = df_val.copy()
         df_fee.loc[:,:] = None
         df_fee.update(calc_fee(df_val, fee)) # get fee for every period
         df_fee = df_fee.fillna(0).cumsum() # get history of fees
-        return df_val.sub(df_fee)
+        # sub total cost from value history
+        return df_val.sub(df_cost).sub(df_fee)
 
 
     @staticmethod
-    def get_value_after_cost(df_val,)
+    def get_value_after_cost(df_val):
+        pass # testing
 
     
     @staticmethod
