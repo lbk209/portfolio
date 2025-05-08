@@ -18,6 +18,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import xarray as xr
 import asyncio, nest_asyncio
+import math
 
 from datetime import datetime, timedelta
 from datetime import date as datetime_date
@@ -488,15 +489,20 @@ def create_split_axes(figsize=(10, 6), vertical_split=True,
     return (ax1, ax2)
 
 
-def format_price(x, digits=3, min_x=1000, int_to_str=True):
+def format_price(x, digits=3, min_x=1000, sig_figs=3, int_to_str=True):
     """
     Formats a number by rounding and optionally converting it to a string with comma separators.
     """
-    if isinstance(x, Number) and abs(x) >= min_x:
-        y = int(round(x, -digits))
-        y = f'{y:,.0f}' if int_to_str else y
+    if isinstance(x, Number):
+        if abs(x) >= min_x:
+            y = int(round(x, -digits))
+            y = f'{y:,.0f}' if int_to_str else y
+        elif x != 0:
+            y = round(x, -int(math.floor(math.log10(abs(x)))) + (sig_figs - 1))
+        else:
+            y = x
     else:
-        y = round(x) # Round the number up after decimal point
+        y = x
     return y
 
 
@@ -7112,7 +7118,7 @@ class PortfolioManager():
             return df_val.map(format_price, digits=0) if int_to_str else df_val
 
 
-    def import_category(self, file, path='.', col_ticker='ticker'):
+    def import_category(self, file, path='.', col_ticker='ticker', exclude=None):
         """
         get df of category
         file: file name, dict, series, df
@@ -7135,6 +7141,11 @@ class PortfolioManager():
             df_cat = file
         else:
             return print('ERROR: Input must be file name, dict, series or dataframe of category')
+
+        if exclude is not None: # remove category set in exclude
+            exclude = [exclude] if isinstance(exclude, str) else exclude
+            cols = df_cat.columns.difference(exclude)
+            df_cat = df_cat[cols]
     
         df_all = self.util_performance_by_asset(date=None)
         cats = df_cat.columns.intersection(df_all.columns)
