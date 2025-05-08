@@ -2381,7 +2381,7 @@ class PortfolioBuilder():
         self.name = name # portfolio name
         self.cols_record = cols_record
         self.date_format = date_format # date str format for record & printing
-        self.cost = cost # dict of buy/sell commissions, fee and tax. see CostManager
+        self.cost = cost # dict of buy/sell commissions, fee and tax (%). see CostManager
         
         self.selected = None # data for select, weigh and allocate
         self.df_rec = None # record updated with new transaction
@@ -2580,12 +2580,11 @@ class PortfolioBuilder():
         return weights
         
 
-    def allocate(self, capital=10000000, commissions=0, int_nshares=True):
+    def allocate(self, capital=10000000, int_nshares=True):
         """
         calc amount of each security for net on the transaction date 
         capital: amount of cash for rebalance. int if money, float if ratio to portfolio values, 
                  postitive to add, negative to reduce
-        commissions: percentage
         int_nshares: True if transaction by number of shares, False for fund
         """
         cols_record = self.cols_record
@@ -2634,7 +2633,7 @@ class PortfolioBuilder():
         # calc amount of each security by weights and capital
         df_prc = self.df_universe # no _update_universe to work on tickers in the universe
         wi = pd.Series(weights, name=col_wgt).rename_axis(col_tkr) # ideal weights
-        sr_net = wi * capital / (1+commissions/100) # weighted security value
+        sr_net = wi * capital # weighted security value
         
         if int_nshares: # allocating by considering num of shares from price data
             sr_net = sr_net / df_prc.loc[date, tickers] # stock quantity float
@@ -2753,7 +2752,7 @@ class PortfolioBuilder():
         return df_rec
 
 
-    def valuate(self, date=None, cost_excluded=False, total=True, exclude_sold=True,
+    def valuate(self, date=None, total=True, exclude_cost=True, exclude_sold=True,
                 print_msg=False, print_summary_only=False,
                 sort_by='ugl', int_to_str=True, join_str=False):
         """
@@ -2808,8 +2807,7 @@ class PortfolioBuilder():
         # calc value
         sr_val = self._calc_value_history(df_rec, df_prices, date, self.name, msg=False, total=total)
         # buy & sell prices to date.
-        cost = None if cost_excluded else self.cost
-        df_cf = self._calc_cashflow_history(df_rec, cost, total=total)
+        df_cf = self._calc_cashflow_history(df_rec, total=total, exclude_cost=exclude_cost)
     
         # calc profit
         df_pnl = self._calc_profit(sr_val, df_cf, result='all')
@@ -2859,7 +2857,7 @@ class PortfolioBuilder():
         return df_m
 
 
-    def transaction_pipeline(self, date=None, capital=10000000, commissions=0, 
+    def transaction_pipeline(self, date=None, capital=10000000, 
                              save=False, nshares=False, date_actual=None):
         """
         nshares: set to True if saving last transaction as num of shares for the convenience of trading
@@ -2891,7 +2889,7 @@ class PortfolioBuilder():
         if weights is None:
             return None
         
-        df_net = self.allocate(capital=capital, commissions=commissions, int_nshares=not self.unit_fund)
+        df_net = self.allocate(capital=capital, int_nshares=not self.unit_fund)
         if df_net is None:
             return None
             
@@ -2973,7 +2971,7 @@ class PortfolioBuilder():
                 return self._calc_value_history(df_rec, df_prices, name=self.name, msg=True)
 
 
-    def get_cash_history(self, cost_excluded=False, cumsum=True, date_actual=False):
+    def get_cash_history(self, exclude_cost=True, cumsum=True, date_actual=False):
         """
         get history of buy and sell prices
         cumsum: set to False to check buy & sell for each transaction date
@@ -2982,8 +2980,7 @@ class PortfolioBuilder():
         if df_rec is None:
             return None
         else:
-            cost = None if cost_excluded else self.cost
-            df_cf = self._calc_cashflow_history(df_rec, cost)
+            df_cf = self._calc_cashflow_history(df_rec, exclude_cost=exclude_cost)
     
         if not cumsum:
             df = df_cf.diff(1)
@@ -2999,13 +2996,13 @@ class PortfolioBuilder():
         return df_cf
 
 
-    def get_profit_history(self, result='ROI', total=True, cost_excluded=False, 
+    def get_profit_history(self, result='ROI', total=True, exclude_cost=True, 
                            roi_log=False, msg=True):
         """
         get history of profit/loss
         result: 'ROI', 'UGL' or 'all'
         """
-        df_all = self.valuate(date='all', total=total, cost_excluded=cost_excluded)
+        df_all = self.valuate(date='all', total=total, exclude_cost=exclude_cost)
         if df_all is None:
             return None
         cols_pnl = ['ugl', 'roi']
@@ -3017,13 +3014,13 @@ class PortfolioBuilder():
             return df_all[cols_pnl]
 
     
-    def plot(self, start_date=None, end_date=None, total=True,
+    def plot(self, start_date=None, end_date=None, total=True, exclude_cost=False,
              figsize=(10,6), legend=True, height_ratios=(3,1), loc='upper left',
-             roi=True, roi_log=False, cashflow=True, cost_excluded=False):
+             roi=True, roi_log=False, cashflow=True):
         """
         plot total, net and profit histories of portfolio
         """
-        df_all = self.valuate(date='all', total=total, cost_excluded=cost_excluded)
+        df_all = self.valuate(date='all', total=total, exclude_cost=exclude_cost)
         if df_all is None:
             return None
         else: # necessary to get tickers of end_date and plot vlines for trasaction dates
@@ -3118,11 +3115,11 @@ class PortfolioBuilder():
             ax1.vlines(dates_trs, 0, 1, transform=ax1.get_xaxis_transform(), lw=0.5, color='gray')
             # set slice for record with a single transaction
             ax2 = self.plot_cashflow(df_rec=df_rec, start_date=start_date, end_date=end_date, 
-                                     cost_excluded=cost_excluded, ax=ax2)
+                                     exclude_cost=exclude_cost, ax=ax2)
         return None
 
 
-    def plot_cashflow(self, df_rec=None, start_date=None, end_date=None, cost_excluded=False,
+    def plot_cashflow(self, df_rec=None, start_date=None, end_date=None, exclude_cost=False,
                       ax=None, figsize=(8,2), alpha=0.4, colors=('r', 'g'),
                       labels=['Buy', 'Sell'], loc='upper left'):
         if df_rec is None:
@@ -3130,8 +3127,7 @@ class PortfolioBuilder():
         if df_rec is None:
             return None
 
-        cost = None if cost_excluded else self.cost
-        df_cf = self._calc_cashflow_history(df_rec, cost)
+        df_cf = self._calc_cashflow_history(df_rec, exclude_cost=exclude_cost)
         df_cf = self._plot_cashflow_slice(df_cf, start_date, end_date)
         if ax is None:
             _, ax = plt.subplots(figsize=figsize)
@@ -3141,11 +3137,13 @@ class PortfolioBuilder():
         return ax  
 
     
-    def plot_assets(self, date=None, roi=True, sort_by='roi', figsize=None, label=True, exclude_sold=True):
+    def plot_assets(self, date=None, roi=True, sort_by='roi', figsize=None, label=True, 
+                    cost_exculded=False, exclude_sold=True):
         """
         exclude_sold: set to False to include all historical assets
         """
-        df_val = self.valuate(date=date, total=False, int_to_str=False, exclude_sold=exclude_sold)
+        df_val = self.valuate(date=date, total=False, int_to_str=False, 
+                              cost_exculded=cost_exculded, exclude_sold=exclude_sold)
         if df_val is None:
             return None
         df_val = df_val.sort_values(sort_by, ascending=True) if sort_by in df_val.columns else df_val
@@ -3731,7 +3729,7 @@ class PortfolioBuilder():
         return sr_ttl if name is None else sr_ttl.rename(name)
 
 
-    def _calc_cashflow_history(self, record, cost=None, total=True):
+    def _calc_cashflow_history(self, record, total=True, exclude_cost=True):
         """
         Returns df of cumulative buy and sell prices at each transaction.
         """
@@ -3739,7 +3737,8 @@ class PortfolioBuilder():
         df_rec = self.view_record(0, df_rec=record, nshares=False, value=True, 
                                   weight_actual=False, msg=False, int_nshares=False)
         cm = CostManager(df_rec, self.cols_record, self.date_format)
-        return cm.calc_cashflow_history(cost=cost, total=total)
+        cost = None if exclude_cost else self.cost
+        return cm.calc_cashflow_history(cost=cost, total=total, percent=True)
 
 
     def _join_cashflow_by_ticker(self, sr_val, df_cf, df_pnl):
@@ -4349,6 +4348,7 @@ class CostManager():
                       msg_succeed=f'Cost data saved to {file}',
                       index=False)
         return None
+
 
 
 class TradingHalts():
@@ -7015,7 +7015,7 @@ class PortfolioManager():
         return pf_names
 
     
-    def plot(self, *pf_names, start_date=None, end_date=None, roi=True,
+    def plot(self, *pf_names, start_date=None, end_date=None, roi=True, exclude_cost=False, 
              figsize=(10,5), legend=True, colors = plt.cm.Spectral):
         """
         start_date: date of beginning of the return plot
@@ -7037,7 +7037,7 @@ class PortfolioManager():
         nm_end = nms_v['end']
         
         # get data
-        df_all = self._valuate(*pf_names, date='all', category=None)
+        df_all = self._valuate(*pf_names, date='all', category=None, exclude_cost=exclude_cost)
         #return df_all
         df_all = df_all.loc[start_date:end_date]
         start_date, end_date = get_date_minmax(df_all)
@@ -7083,7 +7083,8 @@ class PortfolioManager():
         return None
         
 
-    def summary(self, *pf_names, date=None, int_to_str=True, category=None, sort_by=None, 
+    def summary(self, *pf_names, date=None, 
+                int_to_str=True, category=None, exclude_cost=False, sort_by=None, 
                 plot=False, roi=True, figsize=None):
         """
         get cashflow & pnl of groups in category (default portfolio) on date
@@ -7101,7 +7102,7 @@ class PortfolioManager():
         nm_ugl = nms_v['ugl']
         nm_buy = nms_v['buy']
     
-        df_val = self._valuate(*pf_names, date=date, category=category)
+        df_val = self._valuate(*pf_names, date=date, category=category, exclude_cost=exclude_cost)
         if plot:
             category = df_val.index.name # reset category according to result df_val
             df_val = df_val.reset_index()
@@ -7147,7 +7148,7 @@ class PortfolioManager():
             cols = df_cat.columns.difference(exclude)
             df_cat = df_cat[cols]
     
-        df_all = self.util_performance_by_asset(date=None)
+        df_all = self.util_performance_by_asset(date=None, exclude_cost=True)
         cats = df_cat.columns.intersection(df_all.columns)
         if cats.size > 0:
             cats = ', '.join(cats)
@@ -7171,7 +7172,7 @@ class PortfolioManager():
             print(f"{sr['end']}, {', '.join(p.split('_'))}, , , , 평가, , {', '.join(values)}")
 
 
-    def util_performance_by_asset(self, *pf_names, date=None):
+    def util_performance_by_asset(self, *pf_names, date=None, exclude_cost=False):
         """
         get ticker list of assets in all portfolios
         """
@@ -7179,11 +7180,11 @@ class PortfolioManager():
         if len(pf_names) == 0:
             return None
     
-        df_all = self._performance_by_asset(*pf_names, date=date)
+        df_all = self._performance_by_asset(*pf_names, date=date, exclude_cost=exclude_cost)
         return df_all
 
 
-    def _valuate(self, *pf_names, date=None, category=None, format_date='%Y-%m-%d'):
+    def _valuate(self, *pf_names, date=None, category=None, exclude_cost=False, format_date='%Y-%m-%d'):
         """
         return evaluation summary df the portfolios in pf_names
         pf_names: list of portfolio names
@@ -7201,7 +7202,7 @@ class PortfolioManager():
         nm_date = nms_v['date']
     
         # get data from each portfolio
-        df_all = self._performance_by_asset(*pf_names, date=date)
+        df_all = self._performance_by_asset(*pf_names, date=date, exclude_cost=exclude_cost)
     
         # set custom category
         if date != 'all':
@@ -7230,7 +7231,7 @@ class PortfolioManager():
             return df_all.set_index(col_portfolio, append=True).sort_index()
 
 
-    def _performance_by_asset(self, *pf_names, date=None):
+    def _performance_by_asset(self, *pf_names, date=None, exclude_cost=False):
         """
         pf_names: list of portfolio names
         date: date for values on date, None for values on last date, 'all' for history
@@ -7242,8 +7243,9 @@ class PortfolioManager():
         no_res = []
         for name in pf_names:
             pf = self.portfolios[name]
-            df = pf.valuate(date=date, total=total, int_to_str=False, print_msg=False, 
-                            exclude_sold=False) # Including all historical assets to calculate total profit
+            df = pf.valuate(date=date, total=total, exclude_cost=exclude_cost, 
+                            exclude_sold=False, # Including all historical assets to calculate total profit
+                            int_to_str=False, print_msg=False) 
             if df is None:
                 no_res.append(name)
             else:
