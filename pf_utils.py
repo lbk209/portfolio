@@ -139,40 +139,42 @@ def get_date_minmax(df, date_format=None, level=0):
 
 def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10, msg=True):
     """
-    freq: unit to check days_in_year in df
+    df: df of date index and ticker column
+    freq: unit to check days_in_year in df and min data size of df as well
     """
     if freq == 'Y':
         grp_format = '%Y'
-        #days_in_freq = days_in_year
-        factor = 1
+        factor = 1 
     elif freq == 'W':
-        grp_format = '%Y%m%U'
-        #days_in_freq = round(days_in_year/12/WEEKS_IN_YEAR)
-        factor = 12 * WEEKS_IN_YEAR
+        grp_format = '%Y%U' # ex) 202400, 202401, ... 202452
+        factor = WEEKS_IN_YEAR
     else: # default month
         grp_format = '%Y%m'
-        #days_in_freq = round(days_in_year/12)
         factor = 12
 
     # calc mean days for each ticker
     df_days = (df.assign(gb=df.index.strftime(grp_format)).set_index('gb')
                  .apply(lambda x: x.dropna().groupby('gb').count()[1:-1])
-                 #.fillna(0) # comment as it distorts mean
+                 #.fillna(0) # commented as it distorts mean
                  .mul(factor).mean().round()
-                 .fillna(0) # for the case no ticker has enough days for the calc
+                 #.fillna(days_in_year) # for the case no ticker has enough days for the calc
               )
 
+    n = df_days.isna().sum()
+    if n > 0: # use input days_in_year for tickers w/o enough days to calc
+        df_days = df_days.fillna(days_in_year)
+        print(f'WARNING: {n} tickers assumed having {days_in_year} days for a year')
+
+    # check result
     cond = (df_days != days_in_year)
     if (cond.sum() > 0) and msg:
         df = df_days.loc[cond]
         n = len(df)
         if n < n_thr:
-            #print(f'WARNING: the number of days in a year with followings is not {days_in_year} in setting:')
             print(f'WARNING: the number of days in a year with followings is {df.mean():.0f} in avg.:')
             _ = [print(f'{k}: {int(v)}') for k,v in df.to_dict().items()]
         else:
             p = n / len(df_days) * 100
-            #print(f'WARNING: the number of days in a year with {n} tickers ({p:.0f}%) is not {days_in_year} in setting:')
             print(f'WARNING: the number of days in a year with {n} tickers ({p:.0f}%) is {df.mean():.0f} in avg.')
     
     return df_days
