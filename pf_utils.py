@@ -4262,14 +4262,17 @@ class CostManager():
             else:
                 return cost/100 if percent else cost
 
-        converted = [convert_to_series(x) for x in [buy, sell, tax, fee]]
-        for x in converted:
-            if x is None:
-                return
+        converted = []
+        for x in [buy, sell, tax, fee]:
+            c = convert_to_series(x)
+            if c is None:
+                return df_val
+            else:
+                converted.append(c)
         else:
-            buy, sell, tax, fee = converted
-            cost = buy + sell + tax
-            
+            fee = converted[-1]
+            cost = sum(converted[:-1])
+        
         # calc buy + sell + tax
         df_cost = df_val.apply(lambda x: x * cost[x.name])
         # calc annual fee
