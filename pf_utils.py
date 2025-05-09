@@ -163,7 +163,8 @@ def check_days_in_year(df, days_in_year=252, freq='M', n_thr=10, msg=True):
     n = df_days.isna().sum()
     if n > 0: # use input days_in_year for tickers w/o enough days to calc
         df_days = df_days.fillna(days_in_year)
-        print(f'WARNING: {n} tickers assumed having {days_in_year} days for a year')
+        if msg:
+            print(f'WARNING: {n} tickers assumed having {days_in_year} days for a year')
 
     # check result
     cond = (df_days != days_in_year)
@@ -499,9 +500,9 @@ def format_price(x, digits=3, min_x=1000, sig_figs=3, int_to_str=True):
         if abs(x) >= min_x:
             y = int(round(x, -digits))
             y = f'{y:,.0f}' if int_to_str else y
-        elif x != 0:
+        elif abs(x) > 0:
             y = round(x, -int(math.floor(math.log10(abs(x)))) + (sig_figs - 1))
-        else:
+        else: # x == 0 or None
             y = x
     else:
         y = x
@@ -2807,7 +2808,8 @@ class PortfolioBuilder():
         # get record to date
         df_rec = df_rec.loc[:date]
         # calc value
-        sr_val = self._calc_value_history(df_rec, df_prices, date, self.name, msg=False, total=total)
+        sr_val = self._calc_value_history(df_rec, df_prices, date, self.name, msg=False, 
+                                          total=total, exclude_cost=exclude_cost)
         # buy & sell prices to date.
         df_cf = self._calc_cashflow_history(df_rec, total=total, exclude_cost=exclude_cost)
     
@@ -2938,7 +2940,8 @@ class PortfolioBuilder():
                 df_prc = self._update_universe(record, msg=True, download_missing=True)
                 if df_prc is None:
                     return None
-                sr_val = self._calc_value_history(record, df_prc, end_date=date_lt, name=col_net, total=False)
+                sr_val = self._calc_value_history(record, df_prc, end_date=date_lt, name=col_net, 
+                                                  total=False, exclude_cost=True)
                 # get ticker list of no transaction
                 tkrs = df_rec.loc[df_rec[col_trs]==0].loc[date_lt].index
                 sr_val = sr_val.loc[date_lt:date_lt, tkrs]
@@ -2958,7 +2961,7 @@ class PortfolioBuilder():
             return print('Nothing to save')
 
 
-    def get_value_history(self):
+    def get_value_history(self, total=True, exclude_cost=True):
         """
         get history of portfolio value
         """
@@ -2970,7 +2973,8 @@ class PortfolioBuilder():
             if df_prices is None:
                 return None
             else:
-                return self._calc_value_history(df_rec, df_prices, name=self.name, msg=True)
+                return self._calc_value_history(df_rec, df_prices, name=self.name, msg=True,
+                                                total=total, exclude_cost=exclude_cost)
 
 
     def get_cash_history(self, exclude_cost=True, cumsum=True, date_actual=False):
@@ -3140,12 +3144,12 @@ class PortfolioBuilder():
 
     
     def plot_assets(self, date=None, roi=True, sort_by='roi', figsize=None, label=True, 
-                    cost_exculded=False, exclude_sold=True):
+                    exclude_cost=False, exclude_sold=True):
         """
         exclude_sold: set to False to include all historical assets
         """
         df_val = self.valuate(date=date, total=False, int_to_str=False, 
-                              cost_exculded=cost_exculded, exclude_sold=exclude_sold)
+                              exclude_cost=exclude_cost, exclude_sold=exclude_sold)
         if df_val is None:
             return None
         df_val = df_val.sort_values(sort_by, ascending=True) if sort_by in df_val.columns else df_val
@@ -3153,7 +3157,7 @@ class PortfolioBuilder():
         return df_val
     
     
-    def performance(self, metrics=METRICS, sort_by=None):
+    def performance(self, metrics=METRICS, sort_by=None, exclude_cost=False):
         """
         calc performance of ideal portfolio excluding slippage
         """
@@ -3163,7 +3167,8 @@ class PortfolioBuilder():
         df_prices = self._update_universe(df_rec, msg=True, download_missing=True)
         if df_prices is None:
             return None
-        sr_val = self._calc_value_history(df_rec, df_prices, name=self.name)
+        sr_val = self._calc_value_history(df_rec, df_prices, name=self.name,
+                                          total=True, exclude_cost=exclude_cost)
         if sr_val is None:
             return None
         else:
@@ -3678,8 +3683,8 @@ class PortfolioBuilder():
         return sr_w.round(decimals) if decimals > 0 else sr_w
 
 
-    def _calc_value_history(self, df_rec, df_universe, 
-                            end_date=None, name=None, msg=False, total=True):
+    def _calc_value_history(self, df_rec, df_universe, end_date=None, name=None, msg=False, 
+                            total=True, exclude_cost=True):
         """
         calc historical of portfolio value from transaction
         end_date: calc value from 1st transaction of df_rec to end_date.
@@ -3728,7 +3733,27 @@ class PortfolioBuilder():
         else:
             sr_ttl = sr_ttl.stack().dropna().astype(int)
         
-        return sr_ttl if name is None else sr_ttl.rename(name)
+        df_val = sr_ttl if name is None else sr_ttl.rename(name)
+        return df_val if exclude_cost else self._adjust_value_history(df_val, total=total)
+
+
+    def _adjust_value_history(self, df_val, total=True):
+        """
+        adjust the output of _calc_value_history to reflect cost
+        args, kwargs: input for _calc_value_history
+        """
+        col_tkr = self.cols_record['tkr']
+        cost = self.cost or dict()
+        kw = dict(period=3, percent=True, **cost)
+        if total:
+            df_val = df_val.to_frame()
+            df_val = CostManager.get_history_with_fee(df_val, **kw)
+            df_val = df_val.iloc[:, 0]
+        else: # df_val assumed dataframe
+            df_val = df_val.unstack(col_tkr)
+            df_val = CostManager.get_history_with_fee(df_val, **kw)
+            df_val = df_val.stack()
+        return df_val.sort_index()
 
 
     def _calc_cashflow_history(self, record, total=True, exclude_cost=True):
