@@ -3727,34 +3727,18 @@ class PortfolioBuilder():
             return print('ERROR: no historical')
         else:
             sr_ttl = sr_ttl.sort_index()
+
+        if not exclude_cost:
+            cost = self.cost or dict()
+            kw = dict(period=3, percent=True, **cost)
+            sr_ttl = CostManager.get_history_with_fee(sr_ttl, **kw)
         
         if total:
             sr_ttl = sr_ttl.fillna(0).sum(axis=1).astype(int)
         else:
             sr_ttl = sr_ttl.stack().dropna().astype(int)
+        return sr_ttl if name is None else sr_ttl.rename(name)
         
-        df_val = sr_ttl if name is None else sr_ttl.rename(name)
-        return df_val if exclude_cost else self._adjust_value_history(df_val, total=total)
-
-
-    def _adjust_value_history(self, df_val, total=True):
-        """
-        adjust the output of _calc_value_history to reflect cost
-        args, kwargs: input for _calc_value_history
-        """
-        col_tkr = self.cols_record['tkr']
-        cost = self.cost or dict()
-        kw = dict(period=3, percent=True, **cost)
-        if total:
-            df_val = df_val.to_frame()
-            df_val = CostManager.get_history_with_fee(df_val, **kw)
-            df_val = df_val.iloc[:, 0]
-        else: # df_val assumed dataframe
-            df_val = df_val.unstack(col_tkr)
-            df_val = CostManager.get_history_with_fee(df_val, **kw)
-            df_val = df_val.stack()
-        return df_val.sort_index()
-
 
     def _calc_cashflow_history(self, record, total=True, exclude_cost=True):
         """
@@ -4262,14 +4246,17 @@ class CostManager():
             else:
                 return cost/100 if percent else cost
 
-        converted = [convert_to_series(x) for x in [buy, sell, tax, fee]]
-        for x in converted:
-            if x is None:
-                return
+        converted = []
+        for x in [buy, sell, tax, fee]:
+            c = convert_to_series(x)
+            if c is None:
+                return df_val
+            else:
+                converted.append(c)
         else:
-            buy, sell, tax, fee = converted
-            cost = buy + sell + tax
-            
+            fee = converted[-1]
+            cost = sum(converted[:-1])
+        
         # calc buy + sell + tax
         df_cost = df_val.apply(lambda x: x * cost[x.name])
         # calc annual fee
