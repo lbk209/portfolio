@@ -2622,7 +2622,8 @@ class PortfolioBuilder():
         else: # determine total cash for rebalance
             if self.check_new_transaction(date):
                 self.df_rec = None # reset df_rec to calc capital
-                sr = self.valuate(date, total=True, int_to_str=False, print_msg=False)
+                sr = self.valuate(date, total=True, exclude_cost=True, 
+                                  int_to_str=False, print_msg=False)
                 val = sr['value']
                 st = 'adding' if capital > 0 else 'selling'
                 if abs(capital) > 1:
@@ -2755,7 +2756,7 @@ class PortfolioBuilder():
         return df_rec
 
 
-    def valuate(self, date=None, total=True, exclude_cost=True, exclude_sold=True,
+    def valuate(self, date=None, total=True, exclude_cost=False, exclude_sold=True,
                 print_msg=False, print_summary_only=False,
                 sort_by='ugl', int_to_str=True, join_str=False):
         """
