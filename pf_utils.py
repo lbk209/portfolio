@@ -2392,7 +2392,7 @@ class PortfolioBuilder():
         # see import_record for its init
         self.tradinghalts = None 
         # records of all trading except for halted
-        self.record = self.import_record(return_on_fail=False) 
+        self.record = self.import_record(return_on_fail=True) 
         # record of halted after new transaction
         self.record_halt = None if self.tradinghalts is None else self.tradinghalts.record_halt
         # price data not in universe but in record. see _update_universe
@@ -2873,7 +2873,9 @@ class PortfolioBuilder():
         if rank is None:
             return None # rank is not None even for static portfolio (method_select='all')
         
-        if not self.check_new_transaction(msg=True):
+        if not self.check_new_transaction(date=None, msg=True):
+            if self._check_result() is None:
+                return None # return if record is not amount-based
             # calc profit at the last transaction
             dt = self.selected['date'] # selected defined by self.select
             _ = self.valuate(dt, total=True, int_to_str=True, print_msg=True)
@@ -3177,6 +3179,9 @@ class PortfolioBuilder():
 
     
     def check_new_transaction(self, date=None, msg=True):
+        """
+        check if new transaction date is after the last date of transactions 
+        """
         record = self.record
         if record is None:
             print('WARNING: No record loaded') if msg else None
@@ -3207,8 +3212,8 @@ class PortfolioBuilder():
         file, path = self.file, self.path
         self.file = self._save_transaction(df_rec, file, path)
         if self.file is not None:
-            self.record = self.import_record(df_rec, return_on_fail=False)
-            self.record_halt = self.tradinghalts.record_halt
+            self.record = self.import_record(df_rec, return_on_fail=True)
+            self.record_halt = None if self.tradinghalts is None else self.tradinghalts.record_halt
         return df_rec
         
 
@@ -3250,7 +3255,7 @@ class PortfolioBuilder():
         weight_actual: True if to add actual weights of assets
         """
         if df_rec is None:
-            df_rec = self._check_result(msg)
+            df_rec = self._check_result(msg, nshares=int_nshares)
         if df_rec is None: # record is None or nshares-based to edit
             if self.tradinghalts is None:
                 return None
@@ -3875,7 +3880,7 @@ class PortfolioBuilder():
             return sr_ugl.to_frame().join(sr_roi)
         
 
-    def _check_result(self, msg=True, check_record=True):
+    def _check_result(self, msg=True, check_record=True, nshares=False):
         if self.df_rec is None:
             if self.record is None:
                 return print('ERROR: No transaction record') if msg else None
@@ -3892,6 +3897,8 @@ class PortfolioBuilder():
         if df_res[col_prc].notna().any(): # print error regardless of the arg msg 
             # seems like record saved as nshares for editing
             print(f'ERROR: Run update_record first after editing record')
+            if not nshares:
+                return None # return None to terminate following process
         
         # self.df_rec or self.record could be modified if not copied
         return df_res.copy() 
@@ -3943,7 +3950,8 @@ class PortfolioBuilder():
         
         if print_msg:
             dt = df_rec.index.get_level_values(0).max().strftime(self.date_format)
-            print(f'Transaction record to {dt} loaded')
+            #print(f'Transaction record {file} (~ {dt}) loaded')
+            print(f'Transaction record {file} loaded')
         return df_rec
 
 
