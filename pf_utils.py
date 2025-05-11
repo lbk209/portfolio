@@ -3416,6 +3416,40 @@ class PortfolioBuilder():
         return (ax1, ax2)
 
 
+    def util_plot_additional(self, tickers=None, start_date=None, **kwargs):
+        """
+        tickers: set to None to plot additional data of held assets
+        kwargs: kwargs for plot
+        """
+        df_add = self.df_additional
+        if df_add is None:
+            return print('ERROR: no df_additional to check')
+        
+        col_start = 'start'
+        if isinstance(tickers, str):
+            tickers = [tickers]
+    
+        if tickers is None: # retrieve tickers of held assets
+            df = self.valuate(total=False)
+            if df is None:
+                return print('ERROR: Set tickers to plot')
+            else:
+                tickers = df.index
+            if start_date is None:
+                start_date = df[col_start].min()
+    
+        tickers_add = df_add.columns.intersection(tickers)
+        if tickers_add.size == 0:
+            return print('ERROR')
+    
+        m = pd.Index(tickers).difference(df_add.columns)
+        if m.size > 0:
+            print(f'WARNING: {m.size} tickers not in additional data')
+
+        title = 'Additional data of Portfolio assets'
+        return df_add.loc[start_date:, tickers_add].plot(**{'title':title, **kwargs})
+
+
     def util_get_prices(self, tickers, update_security_names=True):
         """
         util to get price history of additional tickers
@@ -6622,8 +6656,7 @@ class FinancialRatios():
 
     def util_reshape(self, df_data=None, stack=True, swaplevel=True):
         """
-        Converts price data from **DataManager** 
-         to f-ratios in **FinancialRatios** format, or vice versa 
+        Converts price data from DataManager to f-ratios in FinancialRatios format, or vice versa 
         df_data: price or f-ratios
         """
         cols_index = self.cols_index
