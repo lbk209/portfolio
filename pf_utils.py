@@ -3446,8 +3446,12 @@ class PortfolioBuilder():
         if m.size > 0:
             print(f'WARNING: {m.size} tickers not in additional data')
 
-        title = 'Additional data of Portfolio assets'
-        return df_add.loc[start_date:, tickers_add].plot(**{'title':title, **kwargs})
+        df_add = df_add.loc[start_date:, tickers_add]
+        if len(df_add) > 1:
+            title = 'Additional data of Portfolio assets'
+            return df_add.plot(**{'title':title, **kwargs})
+        else: # no plot if there's just one date for data
+            return df_add
 
 
     def util_get_prices(self, tickers, update_security_names=True):
