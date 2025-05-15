@@ -2625,13 +2625,13 @@ class PortfolioBuilder():
                 sr = self.valuate(date, total=True, exclude_cost=True, 
                                   int_to_str=False, print_msg=False)
                 val = sr['value']
-                st = 'adding' if capital > 0 else 'selling'
+                st = 'contribution' if capital > 0 else 'residual'
                 if abs(capital) > 1:
-                    print(f'Rebalancing by {st} {abs(capital):,}')
+                    print(f'Rebalancing with {st} {abs(capital):,}')
                     capital += val 
                 else:
                     x = round(capital* val)
-                    print(f'Rebalancing by {st} {abs(capital):.0%} of the portfolio value ({x:,})')
+                    print(f'Rebalancing with {st} {abs(capital):.0%} of the portfolio value ({x:,})')
                     capital = (1 + capital) * val
 
         # calc amount of each security by weights and capital
@@ -2749,6 +2749,13 @@ class PortfolioBuilder():
         df_rec = df_rec[cols_all]
         #df_rec.loc[:, cols_int] = df_rec.loc[:, cols_int].astype(int).sort_index(level=[0,1])
         df_rec[cols_int] = df_rec[cols_int].astype(int)
+
+        # print Invested capital or Residual cash
+        date_lt = df_rec.index.get_level_values(col_date).max()
+        invested = df_rec.loc[date_lt, col_trs].sum()
+        st = 'Deployed capital' if invested > 0 else 'Residual cash'
+        print(f'{st}: {abs(invested):,}')
+        
         # overwrite existing df_rec with new transaction
         self.df_rec = df_rec
         # print portfolio value and profit/loss after self.df_rec updated
@@ -3451,6 +3458,7 @@ class PortfolioBuilder():
             title = 'Additional data of Portfolio assets'
             return df_add.plot(**{'title':title, **kwargs})
         else: # no plot if there's just one date for data
+            print('REMINDER: More additional data required to generate the plot.')
             return df_add
 
 
