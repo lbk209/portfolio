@@ -733,8 +733,8 @@ class DataManager():
 
     @print_runtime
     def download(self, start_date=None, end_date=None, n_years=3, tickers=None,
-                 save=True, date_format='%Y-%m-%d', close_today=False, append=False,
-                 **kwargs_download):
+                 save=True, overwrite=False, close_today=False, append=False,
+                 date_format='%Y-%m-%d', **kwargs_download):
         """
         download df_prices by using FinanceDataReader
         n_years: int
@@ -782,14 +782,14 @@ class DataManager():
         self.df_prices = df_prices
         self.security_names = security_names
         if save:
-            if not self.save():
+            if not self.save(overwrite=overwrite):
                 return None
         # convert to daily after saving original monthly
         self.convert_to_daily(True, self.days_in_year) if self.to_daily else None
         return print('df_prices updated')
 
     
-    def save(self, file=None, path=None, date=None, date_format='%y%m%d'):
+    def save(self, file=None, path=None, date=None, overwrite=False, date_format='%y%m%d'):
         file = self._check_var(file, self.file_historical)
         path = self._check_var(path, self.path)
         df_prices = self.df_prices
@@ -803,8 +803,7 @@ class DataManager():
             date = date.strftime(date_format)
 
         file = get_filename(file, f'_{date}', r"_\d+(?=\.\w+$)")
-        # delete file first to overwrite
-        return save_dataframe(df_prices, file, path, overwrite=False,
+        return save_dataframe(df_prices, file, path, overwrite=overwrite,
                                msg_succeed=f'{file} saved',
                                msg_fail=f'ERROR: failed to save as {file} exists')
 

@@ -22,6 +22,13 @@ w_close = Checkbox(
     indent=False
 )
 
+w_overwrite = Checkbox(
+    value=False,
+    description='Overwrite',
+    disabled=False,
+    indent=False
+)
+
 w_date = DatePicker(
     #description='Date',
     value=None,
@@ -33,7 +40,7 @@ w_cap = IntSlider(
     #description='Capital',
     value=0,
     min=0,
-    max=20000000,
+    max=30000000,
     step=500000,
     disabled=False,
     continuous_update=False,
@@ -54,7 +61,7 @@ w_save = ToggleButton(
 )
 w_save.observe(on_toggle, names='value')
 
-WidgetUniverse = VBox([w_download, w_close])
+WidgetUniverse = VBox([w_download, w_close, w_overwrite])
 WidgetTransaction = VBox([w_date, w_cap, w_save])
 
 WidgetUniverse.values = lambda i: WidgetUniverse.children[i].value
