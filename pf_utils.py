@@ -3678,7 +3678,7 @@ class PortfolioBuilder():
     
         df_nshares = df_rec[[col_trs, col_net]].div(sr_prc, axis=0)
         df_nshares = df_nshares.join(sr_prc) if add_price else df_nshares
-        return df_nshares.map(np.fix).astype(int) if int_nshares else df_nshares
+        return df_nshares.map(np.rint).astype(int) if int_nshares else df_nshares
 
 
     def _update_price_ratio(self, df_rec, df_universe):
