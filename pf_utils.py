@@ -2933,28 +2933,20 @@ class PortfolioBuilder():
         create transaction with TradingHalts instance
         kw_halt: kwargs for tradinghalts.transaction
         """
-        if self.record is None:
+        record = self.record
+        if record is None:
             return print('ERROR: No transaction record exits')
+        else:
+            self.df_rec = None # reset prv transaction if any
+    
         date = self._get_data(0, 0, date=date).index.max()
-        recs = self.tradinghalts.transaction(date, date_format=self.date_format, **kw_halt) 
+        # get values of assets on the date for tradinghalts
+        sr_net = self.valuate(total=False, date=date, exclude_cost=True, int_to_str=False)
+        sr_net = sr_net['value']
+        recs = self.tradinghalts.transaction(date, date_format=self.date_format, 
+                                             values_on_date=sr_net, **kw_halt) 
         if recs is not None: # new transaction created
             df_rec, record_halt = recs
-            # update net with the new transaction
-            record = self.record
-            if record is not None:
-                col_net, col_trs = [self.cols_record[x] for x in ['net', 'trs']]
-                # get the date of new transaction
-                date_lt = df_rec.index.get_level_values(0).max()
-                # get value history with record before new transaction
-                df_prc = self._update_universe(record, msg=True, download_missing=True)
-                if df_prc is None:
-                    return None
-                sr_val = self._calc_value_history(record, df_prc, end_date=date_lt, name=col_net, 
-                                                  total=False, exclude_cost=True)
-                # get ticker list of no transaction
-                tkrs = df_rec.loc[df_rec[col_trs]==0].loc[date_lt].index
-                sr_val = sr_val.loc[date_lt:date_lt, tkrs]
-                df_rec.update(sr_val)
             df_rec = self._update_ticker_name(df_rec) # update name for buy case.
             # save before recover
             self.df_rec = df_rec
@@ -4461,13 +4453,14 @@ class TradingHalts():
 
 
     def transaction(self, date, buy=None, sell=None, resume=None, halt=None, 
-                    date_actual=None, date_format='%Y-%m-%d'):
+                    date_actual=None, values_on_date=None, date_format='%Y-%m-%d'):
         """
         make new transaction from the latest transaction without price data
         buy: dict of tickers to total buy price
         halt: list of tickers to halt
         sell: dict of tickers to total sell price or list 
         resume: dict, list, 'all' 
+        values_on_date: dict/series of asset to value on the new transaction date
         """
         record = None if self.record is None else self.record.copy()
         if record is None:
@@ -4521,22 +4514,47 @@ class TradingHalts():
         record_date_lt = record.loc[date_lt, :]
         record_date = (record_date_lt.loc[record_date_lt[col_net] > 0].assign(**kw)
                            .set_index(col_date, append=True).reorder_levels([col_date, col_tkr]))
+        
+        # update value of assets on the date
+        if isinstance(values_on_date, dict):
+            values_on_date = pd.Series(values_on_date)
+        if isinstance(values_on_date, pd.Series):
+            if record_date.index.get_level_values(col_tkr).difference(values_on_date.index).size > 0:
+                print('WARNING: No update of net as missing assets in values_on_date')
+            else:
+                values_on_date = (values_on_date.rename_axis(col_tkr).to_frame(col_net)
+                                  .assign(**{col_date:date}) # date is datetime
+                                  .set_index(col_date, append=True).swaplevel())
+                record_date.update(values_on_date)
+        else:
+            print(f'WARNING: No update of net on {date.strftime(date_format)}')
         record = pd.concat([record, record_date]).sort_index()
     
         if buy is not None:
             print_reminder('buy')
-            tkr = record.loc[date].index.intersection(buy.keys())
+            # check if assets to buy in halted
             if record_halt is not None:
-                tkr2 = record_halt.loc[date_lt].index.map(self.toggle_prefix).intersection(buy.keys())
-                tkr = tkr.union(tkr2)
+                tkr = record_halt.loc[date_lt].index.map(self.toggle_prefix).intersection(buy.keys())
+                if tkr.size > 0:
+                    return self._print_tickers(tkr, 'ERROR: Resume {} first to buy')
+
+            # update existing assets 
+            tkr = record.loc[date].index.intersection(buy.keys())
             if tkr.size > 0:
-                return self._print_tickers(tkr, 'ERROR: {} to buy in the latest transaction')
-            
-            index = pd.MultiIndex.from_product([[date], buy.keys()], names=[col_date, col_tkr])
-            kw = {col_rat:1, col_dttr:date}
-            df_buy = (pd.DataFrame([buy, buy], index=[col_trs, col_net]).T
-                      .set_index(index).assign(**kw))
-            record = pd.concat([record, df_buy]).sort_index()
+                sr_buy = pd.Series(buy).rename_axis(col_tkr)
+                for x in [col_trs, col_net]:
+                    record.loc[idx[date, tkr], x] += sr_buy
+                # remove exising assets from buy
+                buy = {k:v for k,v in buy.items() if k not in tkr}
+
+            if len(buy) > 0: # add new assets
+                index = pd.MultiIndex.from_product([[date], buy.keys()], names=[col_date, col_tkr])
+                kw = {col_rat:1, col_dttr:date}
+                df_buy = (pd.DataFrame([buy, buy], index=[col_trs, col_net]).T
+                          .set_index(index).assign(**kw))
+                record = pd.concat([record, df_buy])
+
+            record = record.sort_index()
     
         if sell is not None:
             tkr = sell.keys() if isinstance(sell, dict) else sell

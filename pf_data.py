@@ -41,7 +41,6 @@ TRANSACTIONS = dict(
     TDF_2406 = dict(file='pf_tdf_static'),
     HANA_2408 = dict(file='pf_hana_static'),
     SAVE_2503 = dict(file='pf_save_static'),
-    SAVE_2504 = dict(file='pf_save2_static'),
     FISA_2504 = dict(file='pf_fisa_static'),
     FCTR= dict(file='pf_fctr_static'),
     #KRX = dict(file='test_pf_krx_momentum'),
@@ -60,7 +59,6 @@ PORTFOLIOS = {
     'TDF_2406': {'strategy': 'TDF', 'universe': 'UV_FUND'},
     'HANA_2408': {'strategy': 'HANA', 'universe': 'UV_FUND'},
     'SAVE_2503': {'strategy': 'SAVE', 'universe': 'UV_FUND'},
-    'SAVE_2504': {'strategy': 'SAVE', 'universe': 'UV_FUND'},
     'FISA_2504': {'strategy': 'SAVE', 'universe': 'UV_FUND'},
     'FCTR': {'strategy': 'FCTR', 'universe': 'UV_FCTR'},  # factor investing with etf
     #'KRX': {'strategy': 'KRX', 'universe': 'UV_KRX'}, # for testing
