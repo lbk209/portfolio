@@ -7228,6 +7228,9 @@ class PortfolioManager():
         else:
             return print('ERROR: Input must be file name, dict, series or dataframe of category')
 
+        # drop duplicates
+        df_cat = df_cat.reset_index().drop_duplicates().set_index(col_ticker)
+
         if exclude is not None: # remove category set in exclude
             exclude = [exclude] if isinstance(exclude, str) else exclude
             cols = df_cat.columns.difference(exclude)
