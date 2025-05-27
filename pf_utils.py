@@ -4549,7 +4549,7 @@ class TradingHalts():
 
             if len(buy) > 0: # add new assets
                 index = pd.MultiIndex.from_product([[date], buy.keys()], names=[col_date, col_tkr])
-                kw = {col_rat:1, col_dttr:date}
+                kw = {col_rat:1, col_dttr:date_actual}
                 df_buy = (pd.DataFrame([buy, buy], index=[col_trs, col_net]).T
                           .set_index(index).assign(**kw))
                 record = pd.concat([record, df_buy])
@@ -4568,7 +4568,7 @@ class TradingHalts():
             else: # assuming sell is dict
                 print_reminder('sell')
             index = pd.MultiIndex.from_product([[date], sell.keys()], names=[col_date, col_tkr])
-            kw = {col_net:0, col_rat:1, col_dttr:date}
+            kw = {col_net:0, col_rat:1, col_dttr:date_actual}
             df_sell = (pd.DataFrame(sell, index=[col_trs]).mul(-1).T
                        .set_index(index).assign(**kw))
             record.update(df_sell, overwrite=True)
@@ -4580,7 +4580,7 @@ class TradingHalts():
                 return self._print_tickers(tkr, 'ERROR: {} to resume not in the latest transaction')
             else:
                 index = pd.MultiIndex.from_product([[date], resume.keys()], names=[col_date, col_tkr])
-                kw = {col_trs:0, col_rat:1, col_dttr:date}
+                kw = {col_trs:0, col_rat:1, col_dttr:date_actual}
                 df_resume = (pd.DataFrame(resume, index=[col_net]).T
                            .set_index(index).assign(**kw))
                 record.update(df_resume, overwrite=True)

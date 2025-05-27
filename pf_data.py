@@ -44,6 +44,7 @@ TRANSACTIONS = dict(
     FISA_2504 = dict(file='pf_fisa_static'),
     FCTR= dict(file='pf_fctr_static'),
     #KRX = dict(file='test_pf_krx_momentum'),
+    SRT = dict(file='pf_srt_static'),
 )
 TRANSACTIONS = {k: {**v, 'path':path_tran} for k,v in TRANSACTIONS.items()}
 
@@ -62,5 +63,6 @@ PORTFOLIOS = {
     'FISA_2504': {'strategy': 'SAVE', 'universe': 'UV_FUND'},
     'FCTR': {'strategy': 'FCTR', 'universe': 'UV_FCTR'},  # factor investing with etf
     #'KRX': {'strategy': 'KRX', 'universe': 'UV_KRX'}, # for testing
+    'SRT': {'strategy': 'WTR', 'universe': 'UV_WTR'},
 }
 PORTFOLIOS = {k: {**v, **TRANSACTIONS[k]} for k,v in PORTFOLIOS.items()}
