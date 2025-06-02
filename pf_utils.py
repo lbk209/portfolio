@@ -7207,7 +7207,7 @@ class PortfolioManager():
             return df_val.map(format_price, digits=0) if int_to_str else df_val
 
 
-    def import_category(self, file, path='.', col_ticker='ticker', exclude=None):
+    def import_category(self, file, path='.', col_ticker='ticker', col_portfolio='portfolio', exclude=None):
         """
         get df of category
         file: file name, dict, series, df
@@ -7215,7 +7215,7 @@ class PortfolioManager():
         if isinstance(file, str): # file is file of category
             try:
                 df_cat = (pd.read_csv(f'{path}/{file}')
-                            # rename col_ticker to join with tickers in portfolios
+                            # rename cols to join with tickers in portfolios
                             .rename(columns={col_ticker:self.col_ticker})
                             .set_index(self.col_ticker))
             except Exception as e:
@@ -7230,16 +7230,34 @@ class PortfolioManager():
             df_cat = file
         else:
             return print('ERROR: Input must be file name, dict, series or dataframe of category')
-
-        # drop duplicates
-        df_cat = df_cat.reset_index().drop_duplicates().set_index(col_ticker)
-
+    
         if exclude is not None: # remove category set in exclude
             exclude = [exclude] if isinstance(exclude, str) else exclude
             cols = df_cat.columns.difference(exclude)
             df_cat = df_cat[cols]
     
+        # check duplicate assets in group of pfs
         df_all = self.util_performance_by_asset(date=None, exclude_cost=True)
+        if df_all.index.has_duplicates: # some assets included in multiple pfs
+            if col_portfolio in df_cat.columns:
+                df_cat = (df_cat.rename(columns={col_portfolio:self.col_portfolio})
+                          .set_index(self.col_portfolio, append=True))
+                # update index of df_all as well for following checks
+                df_all = df_all.set_index(self.col_portfolio, append=True)
+            else:
+                return print('ERROR: Portfolio name required in the category')
+    
+        # check multiple groups of a category for an asset
+        if df_cat.index.has_duplicates:
+            x = ', '.join(df_cat.index.names)
+            return print(f'ERROR: Duplicate {x} in the category')
+    
+        # check missing groups of a category for assets in pfs
+        if df_all.index.difference(df_cat.index).size > 0:
+            x = ', '.join(df_cat.index.names)
+            return print(f'ERROR: Check category as missing {x}')
+    
+        # check duplicate category
         cats = df_cat.columns.intersection(df_all.columns)
         if cats.size > 0:
             cats = ', '.join(cats)
@@ -7301,9 +7319,9 @@ class PortfolioManager():
             category = category or col_portfolio
             if category not in df_all.columns:
                 if (df_cat is not None) and category in df_cat.columns:
-                    if df_all.index.get_level_values(col_ticker).unique().difference(df_cat.index).size > 0:
-                        print(f'WARNING: Reset category to {col_portfolio} as some tickers missing in {category}')
-                        category = col_portfolio
+                    if len(df_cat.index.names) > 1: # index of df_cat is (ticker, portfolio)
+                        df_all = (df_all.set_index(self.col_portfolio, append=True)
+                                  .join(df_cat[category]).reset_index(self.col_portfolio))
                     else:
                         df_all = df_all.join(df_cat[category])
                 else:
