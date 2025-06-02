@@ -3562,8 +3562,11 @@ class PortfolioBuilder():
         df_val[col_stt] = df_val.index.get_level_values(col_date) 
         # get end date before next transaction
         date = df_prices.index.max() if date is None else date
-        df_val[col_end] = (df_val.groupby(col_tkr, group_keys=False)
-                          .apply(lambda x: x[col_stt].shift(-1)).fillna(date))
+        if df_val.index.get_level_values(col_tkr).nunique() > 1:
+            df_val[col_end] = (df_val.groupby(col_tkr, group_keys=False)
+                              .apply(lambda x: x[col_stt].shift(-1)).fillna(date))
+        else: # for single asset portfolio
+            df_val[col_end] = df_val[col_stt].shift(-1).fillna(date)
         # calc amout by buy/sell price on col_end
         df_val[col_val] = (df_val.join(sr_prc.rename_axis(idx), on=idx)
                            .apply(lambda x: x[col_nshares] * x[col_prc], axis=1))
