@@ -7236,22 +7236,19 @@ class PortfolioManager():
             cols = df_cat.columns.difference(exclude)
             df_cat = df_cat[cols]
     
-        # check duplicate assets in group of pfs
+        # add portfolio name as index if given in new cat
         df_all = self.util_performance_by_asset(date=None, exclude_cost=True)
-        if df_all.index.has_duplicates: # some assets included in multiple pfs
-            if col_portfolio in df_cat.columns:
-                df_cat = (df_cat.rename(columns={col_portfolio:self.col_portfolio})
-                          .set_index(self.col_portfolio, append=True))
-                # update index of df_all as well for following checks
-                df_all = df_all.set_index(self.col_portfolio, append=True)
-            else:
-                return print('ERROR: Portfolio name required in the category')
-    
-        # check multiple groups of a category for an asset
+        if col_portfolio in df_cat.columns:
+            df_cat = (df_cat.rename(columns={col_portfolio:self.col_portfolio})
+                      .set_index(self.col_portfolio, append=True))
+            # update index of df_all as well for following checks
+            df_all = df_all.set_index(self.col_portfolio, append=True)
+
+        # check duplicate assets in multiple groups of new category
         if df_cat.index.has_duplicates:
             x = ', '.join(df_cat.index.names)
             return print(f'ERROR: Duplicate {x} in the category')
-    
+        
         # check missing groups of a category for assets in pfs
         if df_all.index.difference(df_cat.index).size > 0:
             x = ', '.join(df_cat.index.names)
