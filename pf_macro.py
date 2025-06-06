@@ -128,7 +128,7 @@ app.layout = dbc.Container([
 # update data based on selected indicators
 app.clientside_callback(
     """
-    function(indicators, start, end) {
+    function(indicators) {
         let data = {};
 
         // Check indicators
@@ -150,27 +150,38 @@ app.clientside_callback(
             }
         }
 
-        // set start & end years
-        let filter_by_year = !(start == null && end == null);
+        // Get start & end years
         let years = [];
-        
         for (let tkr in data) {
             for (let dateStr in data[tkr]) {
                 let year = new Date(dateStr).getFullYear();
                 years.push(year);
             }
         }
+        start = Math.min(...years);
+        end = Math.max(...years);
         
-        if (!start) {
-            start = Math.min(...years);
-        }
-        if (!end) {
-            end = Math.max(...years);
-        }
+        return [data, indicators, start, end];
+
+    }
+    """,
+    Output('macro-data', 'data'),
+    Output('indicator-dropdown', 'value'),
+    Output('start-input', 'value'),
+    Output('end-input', 'value'),
+    Input('indicator-dropdown', 'value')
+)
+
+
+
+# plot indicator history
+app.clientside_callback(
+    """
+    function(start, end, data) {
         
         // filter by year
         let data_filterd = {};
-        if (filter_by_year && start < end) {
+        if (start < end) {
             for (let tkr in data) {
                 data_filterd[tkr] = {};
 
@@ -185,29 +196,12 @@ app.clientside_callback(
             data_filterd = data;
         }
 
-        return [data_filterd, indicators];
-
-    }
-    """,
-    Output('macro-data', 'data'),
-    Output('indicator-dropdown', 'value'),
-    Input('indicator-dropdown', 'value'),
-    Input('start-input', 'value'),
-    Input('end-input', 'value'),
-)
-
-
-
-# plot indicator history
-app.clientside_callback(
-    """
-    function(data) {
+        // plot indicator history
         let traces = [];
-
-        for (let tkr in data) {
+        for (let tkr in data_filterd) {
             traces.push({
-                x: Object.keys(data[tkr]),  // Assuming keys are dates
-                y: Object.values(data[tkr]).map(val => Math.round(val)),  // Assuming values are prices
+                x: Object.keys(data_filterd[tkr]),  // Assuming keys are dates
+                y: Object.values(data_filterd[tkr]).map(val => Math.round(val)),  // Assuming values are prices
                 type: 'line',
                 mode: 'lines',
                 name: tkr
@@ -227,7 +221,9 @@ app.clientside_callback(
     }
     """,
     Output('macro-plot', 'figure'),
-    Input('macro-data', 'data'),
+    Input('start-input', 'value'),
+    Input('end-input', 'value'),
+    State('macro-data', 'data'),
 )
 
 
