@@ -20,7 +20,7 @@ path = 'data'
 df_macro = pd.read_csv(f'{path}/{file}', parse_dates=[0], index_col=0).rename_axis('date')
 
 ## sample data
-freq = 'Q'
+freq = 'M' #'Q'
 df = df_macro.stack().swaplevel().rename_axis(['ticker', 'date']).sort_index()
 grouped = df.groupby([df.index.get_level_values('ticker'),
                      df.index.get_level_values('date').to_period(freq)])
@@ -66,6 +66,37 @@ app.index_string = f"""
             outline: none;
         }}
         </style>
+        <script>
+            function minAbsScale(data) {{
+                // Compute the normalized values with the same structure as the input
+                let result = {{}};
+                for (let tkr in data) {{
+                    result[tkr] = {{}};
+                    let maxVal = Math.max(...Object.values(data[tkr]).map(Math.abs));
+                    for (let date in data[tkr]) {{
+                        result[tkr][date] = data[tkr][date] / maxVal;
+                    }}
+                }}
+                return result;
+            }}
+            function minMaxScale(data) {{
+                // Compute the min-max scaled values with the same structure as the input
+                let result = {{}};
+                for (let tkr in data) {{
+                    result[tkr] = {{}};
+                    let values = Object.values(data[tkr]);
+                    let minVal = Math.min(...values);
+                    let maxVal = Math.max(...values);
+                    let range = maxVal - minVal;
+        
+                    for (let date in data[tkr]) {{
+                        // Avoid division by zero if all values are the same
+                        result[tkr][date] = (range === 0) ? 0.5 : (data[tkr][date] - minVal) / range;
+                    }}
+                }}
+                return result;
+            }}
+        </script>
         {{%css%}}
     </head>
     <body>
@@ -196,21 +227,24 @@ app.clientside_callback(
             data_filterd = data;
         }
 
+        // scale data
+        data_filterd = minMaxScale(data_filterd)
+
         // plot indicator history
         let traces = [];
         for (let tkr in data_filterd) {
             traces.push({
                 x: Object.keys(data_filterd[tkr]),  // Assuming keys are dates
-                y: Object.values(data_filterd[tkr]).map(val => Math.round(val)),  // Assuming values are prices
+                y: Object.values(data_filterd[tkr]).map(val => val), 
                 type: 'line',
                 mode: 'lines',
-                name: tkr
+                name: tkr,
             });
         }
 
         let layout = {
             //title: { text: title},
-            hovermode: 'x',
+            hovermode: 'x unified',
             //yaxis: { title: '가격' },
         }
 
