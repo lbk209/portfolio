@@ -90,6 +90,7 @@ app.layout = dbc.Container([
                 id='start-input', 
                 type='number', min=1900, max=2100, step=1,
                 size='4',
+                placeholder='Start'
             ), 
             #style={'min-width':'10%'}
         ),
@@ -98,6 +99,7 @@ app.layout = dbc.Container([
                 id='end-input', 
                 type='number', min=1900, max=2100, step=1,
                 size='4',
+                placeholder='End'
             ), 
         ),
         html.Div(
@@ -126,10 +128,29 @@ app.layout = dbc.Container([
 # update data based on selected indicators
 app.clientside_callback(
     """
-    function(indicators) {
+    function(indicators, start, end) {
+
+        let data = {};
+        
+        // filter by year
+        if (start < end) {
+            for (let tkr in dataMacro) {
+                data[tkr] = {};
+
+                for (let dateStr in dataMacro[tkr]) {
+                    let year = new Date(dateStr).getFullYear();
+                    if (year >= start && year <= end) {
+                        data[tkr][dateStr] = dataMacro[tkr][dateStr];
+                    }
+                }
+            }
+        } else {
+            data = dataMacro;
+        }
+        
         // Check if 'All' is the last element
         if (indicators.length === 0 || indicators[indicators.length - 1] === 'All') {
-            return [dataMacro, ['All']];
+            return [data, ['All']];
         };
     
         // If 'All' is in the array but not the last element, remove 'All' from indicators
@@ -137,18 +158,20 @@ app.clientside_callback(
             indicators = indicators.filter(group => group !== 'All');
         };
 
-        let data_macro_tkr = {};
-        for (let tkr in dataMacro) {
+        let data_tkr = {};
+        for (let tkr in data) {
             if (indicators.includes(tkr)) {
-                data_macro_tkr[tkr] = dataMacro[tkr];
+                data_tkr[tkr] = data[tkr];
             }
         }
-        return [data_macro_tkr, indicators];
+        return [data_tkr, indicators];
     }
     """,
     Output('macro-data', 'data'),
     Output('indicator-dropdown', 'value'),
-    Input('indicator-dropdown', 'value')
+    Input('indicator-dropdown', 'value'),
+    Input('start-input', 'value'),
+    Input('end-input', 'value'),
 )
 
 
