@@ -129,42 +129,64 @@ app.layout = dbc.Container([
 app.clientside_callback(
     """
     function(indicators, start, end) {
-
         let data = {};
+
+        // Check indicators
+        if (!Array.isArray(indicators) || indicators.length === 0 || indicators[indicators.length - 1] === 'All') {
+            data = dataMacro;
+            indicators = ['All'];
+        } else if (indicators.includes('All')) {
+            // 'All' is selected but not last → remove it to avoid conflict
+            indicators = indicators.filter(group => group !== 'All');
+            // Still need to fetch selected indicators
+        }
+
+        // Retrieve selected indicators if not already set to all
+        if (Object.keys(data).length === 0) {
+            for (let tkr in dataMacro) {
+                if (indicators.includes(tkr)) {
+                    data[tkr] = dataMacro[tkr];
+                }
+            }
+        }
+
+        // set start & end years
+        let filter_by_year = !(start == null && end == null);
+        let years = [];
+        
+        for (let tkr in data) {
+            for (let dateStr in data[tkr]) {
+                let year = new Date(dateStr).getFullYear();
+                years.push(year);
+            }
+        }
+        
+        if (!start) {
+            start = Math.min(...years);
+        }
+        if (!end) {
+            end = Math.max(...years);
+        }
         
         // filter by year
-        if (start < end) {
-            for (let tkr in dataMacro) {
-                data[tkr] = {};
+        let data_filterd = {};
+        if (filter_by_year && start < end) {
+            for (let tkr in data) {
+                data_filterd[tkr] = {};
 
-                for (let dateStr in dataMacro[tkr]) {
+                for (let dateStr in data[tkr]) {
                     let year = new Date(dateStr).getFullYear();
                     if (year >= start && year <= end) {
-                        data[tkr][dateStr] = dataMacro[tkr][dateStr];
+                        data_filterd[tkr][dateStr] = data[tkr][dateStr];
                     }
                 }
             }
         } else {
-            data = dataMacro;
+            data_filterd = data;
         }
-        
-        // Check if 'All' is the last element
-        if (indicators.length === 0 || indicators[indicators.length - 1] === 'All') {
-            return [data, ['All']];
-        };
-    
-        // If 'All' is in the array but not the last element, remove 'All' from indicators
-        if (indicators.includes('All')) {
-            indicators = indicators.filter(group => group !== 'All');
-        };
 
-        let data_tkr = {};
-        for (let tkr in data) {
-            if (indicators.includes(tkr)) {
-                data_tkr[tkr] = data[tkr];
-            }
-        }
-        return [data_tkr, indicators];
+        return [data_filterd, indicators];
+
     }
     """,
     Output('macro-data', 'data'),
