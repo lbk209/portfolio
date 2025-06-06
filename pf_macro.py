@@ -55,6 +55,17 @@ app.index_string = f"""
         {{%metas%}}
         <title>{{%title%}}</title>
         <link rel="icon" type="image/x-icon" href="/assets/favicon.ico">
+        <style>
+        #styled-numeric-input input:invalid {{
+            border-color: #dc3545;
+            padding-right: calc(1.5em + 0.75rem);
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' width='12' height='12' fill='none' stroke='%23dc3545'%3e%3ccircle cx='6' cy='6' r='4.5'/%3e%3cpath stroke-linejoin='round' d='M5.8 3.6h.4L6 6.5z'/%3e%3ccircle cx='6' cy='8.2' r='.6' fill='%23dc3545' stroke='none'/%3e%3c/svg%3e");
+            background-repeat: no-repeat;
+            background-position: right calc(0.375em + 0.1875rem) center;
+            background-size: calc(0.75em + 0.375rem) calc(0.75em + 0.375rem);
+            outline: none;
+        }}
+        </style>
         {{%css%}}
     </head>
     <body>
@@ -72,13 +83,36 @@ app.index_string = f"""
 
 app.layout = dbc.Container([
     html.Br(),
-    html.Div(
-        dcc.Dropdown(
-            id='indicator-dropdown',
-            options=indicator_options,
-            value=indicator_default,
-            multi=True,
-        ), 
+    dbc.Stack([
+        html.Div(
+            #dcc.Input(
+            dbc.Input(
+                id='start-input', 
+                type='number', min=1900, max=2100, step=1,
+                size='4',
+            ), 
+            #style={'min-width':'10%'}
+        ),
+        html.Div(
+            dbc.Input(
+                id='end-input', 
+                type='number', min=1900, max=2100, step=1,
+                size='4',
+            ), 
+        ),
+        html.Div(
+            dcc.Dropdown(
+                id='indicator-dropdown',
+                options=indicator_options,
+                value=indicator_default,
+                multi=True,
+            ), style={'min-width':'60%'} 
+        )
+    ],
+        direction="horizontal",
+        gap=2,
+        className="mb-3",
+        id="styled-numeric-input",
     ),
     html.Div(
         dcc.Graph(id='macro-plot')
@@ -89,7 +123,7 @@ app.layout = dbc.Container([
 ])
 
 
-# update price data based on selected indicators
+# update data based on selected indicators
 app.clientside_callback(
     """
     function(indicators) {
@@ -119,7 +153,7 @@ app.clientside_callback(
 
 
 
-# plot price history
+# plot indicator history
 app.clientside_callback(
     """
     function(data) {
