@@ -15,7 +15,7 @@ base_prc = 1000
 date_format = '%Y-%m-%d'
 
 # load data
-file = 'macro_indicators.csv'
+file = 'macro_indicators_250607.csv'
 path = 'data'
 df_macro = pd.read_csv(f'{path}/{file}', parse_dates=[0], index_col=0).rename_axis('date')
 
