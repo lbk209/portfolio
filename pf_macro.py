@@ -15,12 +15,12 @@ base_prc = 1000
 date_format = '%Y-%m-%d'
 
 # load data
-file = 'macro_indicators.csv'
+file = 'macro_indicators_250607.csv'
 path = 'data'
 df_macro = pd.read_csv(f'{path}/{file}', parse_dates=[0], index_col=0).rename_axis('date')
 
 ## sample data
-freq = 'M' #'Q'
+freq = 'W' #'M' #'Q'
 df = df_macro.stack().swaplevel().rename_axis(['ticker', 'date']).sort_index()
 grouped = df.groupby([df.index.get_level_values('ticker'),
                      df.index.get_level_values('date').to_period(freq)])
@@ -159,13 +159,25 @@ app.layout = dbc.Container([
 # update data based on selected indicators
 app.clientside_callback(
     """
-    function(indicators) {
+    function(indicators, start, end) {
         let data = {};
 
         // Check indicators
         if (!Array.isArray(indicators) || indicators.length === 0 || indicators[indicators.length - 1] === 'All') {
             data = dataMacro;
             indicators = ['All'];
+
+            // reset start & end years
+            let years = [];
+            for (let tkr in data) {
+                for (let dateStr in data[tkr]) {
+                    let year = new Date(dateStr).getFullYear();
+                    years.push(year);
+                }
+            }
+            start = Math.min(...years);
+            end = Math.max(...years);
+        
         } else if (indicators.includes('All')) {
             // 'All' is selected but not last → remove it to avoid conflict
             indicators = indicators.filter(group => group !== 'All');
@@ -181,17 +193,6 @@ app.clientside_callback(
             }
         }
 
-        // Get start & end years
-        let years = [];
-        for (let tkr in data) {
-            for (let dateStr in data[tkr]) {
-                let year = new Date(dateStr).getFullYear();
-                years.push(year);
-            }
-        }
-        start = Math.min(...years);
-        end = Math.max(...years);
-        
         return [data, indicators, start, end];
 
     }
@@ -200,7 +201,9 @@ app.clientside_callback(
     Output('indicator-dropdown', 'value'),
     Output('start-input', 'value'),
     Output('end-input', 'value'),
-    Input('indicator-dropdown', 'value')
+    Input('indicator-dropdown', 'value'),
+    State('start-input', 'value'),
+    State('end-input', 'value'),
 )
 
 
@@ -238,6 +241,7 @@ app.clientside_callback(
                 y: Object.values(data_filterd[tkr]).map(val => val), 
                 type: 'line',
                 mode: 'lines',
+                line: {width: 1},
                 name: tkr,
             });
         }
@@ -246,6 +250,7 @@ app.clientside_callback(
             //title: { text: title},
             hovermode: 'x unified',
             //yaxis: { title: '가격' },
+            height: 600
         }
 
         return {
@@ -257,7 +262,7 @@ app.clientside_callback(
     Output('macro-plot', 'figure'),
     Input('start-input', 'value'),
     Input('end-input', 'value'),
-    State('macro-data', 'data'),
+    Input('macro-data', 'data'),
 )
 
 
