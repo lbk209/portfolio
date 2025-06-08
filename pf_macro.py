@@ -96,6 +96,17 @@ app.index_string = f"""
                 }}
                 return result;
             }}
+            function relativeScale(data) {{
+                let result = {{}};
+                for (let tkr in data) {{
+                    result[tkr] = {{}};
+                    let startDate = Object.keys(data[tkr])[0];
+                    for (let date in data[tkr]) {{
+                        result[tkr][date] = data[tkr][date] / data[tkr][startDate];
+                    }}
+                }}
+                return result;
+            }}
         </script>
         {{%css%}}
     </head>
@@ -140,7 +151,11 @@ app.layout = dbc.Container([
                 value=indicator_default,
                 multi=True,
             ), style={'min-width':'60%'} 
-        )
+        ),
+        daq.BooleanSwitch(
+            id='rebase-boolean-switch',
+            on=False
+        ),
     ],
         direction="horizontal",
         gap=2,
@@ -151,6 +166,11 @@ app.layout = dbc.Container([
         dcc.Graph(id='macro-plot')
     ),
     html.Br(),
+    dbc.Tooltip(
+        'Rebase',
+        target='rebase-boolean-switch',
+        placement='bottom'
+    ),
     dcc.Store(id='macro-data'),
     dcc.Location(id="url", refresh=False),  # To initialize the page
 ])
@@ -211,7 +231,7 @@ app.clientside_callback(
 # plot indicator history
 app.clientside_callback(
     """
-    function(start, end, data) {
+    function(start, end, data, rebase) {
         
         // filter by year
         let data_filterd = {};
@@ -231,7 +251,11 @@ app.clientside_callback(
         }
 
         // scale data
-        data_filterd = minMaxScale(data_filterd)
+        if (rebase) {
+            data_filterd = relativeScale(data_filterd)
+        } else {
+            data_filterd = minMaxScale(data_filterd)
+        }
 
         // plot indicator history
         let traces = [];
@@ -263,6 +287,7 @@ app.clientside_callback(
     Input('start-input', 'value'),
     Input('end-input', 'value'),
     Input('macro-data', 'data'),
+    Input('rebase-boolean-switch', 'on'),
 )
 
 
