@@ -19,6 +19,12 @@ file = 'macro_indicators_250607.csv'
 path = 'data'
 df_macro = pd.read_csv(f'{path}/{file}', parse_dates=[0], index_col=0).rename_axis('date')
 
+# category
+file = 'macro_indicator_category_250607.csv'
+path = 'data'
+data_category = pd.read_csv(f'{path}/{file}', index_col=0).iloc[:, 0].to_dict()
+
+
 ## sample data
 freq = 'W' #'M' #'Q'
 df = df_macro.stack().swaplevel().rename_axis(['ticker', 'date']).sort_index()
@@ -38,6 +44,8 @@ data_macro = {}
 for col in df_macro.columns:
     data_macro[col] = df_macro[col].dropna().to_dict()
 data_macro_json = json.dumps(data_macro)
+
+data_category_json = json.dumps(data_category)
 
 # dropdown options
 indicator_options = [{'label':x, 'value':x} for x in df_macro.columns]
@@ -113,6 +121,7 @@ app.index_string = f"""
     <body>
         <script>
             var dataMacro = {data_macro_json};
+            var dataCategory = {data_category_json};
         </script>
         {{%app_entry%}}
         {{%config%}}
@@ -259,13 +268,22 @@ app.clientside_callback(
 
         // plot indicator history
         let traces = [];
+        let lineStyles = {
+            'exchange': { width: 1, dash: 'dot' }, 
+            'rate':     { width: 0.5, dash: 'solid', shape:'hv' }, 
+            'market':   { width: 1.5}, 
+            'commodity':{ width: 1, dash: 'dot' }, 
+            'default':  { width: 1}
+        };
         for (let tkr in data_filterd) {
+            let cat = dataCategory[tkr] ?? 'default';
+            let line = lineStyles[cat] ?? lineStyles['default'];
             traces.push({
                 x: Object.keys(data_filterd[tkr]),  // Assuming keys are dates
                 y: Object.values(data_filterd[tkr]).map(val => val), 
-                type: 'line',
+                type: 'scatter',
                 mode: 'lines',
-                line: {width: 1},
+                line: { ...line},
                 name: tkr,
             });
         }
