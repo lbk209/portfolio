@@ -2935,7 +2935,15 @@ class PortfolioBuilder():
         """
         record = self.record
         if record is None:
-            return print('ERROR: No transaction record exits')
+            # run transaction_pipeline if first transaction with buy only
+            if 'buy' in kw_halt and {'sell', 'resume', 'halt'}.isdisjoint(kw_halt):
+                kw = dict(
+                    capital = kw_halt['buy'],
+                    date_actual = kw_halt.pop('date_actual', None)
+                )
+                return self.transaction_pipeline(date=date, save=save, nshares=False, **kw)
+            else:
+                return print('ERROR: No transaction record exits')
         else:
             self.df_rec = None # reset prv transaction if any
     
@@ -6935,9 +6943,6 @@ class PortfolioManager():
         loading multiple portfolios (no individual args except for PortfolioData)
         pf_names: list of portfolio names
         """
-        if isinstance(pf_names, str):
-            pf_names = [pf_names]
-
         pf_names = self.check_portfolios(*pf_names, loading=True)
         if len(pf_names) == 0:
             return None
