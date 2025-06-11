@@ -15,15 +15,16 @@ base_prc = 1000
 date_format = '%Y-%m-%d'
 
 # load data
-file = 'macro_indicators_250607.csv'
+file = 'macro_indicators_250610.csv'
 path = 'data'
 df_macro = pd.read_csv(f'{path}/{file}', parse_dates=[0], index_col=0).rename_axis('date')
 
-# category
-file = 'macro_indicator_category_250607.csv'
+# category & dropdown options
+file = 'macro_indicator_category_250610.csv'
 path = 'data'
-data_category = pd.read_csv(f'{path}/{file}', index_col=0).iloc[:, 0].to_dict()
-
+df = pd.read_csv(f'{path}/{file}', index_col=0)
+data_category = df['category'].to_dict()
+indicator_desc = df['title'].to_dict()
 
 ## sample data
 freq = 'W' #'M' #'Q'
@@ -48,9 +49,13 @@ data_macro_json = json.dumps(data_macro)
 data_category_json = json.dumps(data_category)
 
 # dropdown options
-indicator_options = [{'label':x, 'value':x} for x in df_macro.columns]
+indicator_options = [{'label':x, 'value':x, 'title':indicator_desc[x]} for x in df_macro.columns]
 indicator_options = [{'label':'All', 'value':'All'}] + indicator_options
-indicator_default = ['All']
+#indicator_default = ['All']
+#indicator_default = ['FEDFUNDS', 'DXY', 'GOLD', 'S&P500']
+indicator_default = ['DXY', 'GOLD']
+
+input_defualt = [2000, df.index.max().year]
 
 
 app = Dash(__name__, title="Markets",
@@ -141,7 +146,8 @@ app.layout = dbc.Container([
                 id='start-input', 
                 type='number', min=1900, max=2100, step=1,
                 size='4',
-                placeholder='Start'
+                placeholder='Start',
+                value=2000
             ), 
             #style={'min-width':'10%'}
         ),
@@ -150,7 +156,8 @@ app.layout = dbc.Container([
                 id='end-input', 
                 type='number', min=1900, max=2100, step=1,
                 size='4',
-                placeholder='End'
+                placeholder='End',
+                value=2025
             ), 
         ),
         html.Div(
@@ -277,16 +284,36 @@ app.clientside_callback(
         };
         for (let tkr in data_filterd) {
             let cat = dataCategory[tkr] ?? 'default';
-            let line = lineStyles[cat] ?? lineStyles['default'];
+            let line = lineStyles[cat] ?? 'default'; // Corrected default value for lineStyles
+            
+            const customDataForTrace = Object.keys(data_filterd[tkr]).map((key) => {
+                const value = dataMacro[tkr][key]; 
+                
+                let formattedValue;
+                if (value >= 100) {
+                    formattedValue = value.toFixed(0); // Format as integer (0 decimal places)
+                } else {
+                    formattedValue = value.toFixed(2); // Round to the second decimal place for values < 100
+                }
+
+                return [
+                    tkr, 
+                    formattedValue // This will now contain the conditionally formatted value
+                ];
+            });
+
             traces.push({
-                x: Object.keys(data_filterd[tkr]),  // Assuming keys are dates
+                x: Object.keys(data_filterd[tkr]),
                 y: Object.values(data_filterd[tkr]).map(val => val), 
                 type: 'scatter',
                 mode: 'lines',
                 line: { ...line},
                 name: tkr,
+                customdata: customDataForTrace, // customdata is now an array of arrays
+                hovertemplate: '%{customdata[0]}: %{customdata[1]}<extra></extra>', // Access by index
             });
         }
+
 
         let layout = {
             //title: { text: title},
