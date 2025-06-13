@@ -518,6 +518,33 @@ def print_list(x, print_str='The items in a list: {}'):
     return print(print_str.format(x))
 
 
+def add_suffix(s: str, existing_list: list) -> str:
+    """
+    Returns `s` with the next available numeric suffix if `s` or its numbered versions exist in `existing_list`.
+
+    Args:
+        s (str): The base string.
+        existing_list (list): List of existing strings.
+
+    Returns:
+        str: `s` or `sN` where N is the next available integer suffix.
+    """
+    # Match s or s1, s2, etc.
+    pattern = re.compile(rf"^{re.escape(s)}(\d*)$")
+    max_suffix = 0
+
+    for item in existing_list:
+        match = pattern.match(item)
+        if match:
+            suffix = match.group(1)
+            if suffix == "":
+                max_suffix = max(max_suffix, 1)
+            else:
+                max_suffix = max(max_suffix, int(suffix) + 1)
+
+    return f"{s}{max_suffix}" if max_suffix > 0 else s
+
+
 class SuppressPrint:
     def __init__(self, suppress=True):
         self.suppress = suppress
@@ -4725,7 +4752,11 @@ class TradingHalts():
         idx = pd.IndexSlice
         sr.update(record.loc[idx[:, tickers], col_net])
         # Identify indices where the previous value is zero
-        cond = sr.groupby(col_tkr).apply(lambda x: x*x.shift(-1).ffill() > 0).droplevel(0)
+        cond = (sr.groupby(col_tkr)
+                # conditional for record with just one date 
+                # ... else x > 0 to keep consistent multiindex
+                .apply(lambda x: x*x.shift(-1).ffill() > 0 if len(x) > 1 else x > 0)
+                .droplevel(0))
         return sr.loc[cond].index
 
 
@@ -6938,21 +6969,33 @@ class PortfolioManager():
             buy='buy', sell='sell', value='value', ugl='ugl', roi='roi')
 
     
-    def load(self, *pf_names, reload=False, verbose=True, **kwargs):
+    def load(self, *pf_names, reload=False, 
+             verbose=True, default_name='Portfolio', **kwargs):
         """
         loading multiple portfolios (no individual args except for PortfolioData)
         pf_names: list of portfolio names
         """
-        pf_names = self.check_portfolios(*pf_names, loading=True)
-        if len(pf_names) == 0:
-            return None
+        # split pf list to names and instances
+        pf_str, pf_inst = [], []
+        for pf in pf_names:
+            if isinstance(pf, str):
+                pf_str.append(pf)
+            else:
+                pf_inst.append(pf)
+
+        # check pf names
+        if len(pf_str) > 0:
+            pf_str = self.check_portfolios(*pf_str, loading=True)
+            if len(pf_str) == 0:
+                return None
             
         if reload:
             pf_dict = dict()
         else:
             pf_dict = self.portfolios
-            
-        for name in pf_names:
+
+        # create pf instances from pf names
+        for name in pf_str:
             if name in pf_dict.keys():
                 print(f'{name} already exists')
             else:
@@ -6963,7 +7006,18 @@ class PortfolioManager():
                     print(f'WARNING: Portfolio {name} not loaded')
                 else:
                     pf_dict[name] = pf
-                print() if verbose else print('done')
+                print() if verbose else print('imported')
+
+        # add pf instances from input to portfolio
+        if len(pf_inst) > 0:
+            for pf in pf_inst:
+                name = pf.name if pf.name else add_suffix(default_name, pf_dict.keys())
+                if name in pf_dict.keys():
+                    return print(f'ERROR: Duplicate portfolios {name}')
+                else:
+                    pf_dict[name] = pf
+                    print(f'{name}: imported')
+        
         self.portfolios = pf_dict
         return None
         
@@ -7010,58 +7064,64 @@ class PortfolioManager():
         
     
     @staticmethod
-    def create_portfolio(name, *args, df_universe=None, df_additional=None, **kwargs):
+    def create_portfolio(name, *args, universe=None, strategy=None, df_additional=None, **kwargs):
         """
-        name: portfolio name
+        name: portfolio name defined in PortfolioData if both universe & strategy are None
         args, kwargs: additional args & kwargs for PortfolioBuilder
         df_additional: explicit set to exlcude from kwargs
+        universe & strategy: set to create portfolio not predefined in pf_data
         """
         # removal for comparison with strategy_data
         security_names = kwargs.pop('security_names', None)
         _ = kwargs.pop('name', None) # drop name if it's in kwargs
-        
-        # get kwarg sets of portfolios
-        pfd = PortfolioData()
-        kwa_pf = pfd.review_portfolio(name, strategy=False, universe=False)
-        if kwa_pf is None:
-            return None
-            
-        name_strategy = kwa_pf['strategy']
-        name_universe = kwa_pf['universe']
-        
-        # update transaction file & path if given in kwargs
+
+        # get transaction file & path if given in kwargs
         kwa_tran = ['file', 'path']
         kwa_tran = {x: kwargs.pop(x, None) for x in kwa_tran}
-        kwa_tran = {k:kwa_pf[k] if v is None else v for k,v in kwa_tran.items()}
+
+        # get kwarg sets of portfolios
+        pfd = PortfolioData()
+        if not (universe and strategy):
+            kwa_pf = pfd.review_portfolio(name, strategy=False, universe=False)
+            if kwa_pf is None:
+                return None
+            else:
+                universe = kwa_pf['universe']
+                strategy = kwa_pf['strategy']
+                # update transaction file
+                kwa_tran = {k:kwa_pf[k] if v is None else v for k,v in kwa_tran.items()}
+        else: # both of universe and strategy given
+            if None in kwa_tran.values():
+                return print('ERROR: Set transaction file & path')
+
         # create portfolio_data with transaction data of the portfolio
         portfolio_data = {**kwa_tran}
 
         # get universe
-        if df_universe is None:
-            dm = PortfolioManager.create_universe(name_universe) # instance of DataManager
-            if dm is None:
-                return None
-            security_names = dm.get_names() if security_names is None else security_names # update security_names
-            df_universe = dm.df_prices
-            portfolio_data.update(dm.portfolio_data)
+        dm = PortfolioManager.create_universe(universe) # instance of DataManager
+        if dm is None:
+            return None
+        security_names = dm.get_names() if security_names is None else security_names # update security_names
+        df_universe = dm.df_prices
+        portfolio_data.update(dm.portfolio_data)
             
         # get kwargs of PortfolioBuilder
-        strategy_data = pfd.review_portfolio(name, strategy=True, universe=False)
+        strategy_data = pfd.review_strategy(strategy)
         if strategy_data is None:
-            return None # see review_portfolio for err msg 
+            return None # see review_strategy for err msg 
             
         # update strategy_data if input kwargs given
         tmp = [k for k in kwargs.keys() if k in strategy_data.keys()]
-        name_strategy = None if len(tmp) > 0 else name_strategy 
+        strategy = None if len(tmp) > 0 else strategy # reset name if strategy updated
         strategy_data = {**strategy_data, **kwargs}
         # set portfolio_data for ref
-        portfolio_data['strategy'] = {'data':strategy_data, 'name':name_strategy}
+        portfolio_data['strategy'] = {'data':strategy_data, 'name':strategy}
 
         # create cost if its file given
         cost = strategy_data.pop('cost', None)
         if isinstance(cost, str): # cost is file name
             path = kwa_tran['path'] # cost file in the same dir with transaction file
-            cost = PortfolioManager.get_cost(name_universe, cost, path=path)
+            cost = PortfolioManager.get_cost(universe, cost, path=path)
         
         kws = {**strategy_data, 'name':name, 'security_names':security_names, 
                'cost':cost, **kwa_tran}
@@ -7420,7 +7480,7 @@ class PortfolioData():
 
     def review_strategy(self, name):
         """
-        name: universe name
+        name: strategy name
         """
         if self.strategies is None:
             return print('ERROR: no strategies set')
@@ -7458,4 +7518,7 @@ class PortfolioData():
 
     @staticmethod
     def get_universe(universe, universes=UNIVERSES):
-        return universes[universe]['universe']
+        try:
+            return universes[universe]['universe']
+        except KeyError:
+            return None
