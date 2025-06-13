@@ -518,6 +518,33 @@ def print_list(x, print_str='The items in a list: {}'):
     return print(print_str.format(x))
 
 
+def add_suffix(s: str, existing_list: list) -> str:
+    """
+    Returns `s` with the next available numeric suffix if `s` or its numbered versions exist in `existing_list`.
+
+    Args:
+        s (str): The base string.
+        existing_list (list): List of existing strings.
+
+    Returns:
+        str: `s` or `sN` where N is the next available integer suffix.
+    """
+    # Match s or s1, s2, etc.
+    pattern = re.compile(rf"^{re.escape(s)}(\d*)$")
+    max_suffix = 0
+
+    for item in existing_list:
+        match = pattern.match(item)
+        if match:
+            suffix = match.group(1)
+            if suffix == "":
+                max_suffix = max(max_suffix, 1)
+            else:
+                max_suffix = max(max_suffix, int(suffix) + 1)
+
+    return f"{s}{max_suffix}" if max_suffix > 0 else s
+
+
 class SuppressPrint:
     def __init__(self, suppress=True):
         self.suppress = suppress
@@ -6942,21 +6969,33 @@ class PortfolioManager():
             buy='buy', sell='sell', value='value', ugl='ugl', roi='roi')
 
     
-    def load(self, *pf_names, reload=False, verbose=True, **kwargs):
+    def load(self, *pf_names, reload=False, 
+             verbose=True, default_name='Portfolio', **kwargs):
         """
         loading multiple portfolios (no individual args except for PortfolioData)
         pf_names: list of portfolio names
         """
-        pf_names = self.check_portfolios(*pf_names, loading=True)
-        if len(pf_names) == 0:
-            return None
+        # split pf list to names and instances
+        pf_str, pf_inst = [], []
+        for pf in pf_names:
+            if isinstance(pf, str):
+                pf_str.append(pf)
+            else:
+                pf_inst.append(pf)
+
+        # check pf names
+        if len(pf_str) > 0:
+            pf_str = self.check_portfolios(*pf_str, loading=True)
+            if len(pf_str) == 0:
+                return None
             
         if reload:
             pf_dict = dict()
         else:
             pf_dict = self.portfolios
-            
-        for name in pf_names:
+
+        # create pf instances from pf names
+        for name in pf_str:
             if name in pf_dict.keys():
                 print(f'{name} already exists')
             else:
@@ -6967,7 +7006,18 @@ class PortfolioManager():
                     print(f'WARNING: Portfolio {name} not loaded')
                 else:
                     pf_dict[name] = pf
-                print() if verbose else print('done')
+                print() if verbose else print('imported')
+
+        # add pf instances from input to portfolio
+        if len(pf_inst) > 0:
+            for pf in pf_inst:
+                name = pf.name if pf.name else add_suffix(default_name, pf_dict.keys())
+                if name in pf_dict.keys():
+                    return print(f'ERROR: Duplicate portfolios {name}')
+                else:
+                    pf_dict[name] = pf
+                    print(f'{name}: imported')
+        
         self.portfolios = pf_dict
         return None
         
