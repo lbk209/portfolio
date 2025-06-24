@@ -1034,6 +1034,10 @@ class DataManager():
             df_data = df_data[col_price2]
         else:# data of multiple tickers
             pass
+        if isinstance(df_data, pd.Series) and (len(tickers) == 1):
+            df_data = df_data.to_frame(tickers[0])
+        else:
+            return print('ERROR: Check failed tickers')
         return df_data.rename_axis('date')
         
     @staticmethod
@@ -5014,7 +5018,8 @@ class BacktestManager():
             algo_after = AlgoRunAfter(lookback=lookback, lag=lag)
             algo_weigh = bt.algos.WeighRandomly()
             algo_weigh = bt.AlgoStack(algo_after, algo_weigh)
-        elif cond(weigh, 'InvVol'): # risk parity
+        # a simple risk parity that equalizes asset risk contributions only when correlations are ignored.
+        elif cond(weigh, 'InvVol'): 
             algo_weigh = bt.algos.WeighInvVol(lookback=lookback, lag=lag)
         elif cond(weigh, 'MeanVar'): # Markowitz’s mean-variance optimization
             algo_weigh = bt.algos.WeighMeanVar(lookback=lookback, lag=lag, rf=rf, bounds=bounds)
