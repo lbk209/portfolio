@@ -1034,10 +1034,12 @@ class DataManager():
             df_data = df_data[col_price2]
         else:# data of multiple tickers
             pass
-        if isinstance(df_data, pd.Series) and (len(tickers) == 1):
-            df_data = df_data.to_frame(tickers[0])
-        else:
-            return print('ERROR: Check failed tickers')
+        # set ticker name for downloading a single ticker
+        if isinstance(df_data, pd.Series):
+            if len(tickers) == 1:
+                df_data = df_data.to_frame(tickers[0])
+            else:
+                return print('ERROR: Check failed tickers')
         return df_data.rename_axis('date')
         
     @staticmethod
