@@ -106,6 +106,68 @@ def calculate_hdi(df_density, hdi_prob=0.94):
     return hdi_results
 
 
+def diversification_score(weights, scale=True):
+    """
+    Compute HHI-based diversification score.
+    If scale=True, returns a normalized score in [0, 1], where 1 = equal weights.
+    """
+    weights = np.array(weights)
+    hhi = np.sum(weights**2)
+    score = 1 / hhi
+
+    if not scale:
+        return score
+
+    n = len(weights)
+    scaled = (score - 1) / (n - 1)
+    return scaled
+    
+    
+def diversification_ratio(weights, returns, scale=True):
+    """
+    Compute Diversification Ratio.
+    If scale=True, returns a normalized score in [0, 1], where 1 = max diversification.
+    """
+    vols = returns.std().values
+    corr = returns.corr().values
+    cov = corr * np.outer(vols, vols)
+
+    port_vol = np.sqrt(weights @ cov @ weights)
+    wa_vol = np.sum(weights * vols)
+    dr = wa_vol / port_vol
+
+    if not scale:
+        return dr
+
+    # scale: compare to equal-weighted max
+    n = len(weights)
+    w_eq = np.ones(n) / n
+    port_vol_eq = np.sqrt(w_eq @ cov @ w_eq)
+    wa_vol_eq = np.sum(w_eq * vols)
+    dr_max = wa_vol_eq / port_vol_eq
+
+    scaled = (dr - 1) / (dr_max - 1)
+    return np.clip(scaled, 0, 1)
+
+
+def effective_number_of_bets(returns, scale=True):
+    """
+    Compute Effective Number of Bets.
+    If scale=True, returns a normalized score in [0, 1], where 1 = uncorrelated bets.
+    """
+    corr = returns.corr().values
+    eigvals = np.linalg.eigvalsh(corr)
+    eigvals_norm = eigvals / eigvals.sum()
+    enb = 1 / np.sum(eigvals_norm**2)
+
+    if not scale:
+        return enb
+
+    n = corr.shape[0]
+    scaled = (enb - 1) / (n - 1)
+    return scaled
+    
+
 def get_date_range(dfs, symbol_name=None, return_intersection=False):
     """
     get datetime range of each ticker (columns) or datetime index of intersection
@@ -7198,9 +7260,8 @@ class PortfolioManager():
         
         # get data
         df_all = self._valuate(*pf_names, date='all', category=None, exclude_cost=exclude_cost)
-        #return df_all
         df_all = df_all.loc[start_date:end_date]
-        start_date, end_date = get_date_minmax(df_all)
+        _, end_date = get_date_minmax(df_all)
     
         # set plot title
         df = self.summary(*pf_names, date=end_date, int_to_str=False)
@@ -7277,6 +7338,49 @@ class PortfolioManager():
             df_ttl = df_val[nm_ttl]
             df_val.loc[nm_roi, nm_ttl] = df_ttl[nm_ugl] / df_ttl[nm_buy]
             return df_val.map(format_price, digits=0) if int_to_str else df_val
+
+
+    def check_diversification(self, *pf_names, start_date=None, end_date=None, 
+                                   scale=True, exclude_cost=False):
+        """
+        Compute three key diversification metrics for a portfolio:
+        - Diversification Ratio (DR)
+        - HHI-based Diversification Score
+        - Effective Number of Bets (ENB)
+        
+        Returns raw or scaled scores based on the 'scale' option.
+        """
+        # check portfolios
+        pf_names = self.check_portfolios(*pf_names)
+        if len(pf_names) == 0:
+            return None
+    
+        nms_v = self.names_vals
+        nm_val = nms_v['value']
+        nm_roi = nms_v['roi']
+        col_portfolio = self.col_portfolio
+        
+        # get data for portfolio history
+        df_all = self._valuate(*pf_names, date='all', category=None, exclude_cost=exclude_cost)
+        df_all = df_all.loc[start_date:end_date]
+        
+        # portfolio returns from cumulative roi
+        df_roi = df_all[nm_roi].unstack(col_portfolio) 
+        df_roi = (1 + df_roi) / (1 + df_roi.shift(1)) - 1
+    
+        # get portfolio weights
+        df_val = df_all[nm_val].unstack(col_portfolio)
+        weights = df_val.iloc[-1].div(df_val.iloc[-1].sum())
+        weights = weights[df_val.columns].to_list()
+    
+        ds = diversification_score(weights)
+        dr = diversification_ratio(weights, df_roi)
+        enb = effective_number_of_bets(df_roi)
+    
+        print(f"HHI-based Diversification Score: {ds:.2f}")
+        print(f"Diversification Ratio: {dr:.2f}")
+        print(f"Effective Number of Bets: {enb:.2f}")
+        return None
 
 
     def import_category(self, file, path='.', col_ticker='ticker', col_portfolio='portfolio', exclude=None):
