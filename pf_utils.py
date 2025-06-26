@@ -3278,6 +3278,93 @@ class PortfolioBuilder():
         else:
             return performance_stats(sr_val, metrics=metrics, sort_by=sort_by)
 
+
+    def diversification_history(self, start_date=None, end_date=None, 
+                                metrics=None, scale=True, exclude_cost=False, 
+                                plot=True, figsize=(10,6), ylim=None):
+        """
+        Compute history of three key diversification metrics for a portfolio:
+        - Diversification Ratio (DR)
+        - HHI-based Diversification Score
+        - Effective Number of Bets (ENB)
+        """
+        df_all = self.valuate(date='all', total=False, exclude_cost=exclude_cost)
+        if df_all is None:
+            return None
+        else:
+            df_all = df_all.loc[start_date:end_date]
+    
+        # get latest record to update price history
+        df_rec = self._check_result()
+        if df_rec is None:
+            return None
+    
+        col_tkr = self.cols_record['tkr']
+        col_date = self.cols_record['date']
+        col_val = 'value'
+        col_roi = 'roi'
+    
+        # get asset list
+        dt = df_all.index.get_level_values(col_date).max()
+        df = df_all.loc[dt]
+        tickers = df.loc[df[col_val] > 0].index
+        if tickers.size < 2:
+            return None
+        idx = pd.IndexSlice
+        df_tkr = df_all.loc[idx[:, tickers], :]
+    
+        # get weight history when all the assets are in the portfolio
+        df_val = df_tkr[col_val].unstack(col_tkr).dropna()
+        df_wgt = df_val.apply(lambda x: x / sum(x), axis=1)
+        
+        # get asset returns from cumulative roi
+        df_ret = self._update_universe(df_rec, download_missing=True)
+        df_ret = df_ret[tickers].pct_change()
+    
+        options = ['HHI', 'DR', 'ENB']
+        metrics = [metrics] if isinstance(metrics, str) else metrics
+        metrics = [x.upper() for x in metrics] if metrics else options
+        if len(set(options) - set(metrics)) == len(options):
+            return print('ERROR')
+        else:
+            dates = df_wgt.index
+            df_div = pd.DataFrame(index=dates)
+    
+        # calc metrics history
+        if 'HHI' in metrics:
+            df_div['HHI'] = df_wgt.apply(diversification_score, axis=1)
+            
+        if 'DR' in metrics:
+            res = []
+            for dt in dates:
+                ret = df_ret.loc[:dt]
+                x = diversification_ratio(df_wgt.loc[dt].to_list(), ret)
+                res.append(x)
+            df_div['DR'] = pd.Series(res, index=dates)
+    
+        if 'ENB' in metrics:
+            res = []
+            for dt in dates:
+                ret = df_ret.loc[:dt]
+                x = effective_number_of_bets(ret)
+                res.append(x)
+            df_div['ENB'] = pd.Series(res, index=dates)
+    
+        if plot:
+            # add portfolio value plot
+            df_ttl = self.valuate(date='all', total=True, exclude_cost=exclude_cost)
+            start, end = get_date_minmax(df_div)
+            ax = df_ttl.loc[start:end, col_roi].plot(label='ROI', color='grey', ls='--', lw=1)
+            # plot metrics
+            axt = ax.twinx()
+            _ = df_div.plot(ax=axt, title='Portfolio Diversification')
+            ylim = (df_div.min().min()*0.9, df_div.max().max()*1.1)
+            axt.set_ylim(ylim)
+            _ = set_matplotlib_twins(ax, axt, legend=True, loc='upper left')
+            return None
+        else:
+            return df_div
+
     
     def check_new_transaction(self, date=None, msg=True):
         """
@@ -7343,7 +7430,7 @@ class PortfolioManager():
     def check_diversification(self, *pf_names, start_date=None, end_date=None, 
                                    scale=True, exclude_cost=False):
         """
-        Compute three key diversification metrics for a portfolio:
+        Compute three key diversification metrics for a group of portfolios:
         - Diversification Ratio (DR)
         - HHI-based Diversification Score
         - Effective Number of Bets (ENB)
@@ -7352,7 +7439,7 @@ class PortfolioManager():
         """
         # check portfolios
         pf_names = self.check_portfolios(*pf_names)
-        if len(pf_names) == 0:
+        if len(pf_names) < 2:
             return None
     
         nms_v = self.names_vals
