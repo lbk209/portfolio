@@ -119,7 +119,7 @@ def diversification_score(weights, scale=True):
         return score
 
     n = len(weights)
-    scaled = (score - 1) / (n - 1)
+    scaled = (score - 1) / (n - 1) if n > 1 else 0
     return scaled
     
     
@@ -131,12 +131,21 @@ def diversification_ratio(weights, returns, scale=True):
     """
     epsilon = 1e-12
 
+    if returns.isnull().values.any():
+        #raise ValueError("Returns contain NaN values.")
+        pass
+
     vols = returns.std().values
+    if (vols == 0).any():
+        raise ValueError("Zero volatility found in returns.")
+
     corr = returns.corr().values
     cov = corr * np.outer(vols, vols)
 
     weights = np.asarray(weights)
-    port_vol = np.sqrt(weights @ cov @ weights + epsilon)
+    port_var = weights @ cov @ weights
+    port_var = max(port_var, 0)
+    port_vol = np.sqrt(port_var + epsilon)
     wa_vol = np.sum(weights * vols)
     dr = wa_vol / port_vol
 
@@ -146,7 +155,9 @@ def diversification_ratio(weights, returns, scale=True):
     # Equal-weight benchmark
     n = len(weights)
     w_eq = np.ones(n) / n
-    port_vol_eq = np.sqrt(w_eq @ cov @ w_eq + epsilon)
+    port_var_eq = w_eq @ cov @ w_eq
+    port_var_eq = max(port_var_eq, 0)
+    port_vol_eq = np.sqrt(port_var_eq + epsilon)
     wa_vol_eq = np.sum(w_eq * vols)
     dr_max = wa_vol_eq / port_vol_eq
 
@@ -155,8 +166,7 @@ def diversification_ratio(weights, returns, scale=True):
         return 0.0
 
     scaled = (dr - 1) / denom
-    #return np.clip(scaled, 0, 1)
-    return scaled
+    return np.clip(scaled, 0, 1)
 
 
 def effective_number_of_risk_bets(weights, returns, scale=False):
@@ -3310,12 +3320,10 @@ class PortfolioBuilder():
         df_val = self.valuate(date='all', total=False, exclude_cost=exclude_cost)
         if df_val is None:
             return None
-    
-        # get latest record to update price history
-        df_rec = self._check_result()
-        if df_rec is None:
-            return None
-    
+        else:  # get latest record to update price history
+            # df_rec is not None if df_val is not None
+            df_rec = self._check_result()
+   
         col_tkr = self.cols_record['tkr']
         col_date = self.cols_record['date']
         col_val = 'value'
@@ -3386,6 +3394,8 @@ class PortfolioBuilder():
             ax.set_ylabel('Return On Investment (%)')
             axt.set_ylabel('Diversification')
             axt.grid(axis='y', alpha=0.3)
+            ax.margins(x=0)
+            ax.set_xlabel('')
             _ = set_matplotlib_twins(ax, axt, legend=True, loc='upper left')
             return None
         else:
@@ -7351,7 +7361,7 @@ class PortfolioManager():
 
     
     def plot(self, *pf_names, start_date=None, end_date=None, roi=True, exclude_cost=False, 
-             figsize=(10,5), legend=True, colors = plt.cm.Spectral):
+             figsize=(10,5), legend=True, colors=plt.cm.Spectral):
         """
         start_date: date of beginning of the return plot
         end_date: date to calc return
