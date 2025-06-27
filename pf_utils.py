@@ -126,46 +126,64 @@ def diversification_score(weights, scale=True):
 def diversification_ratio(weights, returns, scale=True):
     """
     Compute Diversification Ratio.
+    (How much risk reduction am I getting from combining the assets?)
     If scale=True, returns a normalized score in [0, 1], where 1 = max diversification.
     """
+    epsilon = 1e-12
+
     vols = returns.std().values
     corr = returns.corr().values
     cov = corr * np.outer(vols, vols)
 
-    port_vol = np.sqrt(weights @ cov @ weights)
+    weights = np.asarray(weights)
+    port_vol = np.sqrt(weights @ cov @ weights + epsilon)
     wa_vol = np.sum(weights * vols)
     dr = wa_vol / port_vol
 
     if not scale:
         return dr
 
-    # scale: compare to equal-weighted max
+    # Equal-weight benchmark
     n = len(weights)
     w_eq = np.ones(n) / n
-    port_vol_eq = np.sqrt(w_eq @ cov @ w_eq)
+    port_vol_eq = np.sqrt(w_eq @ cov @ w_eq + epsilon)
     wa_vol_eq = np.sum(w_eq * vols)
     dr_max = wa_vol_eq / port_vol_eq
 
-    scaled = (dr - 1) / (dr_max - 1)
-    return np.clip(scaled, 0, 1)
+    denom = dr_max - 1
+    if np.abs(denom) < epsilon:
+        return 0.0
 
-
-def effective_number_of_bets(returns, scale=True):
-    """
-    Compute Effective Number of Bets.
-    If scale=True, returns a normalized score in [0, 1], where 1 = uncorrelated bets.
-    """
-    corr = returns.corr().values
-    eigvals = np.linalg.eigvalsh(corr)
-    eigvals_norm = eigvals / eigvals.sum()
-    enb = 1 / np.sum(eigvals_norm**2)
-
-    if not scale:
-        return enb
-
-    n = corr.shape[0]
-    scaled = (enb - 1) / (n - 1)
+    scaled = (dr - 1) / denom
+    #return np.clip(scaled, 0, 1)
     return scaled
+
+
+def effective_number_of_risk_bets(weights, returns, scale=False):
+    """
+    Calculate the Effective Number of Risk Bets (ENRB), optionally scaled to [0, 1].
+    (How many independent bets am I making?)
+    """
+    if len(weights) != returns.shape[1]:
+        raise ValueError("Length of weights must match number of assets (columns in returns).")
+
+    vols = returns.std().values
+    corr = returns.corr().values
+    cov = corr * np.outer(vols, vols)
+    
+    w = np.asarray(weights).reshape(-1, 1)
+    sigma = np.asarray(cov)
+
+    numerator = (w.T @ sigma @ w) ** 2
+    denominator = w.T @ sigma @ sigma @ w
+    epsilon = 1e-12
+    enrb = float(numerator / (denominator + epsilon))
+
+    if scale:
+        n_assets = len(weights)
+        return (enrb - 1) / (n_assets - 1) if n_assets > 1 else 0.0
+    else:
+        return enrb
     
 
 def get_date_range(dfs, symbol_name=None, return_intersection=False):
@@ -3280,19 +3298,18 @@ class PortfolioBuilder():
 
 
     def diversification_history(self, start_date=None, end_date=None, 
-                                metrics=None, scale=True, exclude_cost=False, 
-                                plot=True, figsize=(10,6), ylim=None):
+                                metrics=None, exclude_cost=False, 
+                                plot=True, figsize=(8,4), ylim=None):
         """
         Compute history of three key diversification metrics for a portfolio:
         - Diversification Ratio (DR)
         - HHI-based Diversification Score
         - Effective Number of Bets (ENB)
+        start_date: None for history since rebalance (end_date ignored)
         """
-        df_all = self.valuate(date='all', total=False, exclude_cost=exclude_cost)
-        if df_all is None:
+        df_val = self.valuate(date='all', total=False, exclude_cost=exclude_cost)
+        if df_val is None:
             return None
-        else:
-            df_all = df_all.loc[start_date:end_date]
     
         # get latest record to update price history
         df_rec = self._check_result()
@@ -3304,23 +3321,33 @@ class PortfolioBuilder():
         col_val = 'value'
         col_roi = 'roi'
     
-        # get asset list
-        dt = df_all.index.get_level_values(col_date).max()
-        df = df_all.loc[dt]
-        tickers = df.loc[df[col_val] > 0].index
-        if tickers.size < 2:
+        # history since rebalance
+        dt = df_val.index.get_level_values(col_date).max()
+        if (start_date is not None) and datetime.strptime(start_date, self.date_format) >= dt:
+            start_date = None
+        if start_date is None:
+            df = df_val.loc[dt]
+            tickers = df.loc[df[col_val] > 0].index
+            idx = pd.IndexSlice
+            df_val = df_val.loc[idx[:, tickers], :]
+        else:
+            df_val = df_val.loc[start_date:end_date]
+    
+        # check num of assets
+        if df_val.index.get_level_values(col_tkr).nunique() < 2:
             return None
-        idx = pd.IndexSlice
-        df_tkr = df_all.loc[idx[:, tickers], :]
-    
-        # get weight history when all the assets are in the portfolio
-        df_val = df_tkr[col_val].unstack(col_tkr).dropna()
-        df_wgt = df_val.apply(lambda x: x / sum(x), axis=1)
         
-        # get asset returns from cumulative roi
-        df_ret = self._update_universe(df_rec, download_missing=True)
-        df_ret = df_ret[tickers].pct_change()
+        # get weight history
+        df_wgt = df_val[col_val].unstack(col_tkr)
+        df_wgt = df_wgt if start_date else df_wgt.dropna()
+        df_wgt = (df_wgt.replace(0, None) # replace to None for next apply
+                  .apply(lambda x: x.dropna() / sum(x.dropna()), axis=1))
     
+        # get asset returns
+        df_ret = self._update_universe(df_rec, download_missing=True)
+        df_ret = df_ret.pct_change()
+        
+        # check metrics
         options = ['HHI', 'DR', 'ENB']
         metrics = [metrics] if isinstance(metrics, str) else metrics
         metrics = [x.upper() for x in metrics] if metrics else options
@@ -3332,34 +3359,33 @@ class PortfolioBuilder():
     
         # calc metrics history
         if 'HHI' in metrics:
-            df_div['HHI'] = df_wgt.apply(diversification_score, axis=1)
-            
-        if 'DR' in metrics:
-            res = []
-            for dt in dates:
-                ret = df_ret.loc[:dt]
-                x = diversification_ratio(df_wgt.loc[dt].to_list(), ret)
-                res.append(x)
-            df_div['DR'] = pd.Series(res, index=dates)
+            df_div['HHI'] = df_wgt.apply(lambda x: diversification_score(x.dropna()), axis=1)
     
-        if 'ENB' in metrics:
-            res = []
-            for dt in dates:
-                ret = df_ret.loc[:dt]
-                x = effective_number_of_bets(ret)
-                res.append(x)
-            df_div['ENB'] = pd.Series(res, index=dates)
+        for mtr, func in zip(options[1:], [diversification_ratio, effective_number_of_risk_bets]):
+            if mtr in metrics:
+                res = []
+                for dt in dates:
+                    sr_tkr = df_wgt.loc[dt].dropna()
+                    ret = df_ret.loc[:dt, sr_tkr.index]
+                    x = func(sr_tkr.to_list(), ret)
+                    res.append(x)
+                df_div[mtr] = pd.Series(res, index=dates)
     
         if plot:
             # add portfolio value plot
             df_ttl = self.valuate(date='all', total=True, exclude_cost=exclude_cost)
             start, end = get_date_minmax(df_div)
-            ax = df_ttl.loc[start:end, col_roi].plot(label='ROI', color='grey', ls='--', lw=1)
+            df_ttl = df_ttl.loc[start:end, col_roi].mul(100)
+            ax = df_ttl.plot(label='ROI', figsize=figsize, color='grey', ls='--', lw=1)
             # plot metrics
             axt = ax.twinx()
             _ = df_div.plot(ax=axt, title='Portfolio Diversification')
-            ylim = (df_div.min().min()*0.9, df_div.max().max()*1.1)
+            if ylim is None:
+                ylim = (df_div.min().min()*0.9, df_div.max().max()*1.1)
             axt.set_ylim(ylim)
+            ax.set_ylabel('Return On Investment (%)')
+            axt.set_ylabel('Diversification')
+            axt.grid(axis='y', alpha=0.3)
             _ = set_matplotlib_twins(ax, axt, legend=True, loc='upper left')
             return None
         else:
@@ -7462,7 +7488,7 @@ class PortfolioManager():
     
         ds = diversification_score(weights)
         dr = diversification_ratio(weights, df_roi)
-        enb = effective_number_of_bets(df_roi)
+        enb = effective_number_of_risk_bets(weights, df_roi)
     
         print(f"HHI-based Diversification Score: {ds:.2f}")
         print(f"Diversification Ratio: {dr:.2f}")
