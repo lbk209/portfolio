@@ -119,7 +119,7 @@ def diversification_score(weights, scale=True):
         return score
 
     n = len(weights)
-    scaled = (score - 1) / (n - 1)
+    scaled = (score - 1) / (n - 1) if n > 1 else 0
     return scaled
     
     
@@ -131,12 +131,21 @@ def diversification_ratio(weights, returns, scale=True):
     """
     epsilon = 1e-12
 
+    if returns.isnull().values.any():
+        #raise ValueError("Returns contain NaN values.")
+        pass
+
     vols = returns.std().values
+    if (vols == 0).any():
+        raise ValueError("Zero volatility found in returns.")
+
     corr = returns.corr().values
     cov = corr * np.outer(vols, vols)
 
     weights = np.asarray(weights)
-    port_vol = np.sqrt(weights @ cov @ weights + epsilon)
+    port_var = weights @ cov @ weights
+    port_var = max(port_var, 0)
+    port_vol = np.sqrt(port_var + epsilon)
     wa_vol = np.sum(weights * vols)
     dr = wa_vol / port_vol
 
@@ -146,7 +155,9 @@ def diversification_ratio(weights, returns, scale=True):
     # Equal-weight benchmark
     n = len(weights)
     w_eq = np.ones(n) / n
-    port_vol_eq = np.sqrt(w_eq @ cov @ w_eq + epsilon)
+    port_var_eq = w_eq @ cov @ w_eq
+    port_var_eq = max(port_var_eq, 0)
+    port_vol_eq = np.sqrt(port_var_eq + epsilon)
     wa_vol_eq = np.sum(w_eq * vols)
     dr_max = wa_vol_eq / port_vol_eq
 
@@ -157,6 +168,7 @@ def diversification_ratio(weights, returns, scale=True):
     scaled = (dr - 1) / denom
     #return np.clip(scaled, 0, 1)
     return scaled
+
 
 
 def effective_number_of_risk_bets(weights, returns, scale=False):
@@ -3310,12 +3322,10 @@ class PortfolioBuilder():
         df_val = self.valuate(date='all', total=False, exclude_cost=exclude_cost)
         if df_val is None:
             return None
-    
-        # get latest record to update price history
-        df_rec = self._check_result()
-        if df_rec is None:
-            return None
-    
+        else:  # get latest record to update price history
+            # df_rec is not None if df_val is not None
+            df_rec = self._check_result()
+   
         col_tkr = self.cols_record['tkr']
         col_date = self.cols_record['date']
         col_val = 'value'
@@ -3386,6 +3396,8 @@ class PortfolioBuilder():
             ax.set_ylabel('Return On Investment (%)')
             axt.set_ylabel('Diversification')
             axt.grid(axis='y', alpha=0.3)
+            ax.margins(x=0)
+            ax.set_xlabel('')
             _ = set_matplotlib_twins(ax, axt, legend=True, loc='upper left')
             return None
         else:
@@ -7351,7 +7363,7 @@ class PortfolioManager():
 
     
     def plot(self, *pf_names, start_date=None, end_date=None, roi=True, exclude_cost=False, 
-             figsize=(10,5), legend=True, colors = plt.cm.Spectral):
+             figsize=(10,5), legend=True, colors=plt.cm.Spectral):
         """
         start_date: date of beginning of the return plot
         end_date: date to calc return
@@ -7453,15 +7465,14 @@ class PortfolioManager():
             return df_val.map(format_price, digits=0) if int_to_str else df_val
 
 
-    def check_diversification(self, *pf_names, start_date=None, end_date=None, 
-                                   scale=True, exclude_cost=False):
+    def diversification_history(self, *pf_names, start_date=None, end_date=None, 
+                                metrics=None, exclude_cost=False, min_dates=20,
+                                plot=True, figsize=(8,4), ylim=None):
         """
-        Compute three key diversification metrics for a group of portfolios:
+        Compute history of three key diversification metrics for a group of portfolios:
         - Diversification Ratio (DR)
         - HHI-based Diversification Score
         - Effective Number of Bets (ENB)
-        
-        Returns raw or scaled scores based on the 'scale' option.
         """
         # check portfolios
         pf_names = self.check_portfolios(*pf_names)
@@ -7470,30 +7481,74 @@ class PortfolioManager():
     
         nms_v = self.names_vals
         nm_val = nms_v['value']
+        nm_buy = nms_v['buy']
+        nm_ugl = nms_v['ugl']
         nm_roi = nms_v['roi']
+        nm_date = nms_v['date']
         col_portfolio = self.col_portfolio
-        
-        # get data for portfolio history
+    
         df_all = self._valuate(*pf_names, date='all', category=None, exclude_cost=exclude_cost)
-        df_all = df_all.loc[start_date:end_date]
-        
+        df_val = df_all.loc[start_date:end_date]
+    
+        # get weight history
+        df_wgt = df_val[nm_val].unstack(col_portfolio)
+        df_wgt = (df_wgt.replace(0, None) # replace to None for next apply
+                  .apply(lambda x: x.dropna() / sum(x.dropna()), axis=1))
+    
         # portfolio returns from cumulative roi
-        df_roi = df_all[nm_roi].unstack(col_portfolio) 
-        df_roi = (1 + df_roi) / (1 + df_roi.shift(1)) - 1
+        df_ret = df_all[nm_roi].unstack(col_portfolio) 
+        df_ret = (1 + df_ret) / (1 + df_ret.shift(1)) - 1
+        df_ret = df_ret.dropna(how='all')
+        
+        # check metrics
+        options = ['HHI', 'DR', 'ENB']
+        metrics = [metrics] if isinstance(metrics, str) else metrics
+        metrics = [x.upper() for x in metrics] if metrics else options
+        if len(set(options) - set(metrics)) == len(options):
+            return print('ERROR')
+        else:
+            dates = df_wgt.index
+            df_div = pd.DataFrame(index=dates)
+            # reset dates depending on the return size for 'DR' & 'ENB'
+            n = df_ret.index.min() + timedelta(days=min_dates) - dates.min()
+            dates = dates[n.days:] if n.days > 0 else dates
+        
+        # calc metrics history
+        if 'HHI' in metrics:
+            df_div['HHI'] = df_wgt.apply(lambda x: diversification_score(x.dropna()), axis=1)
     
-        # get portfolio weights
-        df_val = df_all[nm_val].unstack(col_portfolio)
-        weights = df_val.iloc[-1].div(df_val.iloc[-1].sum())
-        weights = weights[df_val.columns].to_list()
+        for mtr, func in zip(options[1:], [diversification_ratio, effective_number_of_risk_bets]):
+            if mtr in metrics:
+                res = []
+                for dt in dates:
+                    sr_tkr = df_wgt.loc[dt].dropna()
+                    ret = df_ret.loc[:dt, sr_tkr.index]
+                    x = func(sr_tkr.to_list(), ret)
+                    res.append(x)
+                df_div[mtr] = pd.Series(res, index=dates)
+        #df_div = df_div.interpolate()
     
-        ds = diversification_score(weights)
-        dr = diversification_ratio(weights, df_roi)
-        enb = effective_number_of_risk_bets(weights, df_roi)
-    
-        print(f"HHI-based Diversification Score: {ds:.2f}")
-        print(f"Diversification Ratio: {dr:.2f}")
-        print(f"Effective Number of Bets: {enb:.2f}")
-        return None
+        if plot:
+            # add total roi plot
+            calc = lambda x: x[nm_ugl] / x[nm_buy] * 100
+            df_ttl = (df_val.unstack().ffill() # ffill dates of no value with the last value
+                      .stack().groupby(nm_date).sum().apply(calc, axis=1)) # calc roi
+            ax = df_ttl.plot(label='ROI', figsize=figsize, color='grey', ls='--', lw=1)
+            # plot metrics
+            axt = ax.twinx()
+            _ = df_div.plot(ax=axt, title='Portfolio Diversification')
+            if ylim is None:
+                ylim = (df_div.min().min()*0.9, df_div.max().max()*1.1)
+            axt.set_ylim(ylim)
+            ax.set_ylabel('Return On Investment (%)')
+            axt.set_ylabel('Diversification')
+            axt.grid(axis='y', alpha=0.3)
+            ax.margins(x=0)
+            ax.set_xlabel('')
+            _ = set_matplotlib_twins(ax, axt, legend=True, loc='upper left')
+            return None
+        else:
+            return df_div
 
 
     def import_category(self, file, path='.', col_ticker='ticker', col_portfolio='portfolio', exclude=None):
