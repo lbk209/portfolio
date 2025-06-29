@@ -60,6 +60,13 @@ METRICS = [
     'monthly_vol', 'monthly_sharpe', 'monthly_sortino'
 ]
 
+METRICS2 = [
+    'total_return', 'cagr', 'calmar', 
+    'max_drawdown', 'avg_drawdown', 'avg_drawdown_days', 
+    'monthly_vol', 'monthly_sharpe', 'monthly_sortino',
+    'yearly_vol', 'yearly_sharpe', 'yearly_sortino'
+]
+
 WEEKS_IN_YEAR = 51
 
 
@@ -3289,24 +3296,43 @@ class PortfolioBuilder():
         df_val = df_val.sort_values(sort_by, ascending=True) if sort_by in df_val.columns else df_val
         _= PortfolioBuilder._plot_assets(df_val, roi=roi, figsize=figsize, label=label)
         return df_val
-    
-    
-    def performance(self, metrics=METRICS, sort_by=None, exclude_cost=False):
+
+
+    def performance_stats(self, date=None, metrics=METRICS2, sort_by=None, exclude_cost=False):
         """
-        calc performance of ideal portfolio excluding slippage
+        calc performance stats of a portfolio with 2 different methods
+        date: date for fixed weights of simulated performance
         """
-        df_rec = self._check_result()
-        if df_rec is None:
+        col_val = 'value'
+        col_roi = 'roi'
+        
+        # Portfolio value from actual returns
+        df_all = self.valuate(date='all', total=True, exclude_cost=exclude_cost)
+        if df_all is None:
             return None
+        
+        df_val = df_all[col_roi]
+        # portfolio returns from cumulative roi
+        df_val = (1 + df_val) / (1 + df_val.shift(1)) - 1
+        # portfolio values from returns
+        df_res = df_val.apply(lambda x: (1 + x)).cumprod().dropna()
+        
+        # Portfolio value by assuming the end-date weights were held from the start
+        df_all = self.valuate(date=date, total=False, int_to_str=False, exclude_cost=exclude_cost)
+        if df_all is None:
+            return None
+        df_rec = self._check_result()
         df_prices = self._update_universe(df_rec, msg=True, download_missing=True)
         if df_prices is None:
             return None
-        sr_val = self._calc_value_history(df_rec, df_prices, name=self.name,
-                                          total=True, exclude_cost=exclude_cost)
-        if sr_val is None:
-            return None
-        else:
-            return performance_stats(sr_val, metrics=metrics, sort_by=sort_by)
+        df_val = df_prices.loc[:date, df_all.index].dropna(how='all')
+        df_val = (df_all[col_val].div(df_all[col_val].sum()) # weights
+                 .div(df_val.iloc[0]) # unit price of each asset
+                 .mul(df_val).sum(axis=1)) # total value
+    
+        df_res = df_res.to_frame('Realized').join(df_val.rename('Simulated'), how='outer')
+    
+        return performance_stats(df_res, metrics=metrics, sort_by=sort_by, align_period=False)
 
 
     def diversification_history(self, start_date=None, end_date=None, 
@@ -3696,6 +3722,32 @@ class PortfolioBuilder():
     
         start, end = get_date_minmax(self.df_universe, self.date_format)
         return DataManager.download_fdr(tickers, start, end)
+
+
+    def util_check_entry_turnover(self, date=None):
+        """
+        Calculate the entry turnover ratio of the portfolio over time.
+        """
+        df_rec = self._check_result()
+        if df_rec is None:
+            return None # see msg from view_record
+    
+        df = df_rec.loc[date:]
+        if len(df) > 0:
+            df_rec = df
+    
+        cols_record = self.cols_record
+        col_date = cols_record['date']
+        col_trs = cols_record['trs']
+        col_net = cols_record['net']
+        
+        return df_rec.groupby(col_date).apply(
+            lambda x: pd.Series({
+                'New': sum(x[col_net] == x[col_trs]),
+                'Total': sum(x[col_net] > 0),
+                'Ratio': round(sum(x[col_net] == x[col_trs])/sum(x[col_net] > 0), 3)
+            })
+        )
     
 
     def _update_universe(self, df_rec, msg=False, download_missing=False):
@@ -7342,6 +7394,7 @@ class PortfolioManager():
         """
         check if portfolios exist 
         pf_names: list of portfolios as name or prefix 
+        loading: set to False to retrieve names of the portfolios loaded 
         """
         if loading:
             pf_all = self.pf_data.portfolios.keys()
@@ -7354,8 +7407,7 @@ class PortfolioManager():
             out = set(pf_names)-set(out)
             if len(out) > 0:
                 print_list(out, 'ERROR: No portfolio such as {}')
-                p = PortfolioManager.review('portfolio', output=True)
-                print_list(p, 'Portfolios available: {}')
+                print_list(pf_all, 'Portfolios available: {}')
                 pf_names = list()
             else:
                 pf_names = [y for x in pf_names for y in pf_all if y.startswith(x)]
@@ -7463,6 +7515,37 @@ class PortfolioManager():
             df_ttl = df_val[nm_ttl]
             df_val.loc[nm_roi, nm_ttl] = df_ttl[nm_ugl] / df_ttl[nm_buy]
             return df_val.map(format_price, digits=0) if int_to_str else df_val
+
+
+    def performance_stats(self, *pf_names, date=None, column='Realized',
+                          metrics=METRICS, sort_by=None, exclude_cost=False):
+        """
+        compare performance stats of portfolios with 2 different methods
+        date: date for fixed weights of simulated performance
+        column: 'Realized' for stats of actual portfolio,
+                'Simulated' for stats of portfolios by assuming the end-date weights were held from the start;
+                    Meaningful for portfolios with long-term rebalancing periods
+                see ProtfolioBuilder.performance_stats for details
+        """
+        # check portfolios
+        pf_names = self.check_portfolios(*pf_names)
+        if len(pf_names) == 0:
+            return None
+            
+        # get data from each portfolio
+        df_all = None
+        no_res = []
+        for name in pf_names:
+            pf = self.portfolios[name]
+            df = pf.performance_stats(date=date, metrics=metrics, sort_by=sort_by, exclude_cost=exclude_cost)
+            if df is None:
+                no_res.append(name)
+            else:
+                # add portfolio name
+                df = df[column].rename(name)
+                df_all = df if df_all is None else pd.concat([df_all, df], axis=1) 
+        print(f"WARNING: Check portfolios {', '.join(no_res)}") if len(no_res) > 0 else None
+        return df_all
 
 
     def diversification_history(self, *pf_names, start_date=None, end_date=None, 
@@ -7702,6 +7785,7 @@ class PortfolioManager():
                 # add portfolio name
                 df = df.assign(**{self.col_portfolio:name})
                 df_all = df if df_all is None else pd.concat([df_all, df], axis=0) 
+        print(f"WARNING: Check portfolios {', '.join(no_res)}") if len(no_res) > 0 else None
         return df_all
     
     
