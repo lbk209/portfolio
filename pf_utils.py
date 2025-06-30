@@ -3301,8 +3301,11 @@ class PortfolioBuilder():
     def performance_stats(self, date=None, metrics=METRICS2, sort_by=None, exclude_cost=False):
         """
         calc performance stats of a portfolio with 2 different methods
-        date: date for fixed weights of simulated performance
+        date: str for date for fixed weights of simulated performance
+              None for the latest date
+              int for index to slice transaction dates
         """
+        col_date = self.cols_record['date']
         col_val = 'value'
         col_roi = 'roi'
         
@@ -3316,22 +3319,41 @@ class PortfolioBuilder():
         df_val = (1 + df_val) / (1 + df_val.shift(1)) - 1
         # portfolio values from returns
         df_res = df_val.apply(lambda x: (1 + x)).cumprod().dropna()
-        
-        # Portfolio value by assuming the end-date weights were held from the start
-        df_all = self.valuate(date=date, total=False, int_to_str=False, exclude_cost=exclude_cost)
-        if df_all is None:
-            return None
+    
+        # get price history of assets
         df_rec = self._check_result()
         df_prices = self._update_universe(df_rec, msg=True, download_missing=True)
         if df_prices is None:
             return None
-        df_val = df_prices.loc[:date, df_all.index].dropna(how='all')
-        df_val = (df_all[col_val].div(df_all[col_val].sum()) # weights
-                 .div(df_val.iloc[0]) # unit price of each asset
-                 .mul(df_val).sum(axis=1)) # total value
     
-        df_res = df_res.to_frame('Realized').join(df_val.rename('Simulated'), how='outer')
+        if isinstance(date, int): # date is index to slice transaction dates
+            dates = df_rec.index.get_level_values(col_date).unique().sort_values(ascending=True)
+            if date > 0:
+                dates = dates[:date]
+            elif date < 0:
+                dates = dates[date:]
+            else:
+                pass
+        elif date is None:
+            dates = [df_all.index.get_level_values(col_date).max()]
+        else: # date is string
+            dates = [datetime.strptime(date, self.date_format)]
     
+        df_sim = None
+        # Portfolio value by assuming the end-date weights were held from the start
+        for date in dates:
+            df_all = self.valuate(date=date, total=False, int_to_str=False, exclude_cost=exclude_cost)
+            if df_all is None:
+                return None
+            df_val = df_prices.loc[:date, df_all.index].dropna(how='all')
+            date = date.strftime('%y%m%d') # cast to str for column name
+            df_val = (df_all[col_val].div(df_all[col_val].sum()) # weights
+                     .div(df_val.iloc[0]) # unit price of each asset
+                     .mul(df_val).sum(axis=1) # total value
+                     .rename(f'Simulated ({date})'))
+            df_sim = df_val if df_sim is None else pd.concat([df_sim, df_val], axis=1)
+    
+        df_res = df_res.to_frame('Realized').join(df_sim, how='outer')
         return performance_stats(df_res, metrics=metrics, sort_by=sort_by, align_period=False)
 
 
@@ -7523,9 +7545,7 @@ class PortfolioManager():
         compare performance stats of portfolios with 2 different methods
         date: date for fixed weights of simulated performance
         column: 'Realized' for stats of actual portfolio,
-                'Simulated' for stats of portfolios by assuming the end-date weights were held from the start;
-                    Meaningful for portfolios with long-term rebalancing periods
-                see ProtfolioBuilder.performance_stats for details
+                 see ProtfolioBuilder.performance_stats for details
         """
         # check portfolios
         pf_names = self.check_portfolios(*pf_names)
