@@ -60,6 +60,13 @@ METRICS = [
     'monthly_vol', 'monthly_sharpe', 'monthly_sortino'
 ]
 
+METRICS2 = [
+    'total_return', 'cagr', 'calmar', 
+    'max_drawdown', 'avg_drawdown', 'avg_drawdown_days', 
+    'monthly_vol', 'monthly_sharpe', 'monthly_sortino',
+    'yearly_vol', 'yearly_sharpe', 'yearly_sortino'
+]
+
 WEEKS_IN_YEAR = 51
 
 
@@ -105,6 +112,98 @@ def calculate_hdi(df_density, hdi_prob=0.94):
         }
     return hdi_results
 
+
+def diversification_score(weights, scale=True):
+    """
+    Compute HHI-based diversification score.
+    If scale=True, returns a normalized score in [0, 1], where 1 = equal weights.
+    """
+    weights = np.array(weights)
+    hhi = np.sum(weights**2)
+    score = 1 / hhi
+
+    if not scale:
+        return score
+
+    n = len(weights)
+    scaled = (score - 1) / (n - 1) if n > 1 else 0
+    return scaled
+    
+    
+def diversification_ratio(weights, returns, scale=True):
+    """
+    Compute Diversification Ratio.
+    (How much risk reduction am I getting from combining the assets?)
+    If scale=True, returns a normalized score in [0, 1], where 1 = max diversification.
+    """
+    epsilon = 1e-12
+
+    if returns.isnull().values.any():
+        #raise ValueError("Returns contain NaN values.")
+        pass
+
+    vols = returns.std().values
+    if (vols == 0).any():
+        raise ValueError("Zero volatility found in returns.")
+
+    corr = returns.corr().values
+    cov = corr * np.outer(vols, vols)
+
+    weights = np.asarray(weights)
+    port_var = weights @ cov @ weights
+    port_var = max(port_var, 0)
+    port_vol = np.sqrt(port_var + epsilon)
+    wa_vol = np.sum(weights * vols)
+    dr = wa_vol / port_vol
+
+    if not scale:
+        return dr
+
+    # Equal-weight benchmark
+    n = len(weights)
+    w_eq = np.ones(n) / n
+    port_var_eq = w_eq @ cov @ w_eq
+    port_var_eq = max(port_var_eq, 0)
+    port_vol_eq = np.sqrt(port_var_eq + epsilon)
+    wa_vol_eq = np.sum(w_eq * vols)
+    dr_max = wa_vol_eq / port_vol_eq
+
+    denom = dr_max - 1
+    if np.abs(denom) < epsilon:
+        return 0.0
+
+    scaled = (dr - 1) / denom
+    #return np.clip(scaled, 0, 1)
+    return scaled
+
+
+
+def effective_number_of_risk_bets(weights, returns, scale=False):
+    """
+    Calculate the Effective Number of Risk Bets (ENRB), optionally scaled to [0, 1].
+    (How many independent bets am I making?)
+    """
+    if len(weights) != returns.shape[1]:
+        raise ValueError("Length of weights must match number of assets (columns in returns).")
+
+    vols = returns.std().values
+    corr = returns.corr().values
+    cov = corr * np.outer(vols, vols)
+    
+    w = np.asarray(weights).reshape(-1, 1)
+    sigma = np.asarray(cov)
+
+    numerator = (w.T @ sigma @ w) ** 2
+    denominator = w.T @ sigma @ sigma @ w
+    epsilon = 1e-12
+    enrb = float(numerator / (denominator + epsilon))
+
+    if scale:
+        n_assets = len(weights)
+        return (enrb - 1) / (n_assets - 1) if n_assets > 1 else 0.0
+    else:
+        return enrb
+    
 
 def get_date_range(dfs, symbol_name=None, return_intersection=False):
     """
@@ -3197,24 +3296,160 @@ class PortfolioBuilder():
         df_val = df_val.sort_values(sort_by, ascending=True) if sort_by in df_val.columns else df_val
         _= PortfolioBuilder._plot_assets(df_val, roi=roi, figsize=figsize, label=label)
         return df_val
-    
-    
-    def performance(self, metrics=METRICS, sort_by=None, exclude_cost=False):
+
+
+    def performance_stats(self, date=None, metrics=METRICS2, sort_by=None, exclude_cost=False):
         """
-        calc performance of ideal portfolio excluding slippage
+        calc performance stats of a portfolio with 2 different methods
+        date: str for date for fixed weights of simulated performance
+              None for the latest date
+              int for index to slice transaction dates
         """
-        df_rec = self._check_result()
-        if df_rec is None:
+        col_date = self.cols_record['date']
+        col_val = 'value'
+        col_roi = 'roi'
+        
+        # Portfolio value from actual returns
+        df_all = self.valuate(date='all', total=True, exclude_cost=exclude_cost)
+        if df_all is None:
             return None
+        
+        df_val = df_all[col_roi]
+        # portfolio returns from cumulative roi
+        df_val = (1 + df_val) / (1 + df_val.shift(1)) - 1
+        # portfolio values from returns
+        df_res = df_val.apply(lambda x: (1 + x)).cumprod().dropna()
+    
+        # get price history of assets
+        df_rec = self._check_result()
         df_prices = self._update_universe(df_rec, msg=True, download_missing=True)
         if df_prices is None:
             return None
-        sr_val = self._calc_value_history(df_rec, df_prices, name=self.name,
-                                          total=True, exclude_cost=exclude_cost)
-        if sr_val is None:
+    
+        if isinstance(date, int): # date is index to slice transaction dates
+            dates = df_rec.index.get_level_values(col_date).unique().sort_values(ascending=True)
+            if date > 0:
+                dates = dates[:date]
+            elif date < 0:
+                dates = dates[date:]
+            else:
+                pass
+        elif date is None:
+            dates = [df_all.index.get_level_values(col_date).max()]
+        else: # date is string
+            dates = [datetime.strptime(date, self.date_format)]
+    
+        df_sim = None
+        # Portfolio value by assuming the end-date weights were held from the start
+        for date in dates:
+            df_all = self.valuate(date=date, total=False, int_to_str=False, exclude_cost=exclude_cost)
+            if df_all is None:
+                return None
+            df_val = df_prices.loc[:date, df_all.index].dropna(how='all')
+            date = date.strftime('%y%m%d') # cast to str for column name
+            df_val = (df_all[col_val].div(df_all[col_val].sum()) # weights
+                     .div(df_val.iloc[0]) # unit price of each asset
+                     .mul(df_val).sum(axis=1) # total value
+                     .rename(f'Simulated ({date})'))
+            df_sim = df_val if df_sim is None else pd.concat([df_sim, df_val], axis=1)
+    
+        df_res = df_res.to_frame('Realized').join(df_sim, how='outer')
+        return performance_stats(df_res, metrics=metrics, sort_by=sort_by, align_period=False)
+
+
+    def diversification_history(self, start_date=None, end_date=None, 
+                                metrics=None, exclude_cost=False, 
+                                plot=True, figsize=(8,4), ylim=None):
+        """
+        Compute history of three key diversification metrics for a portfolio:
+        - Diversification Ratio (DR)
+        - HHI-based Diversification Score
+        - Effective Number of Bets (ENB)
+        start_date: None for history since rebalance (end_date ignored)
+        """
+        df_val = self.valuate(date='all', total=False, exclude_cost=exclude_cost)
+        if df_val is None:
+            return None
+        else:  # get latest record to update price history
+            # df_rec is not None if df_val is not None
+            df_rec = self._check_result()
+   
+        col_tkr = self.cols_record['tkr']
+        col_date = self.cols_record['date']
+        col_val = 'value'
+        col_roi = 'roi'
+    
+        # history since rebalance
+        dt = df_val.index.get_level_values(col_date).max()
+        if (start_date is not None) and datetime.strptime(start_date, self.date_format) >= dt:
+            start_date = None
+        if start_date is None:
+            df = df_val.loc[dt]
+            tickers = df.loc[df[col_val] > 0].index
+            idx = pd.IndexSlice
+            df_val = df_val.loc[idx[:, tickers], :]
+        else:
+            df_val = df_val.loc[start_date:end_date]
+    
+        # check num of assets
+        if df_val.index.get_level_values(col_tkr).nunique() < 2:
+            return None
+        
+        # get weight history
+        df_wgt = df_val[col_val].unstack(col_tkr)
+        df_wgt = df_wgt if start_date else df_wgt.dropna()
+        df_wgt = (df_wgt.replace(0, None) # replace to None for next apply
+                  .apply(lambda x: x.dropna() / sum(x.dropna()), axis=1))
+    
+        # get asset returns
+        df_ret = self._update_universe(df_rec, download_missing=True)
+        df_ret = df_ret.pct_change()
+        
+        # check metrics
+        options = ['HHI', 'DR', 'ENB']
+        metrics = [metrics] if isinstance(metrics, str) else metrics
+        metrics = [x.upper() for x in metrics] if metrics else options
+        if len(set(options) - set(metrics)) == len(options):
+            return print('ERROR')
+        else:
+            dates = df_wgt.index
+            df_div = pd.DataFrame(index=dates)
+    
+        # calc metrics history
+        if 'HHI' in metrics:
+            df_div['HHI'] = df_wgt.apply(lambda x: diversification_score(x.dropna()), axis=1)
+    
+        for mtr, func in zip(options[1:], [diversification_ratio, effective_number_of_risk_bets]):
+            if mtr in metrics:
+                res = []
+                for dt in dates:
+                    sr_tkr = df_wgt.loc[dt].dropna()
+                    ret = df_ret.loc[:dt, sr_tkr.index]
+                    x = func(sr_tkr.to_list(), ret)
+                    res.append(x)
+                df_div[mtr] = pd.Series(res, index=dates)
+    
+        if plot:
+            # add portfolio value plot
+            df_ttl = self.valuate(date='all', total=True, exclude_cost=exclude_cost)
+            start, end = get_date_minmax(df_div)
+            df_ttl = df_ttl.loc[start:end, col_roi].mul(100)
+            ax = df_ttl.plot(label='ROI', figsize=figsize, color='grey', ls='--', lw=1)
+            # plot metrics
+            axt = ax.twinx()
+            _ = df_div.plot(ax=axt, title='Portfolio Diversification')
+            if ylim is None:
+                ylim = (df_div.min().min()*0.9, df_div.max().max()*1.1)
+            axt.set_ylim(ylim)
+            ax.set_ylabel('Return On Investment (%)')
+            axt.set_ylabel('Diversification')
+            axt.grid(axis='y', alpha=0.3)
+            ax.margins(x=0)
+            ax.set_xlabel('')
+            _ = set_matplotlib_twins(ax, axt, legend=True, loc='upper left')
             return None
         else:
-            return performance_stats(sr_val, metrics=metrics, sort_by=sort_by)
+            return df_div
 
     
     def check_new_transaction(self, date=None, msg=True):
@@ -3509,6 +3744,32 @@ class PortfolioBuilder():
     
         start, end = get_date_minmax(self.df_universe, self.date_format)
         return DataManager.download_fdr(tickers, start, end)
+
+
+    def util_check_entry_turnover(self, date=None):
+        """
+        Calculate the entry turnover ratio of the portfolio over time.
+        """
+        df_rec = self._check_result()
+        if df_rec is None:
+            return None # see msg from view_record
+    
+        df = df_rec.loc[date:]
+        if len(df) > 0:
+            df_rec = df
+    
+        cols_record = self.cols_record
+        col_date = cols_record['date']
+        col_trs = cols_record['trs']
+        col_net = cols_record['net']
+        
+        return df_rec.groupby(col_date).apply(
+            lambda x: pd.Series({
+                'New': sum(x[col_net] == x[col_trs]),
+                'Total': sum(x[col_net] > 0),
+                'Ratio': round(sum(x[col_net] == x[col_trs])/sum(x[col_net] > 0), 3)
+            })
+        )
     
 
     def _update_universe(self, df_rec, msg=False, download_missing=False):
@@ -7155,6 +7416,7 @@ class PortfolioManager():
         """
         check if portfolios exist 
         pf_names: list of portfolios as name or prefix 
+        loading: set to False to retrieve names of the portfolios loaded 
         """
         if loading:
             pf_all = self.pf_data.portfolios.keys()
@@ -7167,8 +7429,7 @@ class PortfolioManager():
             out = set(pf_names)-set(out)
             if len(out) > 0:
                 print_list(out, 'ERROR: No portfolio such as {}')
-                p = PortfolioManager.review('portfolio', output=True)
-                print_list(p, 'Portfolios available: {}')
+                print_list(pf_all, 'Portfolios available: {}')
                 pf_names = list()
             else:
                 pf_names = [y for x in pf_names for y in pf_all if y.startswith(x)]
@@ -7176,7 +7437,7 @@ class PortfolioManager():
 
     
     def plot(self, *pf_names, start_date=None, end_date=None, roi=True, exclude_cost=False, 
-             figsize=(10,5), legend=True, colors = plt.cm.Spectral):
+             figsize=(10,5), legend=True, colors=plt.cm.Spectral):
         """
         start_date: date of beginning of the return plot
         end_date: date to calc return
@@ -7198,9 +7459,8 @@ class PortfolioManager():
         
         # get data
         df_all = self._valuate(*pf_names, date='all', category=None, exclude_cost=exclude_cost)
-        #return df_all
         df_all = df_all.loc[start_date:end_date]
-        start_date, end_date = get_date_minmax(df_all)
+        _, end_date = get_date_minmax(df_all)
     
         # set plot title
         df = self.summary(*pf_names, date=end_date, int_to_str=False)
@@ -7277,6 +7537,121 @@ class PortfolioManager():
             df_ttl = df_val[nm_ttl]
             df_val.loc[nm_roi, nm_ttl] = df_ttl[nm_ugl] / df_ttl[nm_buy]
             return df_val.map(format_price, digits=0) if int_to_str else df_val
+
+
+    def performance_stats(self, *pf_names, date=None, column='Realized',
+                          metrics=METRICS, sort_by=None, exclude_cost=False):
+        """
+        compare performance stats of portfolios with 2 different methods
+        date: date for fixed weights of simulated performance
+        column: 'Realized' for stats of actual portfolio,
+                 see ProtfolioBuilder.performance_stats for details
+        """
+        # check portfolios
+        pf_names = self.check_portfolios(*pf_names)
+        if len(pf_names) == 0:
+            return None
+            
+        # get data from each portfolio
+        df_all = None
+        no_res = []
+        for name in pf_names:
+            pf = self.portfolios[name]
+            df = pf.performance_stats(date=date, metrics=metrics, sort_by=sort_by, exclude_cost=exclude_cost)
+            if df is None:
+                no_res.append(name)
+            else:
+                # add portfolio name
+                df = df[column].rename(name)
+                df_all = df if df_all is None else pd.concat([df_all, df], axis=1) 
+        print(f"WARNING: Check portfolios {', '.join(no_res)}") if len(no_res) > 0 else None
+        return df_all
+
+
+    def diversification_history(self, *pf_names, start_date=None, end_date=None, 
+                                metrics=None, exclude_cost=False, min_dates=20,
+                                plot=True, figsize=(8,4), ylim=None):
+        """
+        Compute history of three key diversification metrics for a group of portfolios:
+        - Diversification Ratio (DR)
+        - HHI-based Diversification Score
+        - Effective Number of Bets (ENB)
+        """
+        # check portfolios
+        pf_names = self.check_portfolios(*pf_names)
+        if len(pf_names) < 2:
+            return None
+    
+        nms_v = self.names_vals
+        nm_val = nms_v['value']
+        nm_buy = nms_v['buy']
+        nm_ugl = nms_v['ugl']
+        nm_roi = nms_v['roi']
+        nm_date = nms_v['date']
+        col_portfolio = self.col_portfolio
+    
+        df_all = self._valuate(*pf_names, date='all', category=None, exclude_cost=exclude_cost)
+        df_val = df_all.loc[start_date:end_date]
+    
+        # get weight history
+        df_wgt = df_val[nm_val].unstack(col_portfolio)
+        df_wgt = (df_wgt.replace(0, None) # replace to None for next apply
+                  .apply(lambda x: x.dropna() / sum(x.dropna()), axis=1))
+    
+        # portfolio returns from cumulative roi
+        df_ret = df_all[nm_roi].unstack(col_portfolio) 
+        df_ret = (1 + df_ret) / (1 + df_ret.shift(1)) - 1
+        df_ret = df_ret.dropna(how='all')
+        
+        # check metrics
+        options = ['HHI', 'DR', 'ENB']
+        metrics = [metrics] if isinstance(metrics, str) else metrics
+        metrics = [x.upper() for x in metrics] if metrics else options
+        if len(set(options) - set(metrics)) == len(options):
+            return print('ERROR')
+        else:
+            dates = df_wgt.index
+            df_div = pd.DataFrame(index=dates)
+            # reset dates depending on the return size for 'DR' & 'ENB'
+            n = df_ret.index.min() + timedelta(days=min_dates) - dates.min()
+            dates = dates[n.days:] if n.days > 0 else dates
+        
+        # calc metrics history
+        if 'HHI' in metrics:
+            df_div['HHI'] = df_wgt.apply(lambda x: diversification_score(x.dropna()), axis=1)
+    
+        for mtr, func in zip(options[1:], [diversification_ratio, effective_number_of_risk_bets]):
+            if mtr in metrics:
+                res = []
+                for dt in dates:
+                    sr_tkr = df_wgt.loc[dt].dropna()
+                    ret = df_ret.loc[:dt, sr_tkr.index]
+                    x = func(sr_tkr.to_list(), ret)
+                    res.append(x)
+                df_div[mtr] = pd.Series(res, index=dates)
+        #df_div = df_div.interpolate()
+    
+        if plot:
+            # add total roi plot
+            calc = lambda x: x[nm_ugl] / x[nm_buy] * 100
+            df_ttl = (df_val.unstack().ffill() # ffill dates of no value with the last value
+                      .stack().groupby(nm_date).sum().apply(calc, axis=1)) # calc roi
+            ax = df_ttl.plot(label='ROI', figsize=figsize, color='grey', ls='--', lw=1)
+            # plot metrics
+            axt = ax.twinx()
+            _ = df_div.plot(ax=axt, title='Portfolio Diversification')
+            if ylim is None:
+                ylim = (df_div.min().min()*0.9, df_div.max().max()*1.1)
+            axt.set_ylim(ylim)
+            ax.set_ylabel('Return On Investment (%)')
+            axt.set_ylabel('Diversification')
+            axt.grid(axis='y', alpha=0.3)
+            ax.margins(x=0)
+            ax.set_xlabel('')
+            _ = set_matplotlib_twins(ax, axt, legend=True, loc='upper left')
+            return None
+        else:
+            return df_div
 
 
     def import_category(self, file, path='.', col_ticker='ticker', col_portfolio='portfolio', exclude=None):
@@ -7430,6 +7805,7 @@ class PortfolioManager():
                 # add portfolio name
                 df = df.assign(**{self.col_portfolio:name})
                 df_all = df if df_all is None else pd.concat([df_all, df], axis=0) 
+        print(f"WARNING: Check portfolios {', '.join(no_res)}") if len(no_res) > 0 else None
         return df_all
     
     
