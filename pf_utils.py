@@ -7218,7 +7218,8 @@ class BatchCV():
 
 class PortfolioManager():
     """
-    manage multiple portfolios 
+    Compares performance metrics across multiple portfolios, each built using a separate
+    PortfolioBuilder instance
     """
     def __init__(self, *pf_names, col_ticker='ticker', col_portfolio='portfolio', 
                  verbose=True, **kwargs):
@@ -7807,6 +7808,239 @@ class PortfolioManager():
                 df_all = df if df_all is None else pd.concat([df_all, df], axis=0) 
         print(f"WARNING: Check portfolios {', '.join(no_res)}") if len(no_res) > 0 else None
         return df_all
+
+
+
+class DataMultiverse:
+    """
+    Manages and compares data across multiple independent data universes,
+    each handled by its own DataManager instance.
+    """
+    def __init__(self, *universes, cols_record = {'date':'date', 'tkr':'ticker', 'uv':'universe'}):
+        """
+        universes: list of universe names or DataManager instances
+        """
+        self.cols_record = cols_record
+        self.df_multiverse = None # price data of multilevel columns universe & ticker
+        self.cost = None
+        self.security_names = {}
+        self.pf_data = PortfolioData()
+        self.load(*universes) # load price history across universes
+
+    
+    def load(self, *universes, reload=False, verbose=True, 
+              default_name='UV', ffill=True, **kwargs):
+        """
+        universes: list of universe names, DataManager instances or tuple of name & instance
+        """        
+        # split universe list to names and instances
+        uv_str, uv_inst, cnt = [], {}, 0
+        for uv in universes:
+            if isinstance(uv, str):
+                uv_str.append(uv)
+            else: # uv assumed as DataManager instance or tuple
+                if isinstance(uv, tuple) and isinstance(uv[0], str):
+                    uv_inst[uv[0]] = uv[1]
+                elif isinstance(fund, DataManager): # define name for the instance
+                    cnt += 1
+                    uv_inst[f'{default_name}{cnt}'] = uv
+                else:
+                    return print('ERROR')
+
+        # check uv names
+        if len(uv_str) > 0:
+            uv_str = self.check_universes(*uv_str, loading=True)
+            if len(uv_str) == 0:
+                return None
+            
+        if reload:
+            df_mv = None
+            security_names = dict()
+        else:
+            df_mv = self.df_multiverse
+            security_names = self.security_names
+
+        # create uv instances from uv names
+        for name in uv_str:
+            if (df_mv is not None) and name in df_mv.columns.get_level_values(0):
+                print(f'{name} already exists')
+            else:
+                print(f'{name}:', end='\n' if verbose else ' ')
+                with SuppressPrint(not verbose):
+                    uv = PortfolioManager.create_universe(name, **kwargs)
+                if uv is None:
+                    print(f'WARNING: Portfolio {name} not loaded')
+                else:
+                    df, sn = self._get_universe(uv, name, ffill=ffill)
+                    df_mv = df if df_mv is None else pd.concat([df_mv, df], axis=1)
+                    security_names[name] = sn
+                print() if verbose else print('imported')
+
+        #return uv_inst
+        # add uv instances from input to portfolio
+        if len(uv_inst) > 0:
+            for name, uv in uv_inst.items():
+                if (df_mv is not None) and name in df_mv.columns.get_level_values(0):
+                    return print(f'ERROR: Duplicate universe {name}')
+                else:
+                    df, sn = self._get_universe(uv, name, ffill=ffill)
+                    df_mv = pd.concat([df_mv, df], axis=1)
+                    security_names[name] = sn
+                    print(f'{name}: imported')
+
+        self.df_multiverse = df_mv
+        return None
+
+
+    def check_universes(self, *universes, loading=False):
+        """
+        check if universe exist 
+        universes: list of universes as name or prefix
+        loading: set to False to retrieve names of the universes loaded 
+        """
+        if loading:
+            uv_all = self.pf_data.universes.keys()
+        else:
+            uv_all = self.df_multiverse.columns.get_level_values(0).unique()
+        if len(universes) == 0:
+            universes = uv_all
+        else:
+            out = [x for x in universes for y in uv_all if x in y]
+            out = set(universes)-set(out)
+            if len(out) > 0:
+                print_list(out, 'ERROR: No universe such as {}')
+                print_list(uv_all, 'Universes available: {}')
+                universes = list()
+            else:
+                universes = [y for x in universes for y in uv_all if x in y]
+        return universes
+
+
+    def get_names(self, tickers=None):
+        """
+        tickers: None, 'selected' or list of tickers
+        reset: True to get security_names aftre resetting first
+        """
+        security_names = self.security_names
+        if security_names is None:
+            return None
+        if isinstance(tickers, str):
+            tickers = [tickers]
+        if tickers is None:
+            result = security_names
+        else:
+            result = dict()
+            for name, tkr_dict in security_names.items():
+                result[name] = {k:v for k,v in tkr_dict.items() if k in tickers}
+            result = security_names if len(result) == 0 else result
+
+        result = {f'{k} ({name})': v for name, tkr_dict in result.items() for k, v in tkr_dict.items()}
+        return SecurityDict(result, names=result)
+
+
+    def performance(self, tickers, metrics=METRICS2, 
+                    sort_by=None, start_date=None, end_date=None,
+                    exclude_cost=False, period_fee=3, percent_fee=True):
+        df_prices = self._get_prices(tickers, start_date=start_date, end_date=end_date)
+        if df_prices is None:
+            return None
+
+        if not exclude_cost:
+            if self.cost is None:
+                return print('ERROR: Run get_cost first or Set exclude_cost=True')
+            else:
+                df_p = self._get_prices_after_fee(df_prices, period=period_fee, percent=percent_fee)
+            df_prices = df_prices if df_p is None else df_p
+            
+        return performance_stats(df_prices, metrics=metrics, sort_by=sort_by, align_period=False)
+
+
+    def _get_universe(self, uv, name, ffill=True):
+        """
+        return df_prices from DataManager instance uv
+        """
+        df = uv.df_prices
+        cols = [self.cols_record['uv'], self.cols_record['tkr']]
+        if ffill:
+            df = df.ffill()
+        else:
+            if df.isna().any().any():
+                return print(f'ERROR: Set ffill=True as the universe {name} has Na')
+        df.columns = pd.MultiIndex.from_product([[name], df.columns])
+        df.columns.names = cols
+        return df, uv.security_names
+
+
+    def _get_prices(self, tickers, start_date=None, end_date=None, base=-1):
+        """
+        return price data of tickers with date of adjustment for comparison
+        base: base value to adjust tickers
+        start_date: date to adjust if base > 0
+        """
+        df_prices = self.df_multiverse
+        if df_prices is None:
+            return print('ERROR')
+        else:
+            df_prices = df_prices.loc[start_date:end_date]
+        
+        if isinstance(tickers, str):
+            tickers = [tickers]
+        
+        idx = pd.IndexSlice
+        try:
+            df_tickers = df_prices.loc[:, idx[:, tickers]]
+        except KeyError:
+            return print('ERROR: Check tickers')
+
+        dts = df_tickers.apply(lambda x: x.dropna().index.min()) # start date of each tickers
+        if base > 0: # adjust price of tickers
+            dt_adj = df_tickers.index.min()
+            dt_max = dts.max() # min start date where all tickers have data 
+            dt_adj = dt_max if dt_adj < dt_max else dt_adj
+            df_tickers = df_tickers.apply(lambda x: x / x.loc[dt_adj] * base)
+        else:
+            dt_adj = dts.min() # drop dates of all None
+        return df_tickers.loc[dt_adj:] 
+
+
+    def _get_prices_after_fee(self, df_prices, period=3, percent=True):
+        """
+        get df_prices after cost
+        """
+        cost_uv = self.cost
+        if cost_uv is None:
+            return
+        df_prices_fee = None
+        for name in df_prices.columns.get_level_values(0).unique():
+            df_uv = df_prices[name]
+            cost = cost_uv[name]
+            if cost is None:
+                print(f'WARNING: No cost for {name}')
+            else:
+                df_uv = CostManager.get_history_with_fee(df_uv, period=period, percent=percent, **cost)
+            df_uv.columns = pd.MultiIndex.from_product([[name], df_uv.columns])
+            df_prices_fee = df_uv if df_prices_fee is None else pd.concat([df_prices_fee, df_uv], axis=1)
+        return df_prices_fee
+
+
+    def get_cost(self, file, path='.', verbose=False):
+        """
+        get cost data for loaed universes
+        """
+        if self.df_multiverse is None:
+            return print('ERROR')
+
+        cost_uv = dict()
+        for name in self.df_multiverse.columns.get_level_values(0).unique():
+            with SuppressPrint(not verbose):
+                cost = CostManager.get_cost(name, file, path=path)
+            if cost is None:
+                print(f'WARNING: No cost data available for universe {name}')
+            else:
+                print(f'Cost for {name} loaded')
+            cost_uv[name] = cost
+        self.cost = cost_uv
+        return None
     
     
 
