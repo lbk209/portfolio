@@ -1340,15 +1340,13 @@ class DataManager():
 
 
     def plot_return(self, tickers=None, start_date=None, end_date=None,
-             base=-1, n_max=-1, 
-             cost=None, period_fee=3, percent_fee=True, compare_fees=True,
-             ax=None, figsize=(8,5), lw=1, loc='upper left', length=20, ratio=1):
+             base=-1, n_max=-1, cost=None, period_fee=3, percent_fee=True, compare_fees=True,
+             **kwargs):
         """
         compare tickers by plot
         tickers: list of tickers to plot
         base: set value for adjusting price so the starting values are identical
         n_max: max num of tickers to plot
-        length, ratio: see legend
         """
         df_tickers = self._get_prices(tickers=tickers, start_date=start_date, 
                                       end_date=end_date, base=base, n_max=n_max)
@@ -1369,8 +1367,8 @@ class DataManager():
                 df_tf = None
                 title = 'Total returns after fees'
         
-        ax = self._plot_return(df_tickers, df_tf, ax=ax, figsize=figsize, lw=lw, loc=loc,
-                        length=length, ratio=ratio)
+        ax = DataManager._plot_return(df_tickers, df_tf, 
+                                      security_names=self.security_names, **kwargs)
             
         if base > 0:
             title = f'{title} (adjusted for comparison)'
@@ -1379,7 +1377,8 @@ class DataManager():
         return ax
     
 
-    def _plot_return(self, df_prices, df_prices_compare=None,
+    @staticmethod
+    def _plot_return(df_prices, df_prices_compare=None, security_names=None,
               ax=None, figsize=(8,5), lw=1, loc='upper left', length=20, ratio=1):
         """
         df_prices: price date of selected tickers
@@ -1387,7 +1386,6 @@ class DataManager():
          whose legend assumed same as df_prices
         length, ratio: args for xtick labels 
         """
-        security_names = self.security_names
         if security_names is not None:
             # rename legend if security_names exists
             clip = lambda x: string_shortener(x, n=length, r=ratio)
@@ -1415,8 +1413,7 @@ class DataManager():
 
     def plot_bar(self, tickers=None, start_date=None, end_date=None, metric='cagr', n_max=-1, 
                  cost=None, period_fee=3, percent_fee=True, compare_fees=True,
-                 ax=None, figsize=(6,4), length=20, ratio=1,
-                 colors=None, alphas=[0.4, 0.8]):
+                 **kwargs):
         df_tickers = self._get_prices(tickers=tickers, start_date=start_date, 
                                       end_date=end_date, n_max=n_max)
         if df_tickers is None:
@@ -1438,28 +1435,26 @@ class DataManager():
                 df_tf = None
                 labels = [f'{label} after fees']
                 
-        return self._plot_bar(df_tickers, df_tf, metric=metric, labels=labels, 
-                              ax=ax, figsize=figsize, length=length, ratio=ratio,
-                              colors=colors, alphas=alphas)
-    
-    
-    def _plot_bar(self, df_prices, df_prices_compare=None, 
-                  metric='cagr', labels=['base', 'compare'], 
-                  ax=None, figsize=(6,4), length=20, ratio=1,
-                  colors=None, alphas=[0.4, 0.8]):
-        df_stat = self._performance(df_prices, metrics=None, sort_by=None)
+        df_stat = self._performance(df_tickers, metrics=None, sort_by=None)
         try:
             df_stat = df_stat[metric]
             df_stat = df_stat.to_frame(labels[0]) # for bar loop
         except KeyError:
             return print(f'ERROR: No metric such as {metric}')
 
-        if df_prices_compare is not None:
-            df_stat_f = self._performance(df_prices_compare, metrics=None, sort_by=None)
+        if df_tf is not None:
+            df_stat_f = self._performance(df_tf, metrics=None, sort_by=None)
             df_stat_f = df_stat_f[metric].to_frame(labels[1])
             df_stat = df_stat.join(df_stat_f)
+            
+        return DataManager._plot_bar(df_stat, security_names=self.security_names, 
+                                      metric=metric, **kwargs)
 
-        security_names = self.security_names
+
+    @staticmethod
+    def _plot_bar(df_stat, security_names=None, metric='cagr', 
+                   ax=None, figsize=(6,4), length=20, ratio=1,
+                   colors=None, alphas=[0.4, 0.8]):
         if security_names is not None:
             clip = lambda x: string_shortener(x, n=length, r=ratio)
             df_stat.index = [f'{i+1}.{clip(security_names[x])}' for i,x in enumerate(df_stat.index)]
@@ -7916,7 +7911,7 @@ class DataMultiverse:
         return universes
 
 
-    def get_names(self, tickers=None):
+    def get_names(self, tickers=None, search=None):
         """
         tickers: None, 'selected' or list of tickers
         reset: True to get security_names aftre resetting first
@@ -7935,6 +7930,8 @@ class DataMultiverse:
             result = security_names if len(result) == 0 else result
 
         result = {f'{k} ({name})': v for name, tkr_dict in result.items() for k, v in tkr_dict.items()}
+        if search is not None:
+            result = {k:v for k,v in result.items() if search in v}
         return SecurityDict(result, names=result)
 
 
