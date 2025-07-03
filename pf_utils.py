@@ -833,6 +833,7 @@ class DataManager():
         self.to_daily = to_daily
         self.days_in_year = days_in_year
         self.kwargs_universe = kwargs
+        self.visualization = None
         # update self.df_prices
         self.upload(self.file_historical, get_names=True, convert_to_daily=to_daily)
 
@@ -1271,7 +1272,87 @@ class DataManager():
             cols = df.loc[df==days_in_year].index
         return self._convert_price_to_daily(confirm, cols)
 
+    
+    @staticmethod
+    def get_stats(df, start_date=None, end_date=None, stats=['mean', 'median', 'std'], 
+                  stats_daily=True, date_format='%Y-%m-%d', msg=True,
+                  plot=False, figsize=(7,3)):
+        """
+        df: df of date index and ticker columns. ex) self.df_prices 
+        stats_daily:
+         set to True to calculate statistics of daily averages for all stocks
+         set to False to calculate statistics of stock averages for the period
+        """
+        df = df.loc[start_date:end_date]
+        axis = 1 if stats_daily else 0
+        df_m = df.mean(axis=axis)
+        df_stats = df_m.agg(stats)
+        
+        if msg:
+            dt0, dt1 = get_date_minmax(df, date_format)
+            ps = 'daily' if stats_daily else 'stock'
+            print(f'Stats of {ps} averages from {dt0} to {dt1}:')
+            print(df_stats.map(lambda x: f'{x:.1f}').to_frame(ps).T.to_string())
+    
+        if plot and stats_daily:
+            ax = df_m.plot(figsize=figsize)
+            
+        return df_m
 
+    
+    @staticmethod
+    def get_start_end_dates(start_date: str = None, end_date: str = None, 
+                            close_today: bool = True, n_years: int = 3, 
+                            date_format: str = '%Y-%m-%d') -> tuple[str, str]:
+        """
+        get start & end dates for downloading stock price data 
+        """
+        today = datetime.today()
+        
+        # Set end_date
+        if end_date is None:
+            end_date = today
+        else:
+            end_date = datetime.strptime(end_date, date_format)
+        
+        # Adjust end_date if market should be closed today
+        if not close_today and end_date.date() == today.date():
+            end_date -= timedelta(days=1)
+        
+        # Set start_date
+        if start_date is None:
+            start_date = end_date.replace(year=end_date.year - n_years, month=1, day=1)
+        else:
+            start_date = datetime.strptime(start_date, date_format)
+        
+        return [x.strftime(date_format) for x in (start_date, end_date)]
+
+
+    def plot(self, tickers, reload=True, **kwargs):
+        visualization = self.get_visualizer(reload)
+        return visualization.plot(tickers, **kwargs)
+        
+
+    def performance(self, tickers=None, reload=True, **kwargs):
+        visualization = self.get_visualizer(reload)
+        return visualization.performance(tickers=tickers, **kwargs)
+        
+
+    def get_visualizer(self, reload=False):
+        if reload or (self.visualization is None):
+            self.visualization = DataVisualizer(self.df_prices, self.security_names)
+        return self.visualization
+            
+
+
+class DataVisualizer():
+    """
+    helper class for DataManager or DataMultiverse
+    """
+    def __init__(self, df_prices, security_names=None):
+        self.df_prices = df_prices
+        self.security_names = security_names
+             
     def performance(self, tickers=None, metrics=None, 
                     sort_by=None, start_date=None, end_date=None,
                     cost=None, period_fee=3, percent_fee=True):
@@ -1340,15 +1421,13 @@ class DataManager():
 
 
     def plot_return(self, tickers=None, start_date=None, end_date=None,
-             base=-1, n_max=-1, 
-             cost=None, period_fee=3, percent_fee=True, compare_fees=True,
-             ax=None, figsize=(8,5), lw=1, loc='upper left', length=20, ratio=1):
+             base=-1, n_max=-1, cost=None, period_fee=3, percent_fee=True, compare_fees=True,
+             **kwargs):
         """
         compare tickers by plot
         tickers: list of tickers to plot
         base: set value for adjusting price so the starting values are identical
         n_max: max num of tickers to plot
-        length, ratio: see legend
         """
         df_tickers = self._get_prices(tickers=tickers, start_date=start_date, 
                                       end_date=end_date, base=base, n_max=n_max)
@@ -1369,8 +1448,7 @@ class DataManager():
                 df_tf = None
                 title = 'Total returns after fees'
         
-        ax = self._plot_return(df_tickers, df_tf, ax=ax, figsize=figsize, lw=lw, loc=loc,
-                        length=length, ratio=ratio)
+        ax = self._plot_return(df_tickers, df_tf, security_names=self.security_names, **kwargs)
             
         if base > 0:
             title = f'{title} (adjusted for comparison)'
@@ -1379,7 +1457,7 @@ class DataManager():
         return ax
     
 
-    def _plot_return(self, df_prices, df_prices_compare=None,
+    def _plot_return(self, df_prices, df_prices_compare=None, security_names=None,
               ax=None, figsize=(8,5), lw=1, loc='upper left', length=20, ratio=1):
         """
         df_prices: price date of selected tickers
@@ -1387,7 +1465,6 @@ class DataManager():
          whose legend assumed same as df_prices
         length, ratio: args for xtick labels 
         """
-        security_names = self.security_names
         if security_names is not None:
             # rename legend if security_names exists
             clip = lambda x: string_shortener(x, n=length, r=ratio)
@@ -1415,8 +1492,7 @@ class DataManager():
 
     def plot_bar(self, tickers=None, start_date=None, end_date=None, metric='cagr', n_max=-1, 
                  cost=None, period_fee=3, percent_fee=True, compare_fees=True,
-                 ax=None, figsize=(6,4), length=20, ratio=1,
-                 colors=None, alphas=[0.4, 0.8]):
+                 **kwargs):
         df_tickers = self._get_prices(tickers=tickers, start_date=start_date, 
                                       end_date=end_date, n_max=n_max)
         if df_tickers is None:
@@ -1438,28 +1514,25 @@ class DataManager():
                 df_tf = None
                 labels = [f'{label} after fees']
                 
-        return self._plot_bar(df_tickers, df_tf, metric=metric, labels=labels, 
-                              ax=ax, figsize=figsize, length=length, ratio=ratio,
-                              colors=colors, alphas=alphas)
-    
-    
-    def _plot_bar(self, df_prices, df_prices_compare=None, 
-                  metric='cagr', labels=['base', 'compare'], 
-                  ax=None, figsize=(6,4), length=20, ratio=1,
-                  colors=None, alphas=[0.4, 0.8]):
-        df_stat = self._performance(df_prices, metrics=None, sort_by=None)
+        df_stat = self._performance(df_tickers, metrics=None, sort_by=None)
         try:
             df_stat = df_stat[metric]
             df_stat = df_stat.to_frame(labels[0]) # for bar loop
         except KeyError:
             return print(f'ERROR: No metric such as {metric}')
 
-        if df_prices_compare is not None:
-            df_stat_f = self._performance(df_prices_compare, metrics=None, sort_by=None)
+        if df_tf is not None:
+            df_stat_f = self._performance(df_tf, metrics=None, sort_by=None)
             df_stat_f = df_stat_f[metric].to_frame(labels[1])
             df_stat = df_stat.join(df_stat_f)
+            
+        return self._plot_bar(df_stat, security_names=self.security_names, 
+                                      metric=metric, **kwargs)
 
-        security_names = self.security_names
+
+    def _plot_bar(self, df_stat, security_names=None, metric='cagr', 
+                   ax=None, figsize=(6,4), length=20, ratio=1,
+                   colors=None, alphas=[0.4, 0.8]):
         if security_names is not None:
             clip = lambda x: string_shortener(x, n=length, r=ratio)
             df_stat.index = [f'{i+1}.{clip(security_names[x])}' for i,x in enumerate(df_stat.index)]
@@ -1495,7 +1568,7 @@ class DataManager():
         
         if isinstance(tickers, str):
             tickers = [tickers]
-        tickers = self._check_var(tickers, df_prices.columns.to_list())
+        tickers = tickers or df_prices.columns.to_list()
         if len(tickers) > n_max > 0:
             tickers = random.sample(tickers, n_max)
         
@@ -1522,61 +1595,6 @@ class DataManager():
         """
         cost = cost or dict()
         return CostManager.get_history_with_fee(df_prices, period=period, percent=percent, **cost)
-
-    
-    @staticmethod
-    def get_stats(df, start_date=None, end_date=None, stats=['mean', 'median', 'std'], 
-                  stats_daily=True, date_format='%Y-%m-%d', msg=True,
-                  plot=False, figsize=(7,3)):
-        """
-        df: df of date index and ticker columns. ex) self.df_prices 
-        stats_daily:
-         set to True to calculate statistics of daily averages for all stocks
-         set to False to calculate statistics of stock averages for the period
-        """
-        df = df.loc[start_date:end_date]
-        axis = 1 if stats_daily else 0
-        df_m = df.mean(axis=axis)
-        df_stats = df_m.agg(stats)
-        
-        if msg:
-            dt0, dt1 = get_date_minmax(df, date_format)
-            ps = 'daily' if stats_daily else 'stock'
-            print(f'Stats of {ps} averages from {dt0} to {dt1}:')
-            print(df_stats.map(lambda x: f'{x:.1f}').to_frame(ps).T.to_string())
-    
-        if plot and stats_daily:
-            ax = df_m.plot(figsize=figsize)
-            
-        return df_m
-
-    
-    @staticmethod
-    def get_start_end_dates(start_date: str = None, end_date: str = None, 
-                            close_today: bool = True, n_years: int = 3, 
-                            date_format: str = '%Y-%m-%d') -> tuple[str, str]:
-        """
-        get start & end dates for downloading stock price data 
-        """
-        today = datetime.today()
-        
-        # Set end_date
-        if end_date is None:
-            end_date = today
-        else:
-            end_date = datetime.strptime(end_date, date_format)
-        
-        # Adjust end_date if market should be closed today
-        if not close_today and end_date.date() == today.date():
-            end_date -= timedelta(days=1)
-        
-        # Set start_date
-        if start_date is None:
-            start_date = end_date.replace(year=end_date.year - n_years, month=1, day=1)
-        else:
-            start_date = datetime.strptime(start_date, date_format)
-        
-        return [x.strftime(date_format) for x in (start_date, end_date)]
 
         
 
@@ -7816,21 +7834,19 @@ class DataMultiverse:
     Manages and compares data across multiple independent data universes,
     each handled by its own DataManager instance.
     """
-    def __init__(self, *universes, cols_record = {'date':'date', 'tkr':'ticker', 'uv':'universe'}):
+    def __init__(self, *universes):
         """
         universes: list of universe names or DataManager instances
         """
-        self.cols_record = cols_record
-        self.df_multiverse = None # price data of multilevel columns universe & ticker
-        self.cost = None
-        self.security_names = {}
+        self.multiverse = dict() # dict of universe name to instance
         self.pf_data = PortfolioData()
         self.load(*universes) # load price history across universes
 
     
     def load(self, *universes, reload=False, verbose=True, 
-              default_name='UV', ffill=True, **kwargs):
+              default_name='UV', **kwargs):
         """
+        load instances of universes
         universes: list of universe names, DataManager instances or tuple of name & instance
         """        
         # split universe list to names and instances
@@ -7854,15 +7870,13 @@ class DataMultiverse:
                 return None
             
         if reload:
-            df_mv = None
-            security_names = dict()
+            multiverse = dict()
         else:
-            df_mv = self.df_multiverse
-            security_names = self.security_names
+            multiverse = self.multiverse
 
         # create uv instances from uv names
         for name in uv_str:
-            if (df_mv is not None) and name in df_mv.columns.get_level_values(0):
+            if name in multiverse.keys():
                 print(f'{name} already exists')
             else:
                 print(f'{name}:', end='\n' if verbose else ' ')
@@ -7871,24 +7885,19 @@ class DataMultiverse:
                 if uv is None:
                     print(f'WARNING: Portfolio {name} not loaded')
                 else:
-                    df, sn = self._get_universe(uv, name, ffill=ffill)
-                    df_mv = df if df_mv is None else pd.concat([df_mv, df], axis=1)
-                    security_names[name] = sn
+                    multiverse[name] = uv
                 print() if verbose else print('imported')
 
-        #return uv_inst
-        # add uv instances from input to portfolio
+        # add uv instances from input to multiverse
         if len(uv_inst) > 0:
             for name, uv in uv_inst.items():
-                if (df_mv is not None) and name in df_mv.columns.get_level_values(0):
+                if name in multiverse.keys():
                     return print(f'ERROR: Duplicate universe {name}')
                 else:
-                    df, sn = self._get_universe(uv, name, ffill=ffill)
-                    df_mv = pd.concat([df_mv, df], axis=1)
-                    security_names[name] = sn
+                    multiverse[name] = uv
                     print(f'{name}: imported')
 
-        self.df_multiverse = df_mv
+        self.multiverse = multiverse
         return None
 
 
@@ -7901,7 +7910,7 @@ class DataMultiverse:
         if loading:
             uv_all = self.pf_data.universes.keys()
         else:
-            uv_all = self.df_multiverse.columns.get_level_values(0).unique()
+            uv_all = self.multiverse.keys()
         if len(universes) == 0:
             universes = uv_all
         else:
@@ -7916,29 +7925,55 @@ class DataMultiverse:
         return universes
 
 
-    def get_names(self, tickers=None):
+    def get_prices(self, tickers=None):
+        pass
+
+
+    def get_names(self, tickers=None, search=None, reset=False):
         """
-        tickers: None, 'selected' or list of tickers
-        reset: True to get security_names aftre resetting first
+        tickers: None or list of tickers
+        search: word to search in ticker names
         """
-        security_names = self.security_names
-        if security_names is None:
-            return None
+        multiverse = self.multiverse
+        if len(multiverse) == 0:
+            return print('ERROR: Load data first')
+
+        # find universe for each ticker
         if isinstance(tickers, str):
             tickers = [tickers]
-        if tickers is None:
-            result = security_names
-        else:
-            result = dict()
-            for name, tkr_dict in security_names.items():
-                result[name] = {k:v for k,v in tkr_dict.items() if k in tickers}
-            result = security_names if len(result) == 0 else result
+        security_names = dict()
+        for name, uv in multiverse.items():
+            sname = uv.get_names(tickers, reset)
+            if sname is None:
+                continue
+            sname = {f'{k}({name})': v for k,v in sname.items()}
+            security_names = {**security_names, **sname}
 
-        result = {f'{k} ({name})': v for name, tkr_dict in result.items() for k, v in tkr_dict.items()}
-        return SecurityDict(result, names=result)
+        # search word in name
+        if search is not None:
+            security_names = {k:v for k,v in security_names.items() if search in v}
+        return SecurityDict(security_names, names=security_names)
 
 
-    def performance(self, tickers, metrics=METRICS2, 
+    def plot(self, tickers, reload=True, **kwargs):
+        visualization = self.get_visualizer(reload)
+        return visualization.plot(tickers, **kwargs)
+        
+
+    def performance(self, tickers=None, reload=True, **kwargs):
+        visualization = self.get_visualizer(reload)
+        return visualization.performance(tickers=tickers, **kwargs)
+        
+
+    def get_visualizer(self, reload=False):
+        if reload or (self.visualization is None):
+            df_prices = self.get_prices(tickers)
+            security_names = self.get_names(tickers)
+            self.visualization = DataVisualizer(df_prices, security_names)
+        return self.visualization
+
+
+    def performance_bk(self, tickers, metrics=METRICS2, 
                     sort_by=None, start_date=None, end_date=None,
                     exclude_cost=False, period_fee=3, percent_fee=True):
         df_prices = self._get_prices(tickers, start_date=start_date, end_date=end_date)
@@ -7953,95 +7988,7 @@ class DataMultiverse:
             df_prices = df_prices if df_p is None else df_p
             
         return performance_stats(df_prices, metrics=metrics, sort_by=sort_by, align_period=False)
-
-
-    def _get_universe(self, uv, name, ffill=True):
-        """
-        return df_prices from DataManager instance uv
-        """
-        df = uv.df_prices
-        cols = [self.cols_record['uv'], self.cols_record['tkr']]
-        if ffill:
-            df = df.ffill()
-        else:
-            if df.isna().any().any():
-                return print(f'ERROR: Set ffill=True as the universe {name} has Na')
-        df.columns = pd.MultiIndex.from_product([[name], df.columns])
-        df.columns.names = cols
-        return df, uv.security_names
-
-
-    def _get_prices(self, tickers, start_date=None, end_date=None, base=-1):
-        """
-        return price data of tickers with date of adjustment for comparison
-        base: base value to adjust tickers
-        start_date: date to adjust if base > 0
-        """
-        df_prices = self.df_multiverse
-        if df_prices is None:
-            return print('ERROR')
-        else:
-            df_prices = df_prices.loc[start_date:end_date]
-        
-        if isinstance(tickers, str):
-            tickers = [tickers]
-        
-        idx = pd.IndexSlice
-        try:
-            df_tickers = df_prices.loc[:, idx[:, tickers]]
-        except KeyError:
-            return print('ERROR: Check tickers')
-
-        dts = df_tickers.apply(lambda x: x.dropna().index.min()) # start date of each tickers
-        if base > 0: # adjust price of tickers
-            dt_adj = df_tickers.index.min()
-            dt_max = dts.max() # min start date where all tickers have data 
-            dt_adj = dt_max if dt_adj < dt_max else dt_adj
-            df_tickers = df_tickers.apply(lambda x: x / x.loc[dt_adj] * base)
-        else:
-            dt_adj = dts.min() # drop dates of all None
-        return df_tickers.loc[dt_adj:] 
-
-
-    def _get_prices_after_fee(self, df_prices, period=3, percent=True):
-        """
-        get df_prices after cost
-        """
-        cost_uv = self.cost
-        if cost_uv is None:
-            return
-        df_prices_fee = None
-        for name in df_prices.columns.get_level_values(0).unique():
-            df_uv = df_prices[name]
-            cost = cost_uv[name]
-            if cost is None:
-                print(f'WARNING: No cost for {name}')
-            else:
-                df_uv = CostManager.get_history_with_fee(df_uv, period=period, percent=percent, **cost)
-            df_uv.columns = pd.MultiIndex.from_product([[name], df_uv.columns])
-            df_prices_fee = df_uv if df_prices_fee is None else pd.concat([df_prices_fee, df_uv], axis=1)
-        return df_prices_fee
-
-
-    def get_cost(self, file, path='.', verbose=False):
-        """
-        get cost data for loaed universes
-        """
-        if self.df_multiverse is None:
-            return print('ERROR')
-
-        cost_uv = dict()
-        for name in self.df_multiverse.columns.get_level_values(0).unique():
-            with SuppressPrint(not verbose):
-                cost = CostManager.get_cost(name, file, path=path)
-            if cost is None:
-                print(f'WARNING: No cost data available for universe {name}')
-            else:
-                print(f'Cost for {name} loaded')
-            cost_uv[name] = cost
-        self.cost = cost_uv
-        return None
-    
+   
     
 
 class PortfolioData():
