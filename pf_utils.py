@@ -1580,11 +1580,14 @@ class DataVisualizer():
             return print('ERROR: Check tickers')
 
         dts = df_tickers.apply(lambda x: x.dropna().index.min()) # start date of each tickers
-        if base > 0: # adjust price of tickers
+        if base > 0: # relative price in common period
             dt_adj = df_tickers.index.min()
             dt_max = dts.max() # min start date where all tickers have data 
             dt_adj = dt_max if dt_adj < dt_max else dt_adj
             df_tickers = df_tickers.apply(lambda x: x / x.loc[dt_adj] * base)
+        elif base == 0: # relative price only
+            df_tickers = df_tickers.apply(lambda x: x.dropna() / x.dropna().iloc[0])
+            dt_adj = None
         else:
             dt_adj = dts.min() # drop dates of all None
         return df_tickers.loc[dt_adj:] 
