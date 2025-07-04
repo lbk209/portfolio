@@ -968,9 +968,9 @@ class DataManager():
         elif uv == 'yahoo':
             func = self._get_tickers_yahoo
         else:
-            print(f'WARNING: kospi200 set as no universe such as {uv}')
-            func = self._get_tickers_kospi200
-            #func = lambda **x: None
+            #print(f'WARNING: Set tickers when downloading universe {uv}')
+            #func = self._get_tickers_kospi200
+            func = lambda x: self._check_tickers({y:y for y in x} if isinstance(x, list) else {x:x}, x)
         
         try:
             security_names = func(tickers, **kwargs)
@@ -7953,7 +7953,7 @@ class DataMultiverse:
 
     def get_names(self, tickers=None, universes=None, search=None, reset=False):
         """
-        tickers: None or list of tickers
+        tickers: None, a ticker, list of tickers or 'selected'
         search: word to search in ticker names
         universes: list of universes to search tickers
         """
@@ -7963,7 +7963,7 @@ class DataMultiverse:
 
         # find universe for each ticker
         if isinstance(tickers, str):
-            tickers = [tickers]
+            tickers = tickers if tickers.lower() == 'selected' else [tickers]
         security_names = dict()
         for name, uv in multiverse.items():
             sname = uv.get_names(tickers, reset)
