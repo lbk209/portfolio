@@ -12,7 +12,8 @@ UNIVERSES = dict(
                    freq='daily', batch_size=100, check_master=True),
     UV_FNDM = dict(universe='fund', file='fundm_prices', tickers='fundm_info',
                    freq='monthly', batch_size=12, check_master=True), # fund data of monthly bassis
-    UV_FCTR = dict(universe='yahoo', file='etfs_factors', tickers=None) # universe defined by tickers each time
+    UV_FCTR = dict(universe='yahoo', file='etfs_factors', tickers=None), # universe defined by tickers each time
+    UV_MCR = dict(universe='macro', file='macro'), # set tickers for DataReader
 )
 UNIVERSES = {k: {**v, 'path':path_data} for k,v in UNIVERSES.items()}
 

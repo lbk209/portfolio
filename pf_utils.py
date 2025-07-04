@@ -968,12 +968,20 @@ class DataManager():
         elif uv == 'yahoo':
             func = self._get_tickers_yahoo
         else:
-            print(f'WARNING: kospi200 set as no universe such as {uv}')
-            func = self._get_tickers_kospi200
-            #func = lambda **x: None
+            #print(f'WARNING: Set tickers when downloading universe {uv}')
+            #func = self._get_tickers_kospi200
+            def func(tickers=tickers):
+                if tickers is None or (isinstance(tickers, str) and tickers == 'selected'):
+                    if self.df_prices is None:
+                        return None
+                    tickers = self.df_prices.columns
+                elif isinstance(tickers, str):
+                    tickers = [tickers]
+                return {x:x for x in tickers}
         
         try:
-            security_names = func(tickers, **kwargs)
+            security_names = func(**kwargs)
+            security_names = self._check_tickers(security_names, tickers)
             failed = 'ERROR: Failed to get ticker names' if len(security_names) == 0 else None
         except Exception as e:
             failed = f'ERROR: Failed to get ticker names as {e}'
@@ -984,32 +992,30 @@ class DataManager():
             return security_names
             
 
-    def _get_tickers_kospi200(self, tickers=None, col_ticker='Code', col_name='Name', **kw):
+    def _get_tickers_kospi200(self, col_ticker='Code', col_name='Name', **kw):
         """
         kw: dummy for other _get_tickers_*
         """
         df = fdr.SnapDataReader(self.tickers)
-        security_names = df.set_index(col_ticker)[col_name].to_dict()
-        return self._check_tickers(security_names, tickers)
+        return df.set_index(col_ticker)[col_name].to_dict()
         
     
-    def _get_tickers_etf(self, tickers=None, col_ticker='Symbol', col_name='Name', **kw):
+    def _get_tickers_etf(self, col_ticker='Symbol', col_name='Name', **kw):
         """
         한국 ETF 전종목
         """
         df = fdr.StockListing(self.tickers) 
-        security_names = df.set_index(col_ticker)[col_name].to_dict()
-        return self._check_tickers(security_names, tickers)
+        return df.set_index(col_ticker)[col_name].to_dict()
         
 
-    def _get_tickers_krx(self, tickers=None, **kw):
+    def _get_tickers_krx(self, **kw):
         """
         self.tickers: KOSPI,KOSDAQ
         """
         security_names = dict()
         for x in [x.replace(' ', '') for x in self.tickers.split(',')]:
             security_names.update(DataManager.get_tickers_krx(x))
-        return self._check_tickers(security_names, tickers)
+        return security_names
 
 
     @staticmethod
@@ -1021,7 +1027,7 @@ class DataManager():
         return df.set_index(col_ticker)[col_name].to_dict()
 
 
-    def _get_tickers_fund(self, tickers=None, path=None, col_name='name', **kw):
+    def _get_tickers_fund(self, path=None, col_name='name', **kw):
         """
         self.fickers: file name for tickers
         """
@@ -1033,22 +1039,20 @@ class DataManager():
         fd = FundDownloader(file, path, **kwargs)
         if not fd.check_master(): # True if no duplicated
             raise Exception('See check_master')
-        security_names = fd.data_tickers[col_name].to_dict()
-        return self._check_tickers(security_names, tickers)
+        return fd.data_tickers[col_name].to_dict()
         
 
-    def _get_tickers_file(self, tickers=None, path=None, col_ticker='ticker', col_name='name', **kw):
+    def _get_tickers_file(self, path=None, col_ticker='ticker', col_name='name', **kw):
         """
         tickers: file for names of tickers
         """
         file = self.tickers # file of tickers
         path = self._check_var(path, self.path)
         df = pd.read_csv(f'{path}/{file}')
-        security_names = df.set_index(col_ticker)[col_name].to_dict()
-        return self._check_tickers(security_names, tickers)
+        return df.set_index(col_ticker)[col_name].to_dict()
 
 
-    def _get_tickers_yahoo(self, tickers=None, col_name='longName', **kw):
+    def _get_tickers_yahoo(self, col_name='longName', **kw):
         """
         tickers: subset of self.tickers or None
         """
@@ -1057,10 +1061,7 @@ class DataManager():
             print('ERROR: Set tickers for names')
             return dict()
         yft = yf.Tickers(' '.join(tkrs_uv))
-        security_names = {x:yft.tickers[x].info[col_name] for x in tkrs_uv}
-        if isinstance(tickers, str): 
-            tickers = [tickers]
-        return self._check_tickers(security_names, tickers)
+        return {x:yft.tickers[x].info[col_name] for x in tkrs_uv}
         
 
     def _check_tickers(self, security_names, tickers, msg=True):
@@ -1077,6 +1078,7 @@ class DataManager():
                 tickers = self.df_prices.columns.to_list()
                 
         if tickers is not None:
+            tickers = [tickers] if isinstance(tickers, str) else tickers
             security_names = {k:v for k,v in security_names.items() if k in tickers}
             _ = self._check_security_names(security_names)
         return security_names
@@ -7953,7 +7955,7 @@ class DataMultiverse:
 
     def get_names(self, tickers=None, universes=None, search=None, reset=False):
         """
-        tickers: None or list of tickers
+        tickers: None, a ticker, list of tickers or 'selected'
         search: word to search in ticker names
         universes: list of universes to search tickers
         """
@@ -7963,7 +7965,7 @@ class DataMultiverse:
 
         # find universe for each ticker
         if isinstance(tickers, str):
-            tickers = [tickers]
+            tickers = tickers if tickers.lower() == 'selected' else [tickers]
         security_names = dict()
         for name, uv in multiverse.items():
             sname = uv.get_names(tickers, reset)
@@ -8004,7 +8006,10 @@ class DataMultiverse:
             return print('ERROR')
         
         vs = self.get_visualizer(universes=universes, reload=reload)
-        tickers = [mapping[x] for x in tickers]
+        try:
+            tickers = self.get_names('selected').keys() if tickers is None else [mapping[x] for x in tickers]
+        except KeyError:
+            return print('ERROR: Check tickers')
         return vs.plot(tickers, **kwargs)
         
 
@@ -8016,7 +8021,7 @@ class DataMultiverse:
     
         vs = self.get_visualizer(universes=universes, reload=reload)
         try:
-            tickers = vs.values() if tickers is None else [mapping[x] for x in tickers]
+            tickers = self.get_names('selected').keys() if tickers is None else [mapping[x] for x in tickers]
             df_prices = vs.df_prices[tickers]
         except KeyError:
             return print('ERROR: Check tickers')
@@ -8030,23 +8035,6 @@ class DataMultiverse:
             security_names = self.get_names(universes=universes)
             self.visualization = DataVisualizer(df_prices, security_names)
         return self.visualization
-
-
-    def performance_bk(self, tickers, metrics=METRICS2, 
-                    sort_by=None, start_date=None, end_date=None,
-                    exclude_cost=False, period_fee=3, percent_fee=True):
-        df_prices = self._get_prices(tickers, start_date=start_date, end_date=end_date)
-        if df_prices is None:
-            return None
-
-        if not exclude_cost:
-            if self.cost is None:
-                return print('ERROR: Run get_cost first or Set exclude_cost=True')
-            else:
-                df_p = self._get_prices_after_fee(df_prices, period=period_fee, percent=percent_fee)
-            df_prices = df_prices if df_p is None else df_p
-            
-        return performance_stats(df_prices, metrics=metrics, sort_by=sort_by, align_period=False)
    
     
 
