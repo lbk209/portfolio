@@ -7844,16 +7844,17 @@ class DataMultiverse:
         universes: list of universe names or DataManager instances
         """
         self.multiverse = dict() # dict of universe name to instance
+        self.cost = dict() # dict of universe name to cost
         self.pf_data = PortfolioData()
         self.load(*universes) # load price history across universes
         self.tickers_in_multiverse = self.map_tickers()
 
     
-    def load(self, *universes, reload=False, verbose=True, 
-              default_name='UV', **kwargs):
+    def load(self, *universes, reload=False, verbose=True, default_name='UV', **kwargs):
         """
         load instances of universes
         universes: list of universe names, DataManager instances or tuple of name & instance
+        kwargs: keyword args for create_universe
         """        
         # split universe list to names and instances
         uv_str, uv_inst, cnt = [], {}, 0
@@ -8001,6 +8002,31 @@ class DataMultiverse:
             df_p.columns = [self.tickers_in_multiverse[x] for x in df_p.columns]
             df_prices = df_p if df_prices is None else pd.concat([df_prices, df_p], axis=1)
         return df_prices
+
+
+    # TODO: to rename tickers for multiverse in the cost
+    def set_cost(self, cost=None, file=None, path=None):
+        """
+        cost: dict of universe name and its cost data from CostManager.get_cost
+        """
+        multiverse = self.check_universes(loading=False)
+        if len(multiverse) == 0:
+            return None
+
+        cost_multiverse = dict()
+        result = list()
+        if cost is None:
+            for name in multiverse.keys():
+                cost_multiverse[name] = PortfolioManager.get_cost(name, file, path=path)
+                result.append(name)
+        else:
+            for name, cost_univ in cost.items():
+                if name in multiverse.keys():
+                    cost_multiverse[name] = cost_univ
+                    result.append(name)
+        self.cost = cost_multiverse
+        print(f"Cost of {', '.join(result)} loaded") if len(result)>1 else print('WARNING: No cost loaded')
+        return None
 
 
     def plot(self, tickers, universes=None, reload=True, **kwargs):
