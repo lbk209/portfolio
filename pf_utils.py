@@ -7841,6 +7841,7 @@ class DataMultiverse:
         self.multiverse = dict() # dict of universe name to instance
         self.pf_data = PortfolioData()
         self.load(*universes) # load price history across universes
+        self.tickers_in_multiverse = self.map_tickers()
 
     
     def load(self, *universes, reload=False, verbose=True, 
@@ -7865,7 +7866,7 @@ class DataMultiverse:
 
         # check uv names
         if len(uv_str) > 0:
-            uv_str = self.check_universes(*uv_str, loading=True)
+            uv_str = self.check_universes(uv_str, loading=True)
             if len(uv_str) == 0:
                 return None
             
@@ -7901,42 +7902,64 @@ class DataMultiverse:
         return None
 
 
-    def check_universes(self, *universes, loading=False):
+    def check_universes(self, universes=None, loading=False, exact=True):
         """
         check if universe exist 
         universes: list of universes as name or prefix
-        loading: set to False to retrieve names of the universes loaded 
+        loading: set to False to retrieve list of sets of name & universe instance loaded 
+        exact: set to False if universes is list of pattern to search
         """
         if loading:
             uv_all = self.pf_data.universes.keys()
         else:
-            uv_all = self.multiverse.keys()
-        if len(universes) == 0:
+            if len(self.multiverse) == 0:
+                return print('ERROR: Load data first')
+            else:
+                uv_all = self.multiverse.keys()
+        
+        if universes is None:
             universes = uv_all
         else:
-            out = [x for x in universes for y in uv_all if x in y]
+            cond = lambda pattern, target: pattern == target if exact else pattern in target
+            out = [x for x in universes for y in uv_all if cond(x, y)]
             out = set(universes)-set(out)
             if len(out) > 0:
                 print_list(out, 'ERROR: No universe such as {}')
                 print_list(uv_all, 'Universes available: {}')
                 universes = list()
             else:
-                universes = [y for x in universes for y in uv_all if x in y]
-        return universes
+                universes = [y for x in universes for y in uv_all if cond(x, y)]
+        # return list of sets of name & universe instance loaded if loading=False
+        return universes if loading else {k:v for k,v in self.multiverse.items() if k in universes} 
 
 
-    def get_prices(self, tickers=None):
-        pass
+    def map_tickers(self, fmt="{x}({name})"):
+        """
+        create mapper of tickers in universes to ones in multiverse
+        """
+        multiverse = self.check_universes(loading=False)
+        if len(multiverse) == 0:
+            return None
 
+        mapping = dict()
+        for name, uv in multiverse.items():
+            tkrs = uv.get_names(reset=False)
+            if tkrs is None:
+                continue
+            tkrs = {x: fmt.format(x=x, name=name) for x in tkrs.keys()}
+            mapping = {**mapping, **tkrs}
+        return mapping
+            
 
-    def get_names(self, tickers=None, search=None, reset=False):
+    def get_names(self, tickers=None, universes=None, search=None, reset=False):
         """
         tickers: None or list of tickers
         search: word to search in ticker names
+        universes: list of universes to search tickers
         """
-        multiverse = self.multiverse
+        multiverse = self.check_universes(universes, loading=False)
         if len(multiverse) == 0:
-            return print('ERROR: Load data first')
+            return None
 
         # find universe for each ticker
         if isinstance(tickers, str):
@@ -7946,29 +7969,65 @@ class DataMultiverse:
             sname = uv.get_names(tickers, reset)
             if sname is None:
                 continue
-            sname = {f'{k}({name})': v for k,v in sname.items()}
+            #sname = {f'{k}({name})': v for k,v in sname.items()}
+            sname = {self.tickers_in_multiverse[k]: v for k,v in sname.items()}
             security_names = {**security_names, **sname}
 
         # search word in name
         if search is not None:
             security_names = {k:v for k,v in security_names.items() if search in v}
         return SecurityDict(security_names, names=security_names)
-
-
-    def plot(self, tickers, reload=True, **kwargs):
-        visualization = self.get_visualizer(reload)
-        return visualization.plot(tickers, **kwargs)
         
 
-    def performance(self, tickers=None, reload=True, **kwargs):
-        visualization = self.get_visualizer(reload)
-        return visualization.performance(tickers=tickers, **kwargs)
+    def get_prices(self, universes=None):
+        """
+        merge price data from universes by adding universe name to column names 
+        """
+        multiverse = self.check_universes(universes, loading=False)
+        if len(multiverse) == 0:
+            return None
+
+        df_prices = None
+        for name, uv in multiverse.items():
+            df_p = uv.df_prices.copy() # use copy not to contaminate uv.df_prices
+            if df_p is None:
+                continue
+            # update column names with universe name
+            df_p.columns = [self.tickers_in_multiverse[x] for x in df_p.columns]
+            df_prices = df_p if df_prices is None else pd.concat([df_prices, df_p], axis=1)
+        return df_prices
+
+
+    def plot(self, tickers, universes=None, reload=True, **kwargs):
+        mapping = self.tickers_in_multiverse
+        if mapping is None:
+            return print('ERROR')
+        
+        vs = self.get_visualizer(universes=universes, reload=reload)
+        tickers = [mapping[x] for x in tickers]
+        return vs.plot(tickers, **kwargs)
         
 
-    def get_visualizer(self, reload=False):
+    def performance(self, tickers=None, universes=None, reload=True, 
+                    metrics=METRICS2, sort_by=None, **kwargs):
+        mapping = self.tickers_in_multiverse
+        if mapping is None:
+            return print('ERROR')
+    
+        vs = self.get_visualizer(universes=universes, reload=reload)
+        try:
+            tickers = vs.values() if tickers is None else [mapping[x] for x in tickers]
+            df_prices = vs.df_prices[tickers]
+        except KeyError:
+            return print('ERROR: Check tickers')
+        #return vs.performance(tickers=tickers, metrics=metrics, **kwargs)
+        return performance_stats(df_prices, metrics=metrics, sort_by=sort_by, align_period=False)
+        
+
+    def get_visualizer(self, universes=None, reload=False):
         if reload or (self.visualization is None):
-            df_prices = self.get_prices(tickers)
-            security_names = self.get_names(tickers)
+            df_prices = self.get_prices(universes=universes)
+            security_names = self.get_names(universes=universes)
             self.visualization = DataVisualizer(df_prices, security_names)
         return self.visualization
 
