@@ -7844,16 +7844,17 @@ class DataMultiverse:
         universes: list of universe names or DataManager instances
         """
         self.multiverse = dict() # dict of universe name to instance
+        self.cost = dict() # dict of universe name to cost
         self.pf_data = PortfolioData()
         self.load(*universes) # load price history across universes
         self.tickers_in_multiverse = self.map_tickers()
 
     
-    def load(self, *universes, reload=False, verbose=True, 
-              default_name='UV', **kwargs):
+    def load(self, *universes, reload=False, verbose=True, default_name='UV', **kwargs):
         """
         load instances of universes
         universes: list of universe names, DataManager instances or tuple of name & instance
+        kwargs: keyword args for create_universe
         """        
         # split universe list to names and instances
         uv_str, uv_inst, cnt = [], {}, 0
@@ -7904,6 +7905,7 @@ class DataMultiverse:
                     print(f'{name}: imported')
 
         self.multiverse = multiverse
+        self.cost = cost
         return None
 
 
