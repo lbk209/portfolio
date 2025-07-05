@@ -1357,7 +1357,7 @@ class DataVisualizer():
              
     def performance(self, tickers=None, metrics=None, 
                     sort_by=None, start_date=None, end_date=None,
-                    cost=None, period_fee=3, percent_fee=True):
+                    cost=None, period_fee=3, percent_fee=True, transpose=True):
         df_prices = self._get_prices(tickers=tickers, start_date=start_date, 
                                       end_date=end_date, n_max=-1)
         if df_prices is None:
@@ -1367,10 +1367,13 @@ class DataVisualizer():
             df_p = self._get_prices_after_fee(df_prices, cost=cost, 
                                               period=period_fee, percent=percent_fee)
             df_prices = df_prices if df_p is None else df_p
-            
-        return self._performance(df_prices, metrics=metrics, sort_by=sort_by)
 
+        if transpose:
+            return self._performance(df_prices, metrics=metrics, sort_by=sort_by)
+        else:
+            return performance_stats(df_prices, metrics=metrics, sort_by=sort_by, align_period=False)
 
+    
     def _performance(self, df_prices, metrics=None, sort_by=None):
         df_stat = performance_stats(df_prices, metrics=None, align_period=False)
         df_stat = df_stat.T
@@ -1395,7 +1398,7 @@ class DataVisualizer():
 
     def plot(self, tickers, start_date=None, end_date=None, metric='cagr', compare_fees=[True, True],
              base=1000, cost=None, period_fee=3, percent_fee=True,
-             length=20, ratio=1,
+             length=20, ratio=1, lw=0.5,
              figsize=(12,4), ratios=(7, 3)):
         """
         plot total returns of tickers and bar chart of metric
@@ -1406,7 +1409,7 @@ class DataVisualizer():
         ax1, ax2 = create_split_axes(figsize=figsize, ratios=ratios, vertical_split=False)
         
         # plot total returns
-        kw = dict(base=base, compare_fees=compare_fees[0], length=length, ratio=ratio)
+        kw = dict(base=base, compare_fees=compare_fees[0], length=length, ratio=ratio, lw=lw)
         ax1 = self.plot_return(ax=ax1, **kw_tkrs, **kw_fees, **kw)
         if ax1 is None:
             return
@@ -7844,7 +7847,7 @@ class DataMultiverse:
         universes: list of universe names or DataManager instances
         """
         self.multiverse = dict() # dict of universe name to instance
-        self.cost = dict() # dict of universe name to cost
+        self.cost = None # cost of tickers in multiverse
         self.pf_data = PortfolioData()
         self.load(*universes) # load price history across universes
         self.tickers_in_multiverse = self.map_tickers()
@@ -7939,7 +7942,7 @@ class DataMultiverse:
         return universes if loading else {k:v for k,v in self.multiverse.items() if k in universes} 
 
 
-    def map_tickers(self, fmt="{x}({name})"):
+    def map_tickers(self, fmt="{ticker}({universe})"):
         """
         create mapper of tickers in universes to ones in multiverse
         """
@@ -7952,7 +7955,7 @@ class DataMultiverse:
             tkrs = uv.get_names(reset=False)
             if tkrs is None:
                 continue
-            tkrs = {x: fmt.format(x=x, name=name) for x in tkrs.keys()}
+            tkrs = {x: fmt.format(ticker=x, universe=name) for x in tkrs.keys()}
             mapping = {**mapping, **tkrs}
         return mapping
             
@@ -8004,29 +8007,64 @@ class DataMultiverse:
         return df_prices
 
 
-    # TODO: to rename tickers for multiverse in the cost
-    def set_cost(self, cost=None, file=None, path=None):
+    def set_cost(self, cost_multiverse, path=None):
         """
-        cost: dict of universe name and its cost data from CostManager.get_cost
+        cost_multiverse: dict of universe name and its cost data from CostManager.get_cost
+            or cost file for all universes
         """
         multiverse = self.check_universes(loading=False)
         if len(multiverse) == 0:
             return None
-
-        cost_multiverse = dict()
-        result = list()
-        if cost is None:
+    
+        # load cost for each universe
+        if isinstance(cost_multiverse, str): # arg cost is file name
+            cost_mv = dict()
             for name in multiverse.keys():
-                cost_multiverse[name] = PortfolioManager.get_cost(name, file, path=path)
-                result.append(name)
+                cost_mv[name] = PortfolioManager.get_cost(name, cost_multiverse, path=path)
         else:
-            for name, cost_univ in cost.items():
-                if name in multiverse.keys():
-                    cost_multiverse[name] = cost_univ
-                    result.append(name)
-        self.cost = cost_multiverse
-        print(f"Cost of {', '.join(result)} loaded") if len(result)>1 else print('WARNING: No cost loaded')
-        return None
+            cost_mv = cost_multiverse
+    
+        if len(cost_mv) == 0:
+            return print('ERROR: No cost loaded')
+        
+        # fill zero cost for missing universe
+        loaded, failed = [], []
+        for name in multiverse.keys():
+            if name not in cost_mv.keys():
+                cost_mv[name] = {x: 0 for x in list(cost_mv.values())[0].keys()}
+                failed.append(name)
+            else:
+                loaded.append(name)
+        
+        # map ticker to multiverse
+        cost = {x: dict() for x in list(cost_mv.values())[0].keys()}
+        mapping = self.tickers_in_multiverse
+        for name, _cost in cost_mv.items():
+            cost_uv = dict()
+            cv0 = list(_cost.values())[0]
+            if isinstance(cv0, Number):
+                # retrieve tickers in universe to set cost for tickers
+                uv = self.multiverse[name]
+                tkrs = uv.get_names(reset=False)
+                for ct, cv in _cost.items():
+                    cost_uv[ct] = {mapping[x]: cv for x in tkrs}
+            elif isinstance(cv0, (dict, pd.Series)):
+                for ct, cv in _cost.items():
+                    cost_uv[ct] = {mapping[t]: c for t,c in cv.items()}
+            else:
+                return print('ERROR')
+            # add to multiverse cost
+            cost = {x: {**cost[x], **cost_uv[x]} for x in cost}
+    
+        if len(list(cost.values())[0]) > 0:
+            self.cost = cost
+            if len(loaded) > 0:
+                print(f"Cost of {', '.join(loaded)} loaded")
+            if len(failed) > 0:
+                print(f"Cost of {', '.join(failed)} set to zero")
+            return None
+        else:
+            return print('ERROR: No cost loaded')
 
 
     def plot(self, tickers, universes=None, reload=True, **kwargs):
@@ -8039,11 +8077,14 @@ class DataMultiverse:
             tickers = self.get_names('selected').keys() if tickers is None else [mapping[x] for x in tickers]
         except KeyError:
             return print('ERROR: Check tickers')
-        return vs.plot(tickers, **kwargs)
+        return vs.plot(tickers, cost=self.cost, **kwargs)
         
 
     def performance(self, tickers=None, universes=None, reload=True, 
-                    metrics=METRICS2, sort_by=None, **kwargs):
+                    metrics=METRICS2, **kwargs):
+        """
+        kwargs: extra args for DataVisualizer.performance
+        """
         mapping = self.tickers_in_multiverse
         if mapping is None:
             return print('ERROR')
@@ -8051,11 +8092,10 @@ class DataMultiverse:
         vs = self.get_visualizer(universes=universes, reload=reload)
         try:
             tickers = self.get_names('selected').keys() if tickers is None else [mapping[x] for x in tickers]
-            df_prices = vs.df_prices[tickers]
         except KeyError:
             return print('ERROR: Check tickers')
-        #return vs.performance(tickers=tickers, metrics=metrics, **kwargs)
-        return performance_stats(df_prices, metrics=metrics, sort_by=sort_by, align_period=False)
+        return vs.performance(tickers=tickers, metrics=metrics, 
+                              cost=self.cost, transpose=False, **kwargs)
         
 
     def get_visualizer(self, universes=None, reload=False):
