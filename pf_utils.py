@@ -833,6 +833,7 @@ class DataManager():
         self.to_daily = to_daily
         self.days_in_year = days_in_year
         self.kwargs_universe = kwargs
+        self.visualization = None
         # update self.df_prices
         self.upload(self.file_historical, get_names=True, convert_to_daily=to_daily)
 
@@ -967,12 +968,20 @@ class DataManager():
         elif uv == 'yahoo':
             func = self._get_tickers_yahoo
         else:
-            print(f'WARNING: kospi200 set as no universe such as {uv}')
-            func = self._get_tickers_kospi200
-            #func = lambda **x: None
+            #print(f'WARNING: Set tickers when downloading universe {uv}')
+            #func = self._get_tickers_kospi200
+            def func(tickers=tickers):
+                if tickers is None or (isinstance(tickers, str) and tickers == 'selected'):
+                    if self.df_prices is None:
+                        return None
+                    tickers = self.df_prices.columns
+                elif isinstance(tickers, str):
+                    tickers = [tickers]
+                return {x:x for x in tickers}
         
         try:
-            security_names = func(tickers, **kwargs)
+            security_names = func(**kwargs)
+            security_names = self._check_tickers(security_names, tickers)
             failed = 'ERROR: Failed to get ticker names' if len(security_names) == 0 else None
         except Exception as e:
             failed = f'ERROR: Failed to get ticker names as {e}'
@@ -983,32 +992,30 @@ class DataManager():
             return security_names
             
 
-    def _get_tickers_kospi200(self, tickers=None, col_ticker='Code', col_name='Name', **kw):
+    def _get_tickers_kospi200(self, col_ticker='Code', col_name='Name', **kw):
         """
         kw: dummy for other _get_tickers_*
         """
         df = fdr.SnapDataReader(self.tickers)
-        security_names = df.set_index(col_ticker)[col_name].to_dict()
-        return self._check_tickers(security_names, tickers)
+        return df.set_index(col_ticker)[col_name].to_dict()
         
     
-    def _get_tickers_etf(self, tickers=None, col_ticker='Symbol', col_name='Name', **kw):
+    def _get_tickers_etf(self, col_ticker='Symbol', col_name='Name', **kw):
         """
         한국 ETF 전종목
         """
         df = fdr.StockListing(self.tickers) 
-        security_names = df.set_index(col_ticker)[col_name].to_dict()
-        return self._check_tickers(security_names, tickers)
+        return df.set_index(col_ticker)[col_name].to_dict()
         
 
-    def _get_tickers_krx(self, tickers=None, **kw):
+    def _get_tickers_krx(self, **kw):
         """
         self.tickers: KOSPI,KOSDAQ
         """
         security_names = dict()
         for x in [x.replace(' ', '') for x in self.tickers.split(',')]:
             security_names.update(DataManager.get_tickers_krx(x))
-        return self._check_tickers(security_names, tickers)
+        return security_names
 
 
     @staticmethod
@@ -1020,7 +1027,7 @@ class DataManager():
         return df.set_index(col_ticker)[col_name].to_dict()
 
 
-    def _get_tickers_fund(self, tickers=None, path=None, col_name='name', **kw):
+    def _get_tickers_fund(self, path=None, col_name='name', **kw):
         """
         self.fickers: file name for tickers
         """
@@ -1032,22 +1039,20 @@ class DataManager():
         fd = FundDownloader(file, path, **kwargs)
         if not fd.check_master(): # True if no duplicated
             raise Exception('See check_master')
-        security_names = fd.data_tickers[col_name].to_dict()
-        return self._check_tickers(security_names, tickers)
+        return fd.data_tickers[col_name].to_dict()
         
 
-    def _get_tickers_file(self, tickers=None, path=None, col_ticker='ticker', col_name='name', **kw):
+    def _get_tickers_file(self, path=None, col_ticker='ticker', col_name='name', **kw):
         """
         tickers: file for names of tickers
         """
         file = self.tickers # file of tickers
         path = self._check_var(path, self.path)
         df = pd.read_csv(f'{path}/{file}')
-        security_names = df.set_index(col_ticker)[col_name].to_dict()
-        return self._check_tickers(security_names, tickers)
+        return df.set_index(col_ticker)[col_name].to_dict()
 
 
-    def _get_tickers_yahoo(self, tickers=None, col_name='longName', **kw):
+    def _get_tickers_yahoo(self, col_name='longName', **kw):
         """
         tickers: subset of self.tickers or None
         """
@@ -1056,10 +1061,7 @@ class DataManager():
             print('ERROR: Set tickers for names')
             return dict()
         yft = yf.Tickers(' '.join(tkrs_uv))
-        security_names = {x:yft.tickers[x].info[col_name] for x in tkrs_uv}
-        if isinstance(tickers, str): 
-            tickers = [tickers]
-        return self._check_tickers(security_names, tickers)
+        return {x:yft.tickers[x].info[col_name] for x in tkrs_uv}
         
 
     def _check_tickers(self, security_names, tickers, msg=True):
@@ -1076,6 +1078,7 @@ class DataManager():
                 tickers = self.df_prices.columns.to_list()
                 
         if tickers is not None:
+            tickers = [tickers] if isinstance(tickers, str) else tickers
             security_names = {k:v for k,v in security_names.items() if k in tickers}
             _ = self._check_security_names(security_names)
         return security_names
@@ -1271,258 +1274,6 @@ class DataManager():
             cols = df.loc[df==days_in_year].index
         return self._convert_price_to_daily(confirm, cols)
 
-
-    def performance(self, tickers=None, metrics=None, 
-                    sort_by=None, start_date=None, end_date=None,
-                    cost=None, period_fee=3, percent_fee=True):
-        df_prices = self._get_prices(tickers=tickers, start_date=start_date, 
-                                      end_date=end_date, n_max=-1)
-        if df_prices is None:
-            return None
-
-        if cost is not None:
-            df_p = self._get_prices_after_fee(df_prices, cost=cost, 
-                                              period=period_fee, percent=percent_fee)
-            df_prices = df_prices if df_p is None else df_p
-            
-        return self._performance(df_prices, metrics=metrics, sort_by=sort_by)
-
-
-    def _performance(self, df_prices, metrics=None, sort_by=None):
-        df_stat = performance_stats(df_prices, metrics=None, align_period=False)
-        df_stat = df_stat.T
-        
-        if metrics is None:
-            metrics = df_stat.columns
-        else:
-            if isinstance(metrics, str):
-                metrics = [metrics]
-            metrics = [y for x in metrics for y in df_stat.columns if x in y]
-            df_stat = df_stat[metrics]
-        
-        if self.security_names is not None:
-            df_stat = pd.Series(self.security_names).to_frame('name').join(df_stat, how='right')
-        
-        if sort_by is not None:
-            sort_by = [x for x in metrics if sort_by in x]
-            if len(sort_by) > 0:
-                df_stat = df_stat.sort_values(sort_by[0], ascending=False)
-        return df_stat
-
-
-    def plot(self, tickers, start_date=None, end_date=None, metric='cagr', compare_fees=[True, True],
-             base=1000, cost=None, period_fee=3, percent_fee=True,
-             length=20, ratio=1,
-             figsize=(12,4), ratios=(7, 3)):
-        """
-        plot total returns of tickers and bar chart of metric
-        """
-        kw_tkrs = dict(tickers=tickers, start_date=start_date, end_date=end_date)
-        kw_fees = dict(cost=cost, period_fee=period_fee, percent_fee=percent_fee)
-        # create gridspec
-        ax1, ax2 = create_split_axes(figsize=figsize, ratios=ratios, vertical_split=False)
-        
-        # plot total returns
-        kw = dict(base=base, compare_fees=compare_fees[0], length=length, ratio=ratio)
-        ax1 = self.plot_return(ax=ax1, **kw_tkrs, **kw_fees, **kw)
-        if ax1 is None:
-            return
-        
-        # plot bar chart of metric
-        kw_tkrs.update({'start_date':mldate(ax1.get_xlim()[0])}) # update start date according to price adjustment
-        colors = [ax1.get_lines()[i].get_color() for i, _ in enumerate(tickers)]
-        kw = dict(metric=metric, colors=colors, compare_fees=compare_fees[1], length=length, ratio=ratio)
-        ax2 = self.plot_bar(ax=ax2, **kw_tkrs, **kw_fees, **kw)
-        if ax2 is not None:
-            ax2.get_legend().remove()
-            ax2.yaxis.tick_right()
-        return None
-
-
-    def plot_return(self, tickers=None, start_date=None, end_date=None,
-             base=-1, n_max=-1, 
-             cost=None, period_fee=3, percent_fee=True, compare_fees=True,
-             ax=None, figsize=(8,5), lw=1, loc='upper left', length=20, ratio=1):
-        """
-        compare tickers by plot
-        tickers: list of tickers to plot
-        base: set value for adjusting price so the starting values are identical
-        n_max: max num of tickers to plot
-        length, ratio: see legend
-        """
-        df_tickers = self._get_prices(tickers=tickers, start_date=start_date, 
-                                      end_date=end_date, base=base, n_max=n_max)
-        if df_tickers is None:
-            return None
-
-        title = 'Total returns'
-        if cost is None:
-            df_tf = None
-        else: # df_tf is None if fee of dict or series missing any ticker
-            df_tf = self._get_prices_after_fee(df_tickers, cost=cost, period=period_fee, 
-                                               percent=percent_fee)
-        if df_tf is None:
-            compare_fees = False # force to False as no fee provided for comparison
-        else:
-            if not compare_fees:
-                df_tickers = df_tf.copy()
-                df_tf = None
-                title = 'Total returns after fees'
-        
-        ax = self._plot_return(df_tickers, df_tf, ax=ax, figsize=figsize, lw=lw, loc=loc,
-                        length=length, ratio=ratio)
-            
-        if base > 0:
-            title = f'{title} (adjusted for comparison)'
-            ax.axhline(base, c='grey', lw=0.5)
-        ax.set_title(title)       
-        return ax
-    
-
-    def _plot_return(self, df_prices, df_prices_compare=None,
-              ax=None, figsize=(8,5), lw=1, loc='upper left', length=20, ratio=1):
-        """
-        df_prices: price date of selected tickers
-        df_prices_compare: additional data to compare with df_prices such as price after fees
-         whose legend assumed same as df_prices
-        length, ratio: args for xtick labels 
-        """
-        security_names = self.security_names
-        if security_names is not None:
-            # rename legend if security_names exists
-            clip = lambda x: string_shortener(x, n=length, r=ratio)
-            # add number to distinguish similar names such as those of same class fund
-            df_prices.columns = [f'{i+1}.{clip(security_names[x])}' for i,x in enumerate(df_prices.columns)]
-            if df_prices_compare is None:
-                compare_fees = False
-            else:
-                compare_fees = True
-                df_prices_compare.columns = df_prices.columns 
-        
-        if ax is None:
-            fig, ax = plt.subplots(figsize=figsize)
-        ax = df_prices.plot(ax=ax, lw=lw)
-        
-        # add plot of df_prices_compare with same color as df_prices
-        legend = ax.get_legend_handles_labels()[1] # save legend before adding return after fees
-        legend = [re.sub(r'^\d+\.\s*', '', x) for x in legend] # remove numbers added
-        if compare_fees: 
-            colors = {x: ax.get_lines()[i].get_color() for i,x in enumerate(df_prices.columns)}
-            _ = df_prices_compare.apply(lambda x: x.plot(c=colors[x.name], ls='--', lw=lw, ax=ax))
-        ax.legend(legend, loc=loc) # remove return after fees from legend
-        return ax
-
-
-    def plot_bar(self, tickers=None, start_date=None, end_date=None, metric='cagr', n_max=-1, 
-                 cost=None, period_fee=3, percent_fee=True, compare_fees=True,
-                 ax=None, figsize=(6,4), length=20, ratio=1,
-                 colors=None, alphas=[0.4, 0.8]):
-        df_tickers = self._get_prices(tickers=tickers, start_date=start_date, 
-                                      end_date=end_date, n_max=n_max)
-        if df_tickers is None:
-            return None
-
-        if cost is None:
-            df_tf = None
-        else:
-            df_tf = self._get_prices_after_fee(df_tickers, cost=cost, 
-                                               period=period_fee, percent=percent_fee)
-        label = metric.upper()
-        if df_tf is None:
-            labels = [label]
-        else:
-            if compare_fees:
-                labels = [label, f'{label} after fees']
-            else:
-                df_tickers = df_tf.copy()
-                df_tf = None
-                labels = [f'{label} after fees']
-                
-        return self._plot_bar(df_tickers, df_tf, metric=metric, labels=labels, 
-                              ax=ax, figsize=figsize, length=length, ratio=ratio,
-                              colors=colors, alphas=alphas)
-    
-    
-    def _plot_bar(self, df_prices, df_prices_compare=None, 
-                  metric='cagr', labels=['base', 'compare'], 
-                  ax=None, figsize=(6,4), length=20, ratio=1,
-                  colors=None, alphas=[0.4, 0.8]):
-        df_stat = self._performance(df_prices, metrics=None, sort_by=None)
-        try:
-            df_stat = df_stat[metric]
-            df_stat = df_stat.to_frame(labels[0]) # for bar loop
-        except KeyError:
-            return print(f'ERROR: No metric such as {metric}')
-
-        if df_prices_compare is not None:
-            df_stat_f = self._performance(df_prices_compare, metrics=None, sort_by=None)
-            df_stat_f = df_stat_f[metric].to_frame(labels[1])
-            df_stat = df_stat.join(df_stat_f)
-
-        security_names = self.security_names
-        if security_names is not None:
-            clip = lambda x: string_shortener(x, n=length, r=ratio)
-            df_stat.index = [f'{i+1}.{clip(security_names[x])}' for i,x in enumerate(df_stat.index)]
-    
-        if ax is None:
-            fig, ax = plt.subplots(figsize=figsize)
-        cols = df_stat.columns.size
-        alphas = [max(alphas)] if cols == 1 else alphas
-        x = df_stat.index.to_list()
-        _ = [ax.bar(x, df_stat.iloc[:, i], color=colors, alpha=alphas[i]) for i in range(cols)]
-        #ax.tick_params(axis='x', labelrotation=45)
-        plt.setp(ax.get_xticklabels(), rotation=45, horizontalalignment='right')
-        ax.set_title(f'{metric.upper()}')
-        legend = df_stat.columns.to_list()
-        legend = [re.sub(r'^\d+\.\s*', '', x) for x in legend] # remove numbers added
-        ax.legend(legend)
-        ax.axhline(0, c='grey', lw=0.5)
-        return ax
-
-    
-    def _get_prices(self, tickers=None, start_date=None, end_date=None, base=-1, n_max=-1):
-        """
-        return price data of tickers with date of adjustment for comparison
-        n_max: num of random tickers from universe
-        base: base value to adjust tickers
-        start_date: date to adjust if base > 0
-        """
-        df_prices = self.df_prices
-        if df_prices is None:
-            return print('ERROR')
-        else:
-            df_prices = df_prices.loc[start_date:end_date]
-        
-        if isinstance(tickers, str):
-            tickers = [tickers]
-        tickers = self._check_var(tickers, df_prices.columns.to_list())
-        if len(tickers) > n_max > 0:
-            tickers = random.sample(tickers, n_max)
-        
-        try:
-            df_tickers = df_prices[tickers]
-        except KeyError:
-            return print('ERROR: Check tickers')
-
-        dts = df_tickers.apply(lambda x: x.dropna().index.min()) # start date of each tickers
-        if base > 0: # adjust price of tickers
-            dt_adj = df_tickers.index.min()
-            dt_max = dts.max() # min start date where all tickers have data 
-            dt_adj = dt_max if dt_adj < dt_max else dt_adj
-            df_tickers = df_tickers.apply(lambda x: x / x.loc[dt_adj] * base)
-        else:
-            dt_adj = dts.min() # drop dates of all None
-        return df_tickers.loc[dt_adj:] 
-
-
-    def _get_prices_after_fee(self, df_prices, cost=None, period=3, percent=True):
-        """
-        get df_prices after cost
-        cost: dict of buy/sell commissions, fee and tax. see CostManager
-        """
-        cost = cost or dict()
-        return CostManager.get_history_with_fee(df_prices, period=period, percent=percent, **cost)
-
     
     @staticmethod
     def get_stats(df, start_date=None, end_date=None, stats=['mean', 'median', 'std'], 
@@ -1577,6 +1328,281 @@ class DataManager():
             start_date = datetime.strptime(start_date, date_format)
         
         return [x.strftime(date_format) for x in (start_date, end_date)]
+
+
+    def plot(self, tickers, reload=True, **kwargs):
+        visualization = self.get_visualizer(reload)
+        return visualization.plot(tickers, **kwargs)
+        
+
+    def performance(self, tickers=None, reload=True, **kwargs):
+        visualization = self.get_visualizer(reload)
+        return visualization.performance(tickers=tickers, **kwargs)
+        
+
+    def get_visualizer(self, reload=False):
+        if reload or (self.visualization is None):
+            self.visualization = DataVisualizer(self.df_prices, self.security_names)
+        return self.visualization
+            
+
+
+class DataVisualizer():
+    """
+    helper class for DataManager or DataMultiverse
+    """
+    def __init__(self, df_prices, security_names=None):
+        self.df_prices = df_prices
+        self.security_names = security_names
+             
+    def performance(self, tickers=None, metrics=None, 
+                    sort_by=None, start_date=None, end_date=None,
+                    cost=None, period_fee=3, percent_fee=True, transpose=True):
+        df_prices = self._get_prices(tickers=tickers, start_date=start_date, 
+                                      end_date=end_date, n_max=-1)
+        if df_prices is None:
+            return None
+
+        if cost is not None:
+            df_p = self._get_prices_after_fee(df_prices, cost=cost, 
+                                              period=period_fee, percent=percent_fee)
+            df_prices = df_prices if df_p is None else df_p
+
+        if transpose:
+            return self._performance(df_prices, metrics=metrics, sort_by=sort_by)
+        else:
+            return performance_stats(df_prices, metrics=metrics, sort_by=sort_by, align_period=False)
+
+    
+    def _performance(self, df_prices, metrics=None, sort_by=None):
+        df_stat = performance_stats(df_prices, metrics=None, align_period=False)
+        df_stat = df_stat.T
+        
+        if metrics is None:
+            metrics = df_stat.columns
+        else:
+            if isinstance(metrics, str):
+                metrics = [metrics]
+            metrics = [y for x in metrics for y in df_stat.columns if x in y]
+            df_stat = df_stat[metrics]
+        
+        if self.security_names is not None:
+            df_stat = pd.Series(self.security_names).to_frame('name').join(df_stat, how='right')
+        
+        if sort_by is not None:
+            sort_by = [x for x in metrics if sort_by in x]
+            if len(sort_by) > 0:
+                df_stat = df_stat.sort_values(sort_by[0], ascending=False)
+        return df_stat
+
+
+    def plot(self, tickers, start_date=None, end_date=None, metric='cagr', compare_fees=[True, True],
+             base=1000, cost=None, period_fee=3, percent_fee=True,
+             length=20, ratio=1, lw=0.5,
+             figsize=(12,4), ratios=(7, 3)):
+        """
+        plot total returns of tickers and bar chart of metric
+        """
+        kw_tkrs = dict(tickers=tickers, start_date=start_date, end_date=end_date)
+        kw_fees = dict(cost=cost, period_fee=period_fee, percent_fee=percent_fee)
+        # create gridspec
+        ax1, ax2 = create_split_axes(figsize=figsize, ratios=ratios, vertical_split=False)
+        
+        # plot total returns
+        kw = dict(base=base, compare_fees=compare_fees[0], length=length, ratio=ratio, lw=lw)
+        ax1 = self.plot_return(ax=ax1, **kw_tkrs, **kw_fees, **kw)
+        if ax1 is None:
+            return
+        
+        # plot bar chart of metric
+        kw_tkrs.update({'start_date':mldate(ax1.get_xlim()[0])}) # update start date according to price adjustment
+        colors = [ax1.get_lines()[i].get_color() for i, _ in enumerate(tickers)]
+        kw = dict(metric=metric, colors=colors, compare_fees=compare_fees[1], length=length, ratio=ratio)
+        ax2 = self.plot_bar(ax=ax2, **kw_tkrs, **kw_fees, **kw)
+        if ax2 is not None:
+            ax2.get_legend().remove()
+            ax2.yaxis.tick_right()
+        return None
+
+
+    def plot_return(self, tickers=None, start_date=None, end_date=None,
+             base=-1, n_max=-1, cost=None, period_fee=3, percent_fee=True, compare_fees=True,
+             **kwargs):
+        """
+        compare tickers by plot
+        tickers: list of tickers to plot
+        base: set value for adjusting price so the starting values are identical
+        n_max: max num of tickers to plot
+        """
+        df_tickers = self._get_prices(tickers=tickers, start_date=start_date, 
+                                      end_date=end_date, base=base, n_max=n_max)
+        if df_tickers is None:
+            return None
+
+        title = 'Total returns'
+        if cost is None:
+            df_tf = None
+        else: # df_tf is None if fee of dict or series missing any ticker
+            df_tf = self._get_prices_after_fee(df_tickers, cost=cost, period=period_fee, 
+                                               percent=percent_fee)
+        if df_tf is None:
+            compare_fees = False # force to False as no fee provided for comparison
+        else:
+            if not compare_fees:
+                df_tickers = df_tf.copy()
+                df_tf = None
+                title = 'Total returns after fees'
+        
+        ax = self._plot_return(df_tickers, df_tf, security_names=self.security_names, **kwargs)
+            
+        if base > 0:
+            title = f'{title} (adjusted for comparison)'
+            ax.axhline(base, c='grey', lw=0.5)
+        ax.set_title(title)       
+        return ax
+    
+
+    def _plot_return(self, df_prices, df_prices_compare=None, security_names=None,
+              ax=None, figsize=(8,5), lw=1, loc='upper left', length=20, ratio=1):
+        """
+        df_prices: price date of selected tickers
+        df_prices_compare: additional data to compare with df_prices such as price after fees
+         whose legend assumed same as df_prices
+        length, ratio: args for xtick labels 
+        """
+        if security_names is not None:
+            # rename legend if security_names exists
+            clip = lambda x: string_shortener(x, n=length, r=ratio)
+            # add number to distinguish similar names such as those of same class fund
+            df_prices.columns = [f'{i+1}.{clip(security_names[x])}' for i,x in enumerate(df_prices.columns)]
+            if df_prices_compare is None:
+                compare_fees = False
+            else:
+                compare_fees = True
+                df_prices_compare.columns = df_prices.columns 
+        
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        ax = df_prices.plot(ax=ax, lw=lw)
+        
+        # add plot of df_prices_compare with same color as df_prices
+        legend = ax.get_legend_handles_labels()[1] # save legend before adding return after fees
+        legend = [re.sub(r'^\d+\.\s*', '', x) for x in legend] # remove numbers added
+        if compare_fees: 
+            colors = {x: ax.get_lines()[i].get_color() for i,x in enumerate(df_prices.columns)}
+            _ = df_prices_compare.apply(lambda x: x.plot(c=colors[x.name], ls='--', lw=lw, ax=ax))
+        ax.legend(legend, loc=loc) # remove return after fees from legend
+        return ax
+
+
+    def plot_bar(self, tickers=None, start_date=None, end_date=None, metric='cagr', n_max=-1, 
+                 cost=None, period_fee=3, percent_fee=True, compare_fees=True,
+                 **kwargs):
+        df_tickers = self._get_prices(tickers=tickers, start_date=start_date, 
+                                      end_date=end_date, n_max=n_max)
+        if df_tickers is None:
+            return None
+
+        if cost is None:
+            df_tf = None
+        else:
+            df_tf = self._get_prices_after_fee(df_tickers, cost=cost, 
+                                               period=period_fee, percent=percent_fee)
+        label = metric.upper()
+        if df_tf is None:
+            labels = [label]
+        else:
+            if compare_fees:
+                labels = [label, f'{label} after fees']
+            else:
+                df_tickers = df_tf.copy()
+                df_tf = None
+                labels = [f'{label} after fees']
+                
+        df_stat = self._performance(df_tickers, metrics=None, sort_by=None)
+        try:
+            df_stat = df_stat[metric]
+            df_stat = df_stat.to_frame(labels[0]) # for bar loop
+        except KeyError:
+            return print(f'ERROR: No metric such as {metric}')
+
+        if df_tf is not None:
+            df_stat_f = self._performance(df_tf, metrics=None, sort_by=None)
+            df_stat_f = df_stat_f[metric].to_frame(labels[1])
+            df_stat = df_stat.join(df_stat_f)
+            
+        return self._plot_bar(df_stat, security_names=self.security_names, 
+                                      metric=metric, **kwargs)
+
+
+    def _plot_bar(self, df_stat, security_names=None, metric='cagr', 
+                   ax=None, figsize=(6,4), length=20, ratio=1,
+                   colors=None, alphas=[0.4, 0.8]):
+        if security_names is not None:
+            clip = lambda x: string_shortener(x, n=length, r=ratio)
+            df_stat.index = [f'{i+1}.{clip(security_names[x])}' for i,x in enumerate(df_stat.index)]
+    
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        cols = df_stat.columns.size
+        alphas = [max(alphas)] if cols == 1 else alphas
+        x = df_stat.index.to_list()
+        _ = [ax.bar(x, df_stat.iloc[:, i], color=colors, alpha=alphas[i]) for i in range(cols)]
+        #ax.tick_params(axis='x', labelrotation=45)
+        plt.setp(ax.get_xticklabels(), rotation=45, horizontalalignment='right')
+        ax.set_title(f'{metric.upper()}')
+        legend = df_stat.columns.to_list()
+        legend = [re.sub(r'^\d+\.\s*', '', x) for x in legend] # remove numbers added
+        ax.legend(legend)
+        ax.axhline(0, c='grey', lw=0.5)
+        return ax
+
+    
+    def _get_prices(self, tickers=None, start_date=None, end_date=None, base=-1, n_max=-1):
+        """
+        return price data of tickers with date of adjustment for comparison
+        n_max: num of random tickers from universe
+        base: base value to adjust tickers
+        start_date: date to adjust if base > 0
+        """
+        df_prices = self.df_prices
+        if df_prices is None:
+            return print('ERROR')
+        else:
+            df_prices = df_prices.loc[start_date:end_date]
+        
+        if isinstance(tickers, str):
+            tickers = [tickers]
+        tickers = tickers or df_prices.columns.to_list()
+        if len(tickers) > n_max > 0:
+            tickers = random.sample(tickers, n_max)
+        
+        try:
+            df_tickers = df_prices[tickers]
+        except KeyError:
+            return print('ERROR: Check tickers')
+
+        dts = df_tickers.apply(lambda x: x.dropna().index.min()) # start date of each tickers
+        if base > 0: # relative price in common period
+            dt_adj = df_tickers.index.min()
+            dt_max = dts.max() # min start date where all tickers have data 
+            dt_adj = dt_max if dt_adj < dt_max else dt_adj
+            df_tickers = df_tickers.apply(lambda x: x / x.loc[dt_adj] * base)
+        elif base == 0: # relative price only
+            df_tickers = df_tickers.apply(lambda x: x.dropna() / x.dropna().iloc[0])
+            dt_adj = None
+        else:
+            dt_adj = dts.min() # drop dates of all None
+        return df_tickers.loc[dt_adj:] 
+
+
+    def _get_prices_after_fee(self, df_prices, cost=None, period=3, percent=True):
+        """
+        get df_prices after cost
+        cost: dict of buy/sell commissions, fee and tax. see CostManager
+        """
+        cost = cost or dict()
+        return CostManager.get_history_with_fee(df_prices, period=period, percent=percent, **cost)
 
         
 
@@ -7218,7 +7244,8 @@ class BatchCV():
 
 class PortfolioManager():
     """
-    manage multiple portfolios 
+    Compares performance metrics across multiple portfolios, each built using a separate
+    PortfolioBuilder instance
     """
     def __init__(self, *pf_names, col_ticker='ticker', col_portfolio='portfolio', 
                  verbose=True, **kwargs):
@@ -7807,7 +7834,277 @@ class PortfolioManager():
                 df_all = df if df_all is None else pd.concat([df_all, df], axis=0) 
         print(f"WARNING: Check portfolios {', '.join(no_res)}") if len(no_res) > 0 else None
         return df_all
+
+
+
+class DataMultiverse:
+    """
+    Manages and compares data across multiple independent data universes,
+    each handled by its own DataManager instance.
+    """
+    def __init__(self, *universes):
+        """
+        universes: list of universe names or DataManager instances
+        """
+        self.multiverse = dict() # dict of universe name to instance
+        self.cost = None # cost of tickers in multiverse
+        self.pf_data = PortfolioData()
+        self.load(*universes) # load price history across universes
+        self.tickers_in_multiverse = self.map_tickers()
+
     
+    def load(self, *universes, reload=False, verbose=True, default_name='UV', **kwargs):
+        """
+        load instances of universes
+        universes: list of universe names, DataManager instances or tuple of name & instance
+        kwargs: keyword args for create_universe
+        """        
+        # split universe list to names and instances
+        uv_str, uv_inst, cnt = [], {}, 0
+        for uv in universes:
+            if isinstance(uv, str):
+                uv_str.append(uv)
+            else: # uv assumed as DataManager instance or tuple
+                if isinstance(uv, tuple) and isinstance(uv[0], str):
+                    uv_inst[uv[0]] = uv[1]
+                elif isinstance(fund, DataManager): # define name for the instance
+                    cnt += 1
+                    uv_inst[f'{default_name}{cnt}'] = uv
+                else:
+                    return print('ERROR')
+
+        # check uv names
+        if len(uv_str) > 0:
+            uv_str = self.check_universes(uv_str, loading=True)
+            if len(uv_str) == 0:
+                return None
+            
+        if reload:
+            multiverse = dict()
+        else:
+            multiverse = self.multiverse
+
+        # create uv instances from uv names
+        for name in uv_str:
+            if name in multiverse.keys():
+                print(f'{name} already exists')
+            else:
+                print(f'{name}:', end='\n' if verbose else ' ')
+                with SuppressPrint(not verbose):
+                    uv = PortfolioManager.create_universe(name, **kwargs)
+                if uv is None:
+                    print(f'WARNING: Portfolio {name} not loaded')
+                else:
+                    multiverse[name] = uv
+                print() if verbose else print('imported')
+
+        # add uv instances from input to multiverse
+        if len(uv_inst) > 0:
+            for name, uv in uv_inst.items():
+                if name in multiverse.keys():
+                    return print(f'ERROR: Duplicate universe {name}')
+                else:
+                    multiverse[name] = uv
+                    print(f'{name}: imported')
+
+        self.multiverse = multiverse
+        return None
+
+
+    def check_universes(self, universes=None, loading=False, exact=True):
+        """
+        check if universe exist 
+        universes: list of universes as name or prefix
+        loading: set to False to retrieve list of sets of name & universe instance loaded 
+        exact: set to False if universes is list of pattern to search
+        """
+        if loading:
+            uv_all = self.pf_data.universes.keys()
+        else:
+            if len(self.multiverse) == 0:
+                return print('ERROR: Load data first')
+            else:
+                uv_all = self.multiverse.keys()
+        
+        if universes is None:
+            universes = uv_all
+        else:
+            cond = lambda pattern, target: pattern == target if exact else pattern in target
+            out = [x for x in universes for y in uv_all if cond(x, y)]
+            out = set(universes)-set(out)
+            if len(out) > 0:
+                print_list(out, 'ERROR: No universe such as {}')
+                print_list(uv_all, 'Universes available: {}')
+                universes = list()
+            else:
+                universes = [y for x in universes for y in uv_all if cond(x, y)]
+        # return list of sets of name & universe instance loaded if loading=False
+        return universes if loading else {k:v for k,v in self.multiverse.items() if k in universes} 
+
+
+    def map_tickers(self, fmt="{ticker}({universe})"):
+        """
+        create mapper of tickers in universes to ones in multiverse
+        """
+        multiverse = self.check_universes(loading=False)
+        if len(multiverse) == 0:
+            return None
+
+        mapping = dict()
+        for name, uv in multiverse.items():
+            tkrs = uv.get_names(reset=False)
+            if tkrs is None:
+                continue
+            tkrs = {x: fmt.format(ticker=x, universe=name) for x in tkrs.keys()}
+            mapping = {**mapping, **tkrs}
+        return mapping
+            
+
+    def get_names(self, tickers=None, universes=None, search=None, reset=False):
+        """
+        tickers: None, a ticker, list of tickers or 'selected'
+        search: word to search in ticker names
+        universes: list of universes to search tickers
+        """
+        multiverse = self.check_universes(universes, loading=False)
+        if len(multiverse) == 0:
+            return None
+
+        # find universe for each ticker
+        if isinstance(tickers, str):
+            tickers = tickers if tickers.lower() == 'selected' else [tickers]
+        security_names = dict()
+        for name, uv in multiverse.items():
+            sname = uv.get_names(tickers, reset)
+            if sname is None:
+                continue
+            #sname = {f'{k}({name})': v for k,v in sname.items()}
+            sname = {self.tickers_in_multiverse[k]: v for k,v in sname.items()}
+            security_names = {**security_names, **sname}
+
+        # search word in name
+        if search is not None:
+            security_names = {k:v for k,v in security_names.items() if search in v}
+        return SecurityDict(security_names, names=security_names)
+        
+
+    def get_prices(self, universes=None):
+        """
+        merge price data from universes by adding universe name to column names 
+        """
+        multiverse = self.check_universes(universes, loading=False)
+        if len(multiverse) == 0:
+            return None
+
+        df_prices = None
+        for name, uv in multiverse.items():
+            df_p = uv.df_prices.copy() # use copy not to contaminate uv.df_prices
+            if df_p is None:
+                continue
+            # update column names with universe name
+            df_p.columns = [self.tickers_in_multiverse[x] for x in df_p.columns]
+            df_prices = df_p if df_prices is None else pd.concat([df_prices, df_p], axis=1)
+        return df_prices
+
+
+    def set_cost(self, cost_multiverse, path=None):
+        """
+        cost_multiverse: dict of universe name and its cost data from CostManager.get_cost
+            or cost file for all universes
+        """
+        multiverse = self.check_universes(loading=False)
+        if len(multiverse) == 0:
+            return None
+    
+        # load cost for each universe
+        if isinstance(cost_multiverse, str): # arg cost is file name
+            cost_mv = dict()
+            for name in multiverse.keys():
+                cost_mv[name] = PortfolioManager.get_cost(name, cost_multiverse, path=path)
+        else:
+            cost_mv = cost_multiverse
+    
+        if len(cost_mv) == 0:
+            return print('ERROR: No cost loaded')
+        
+        # fill zero cost for missing universe
+        loaded, failed = [], []
+        for name in multiverse.keys():
+            if name not in cost_mv.keys():
+                cost_mv[name] = {x: 0 for x in list(cost_mv.values())[0].keys()}
+                failed.append(name)
+            else:
+                loaded.append(name)
+        
+        # map ticker to multiverse
+        cost = {x: dict() for x in list(cost_mv.values())[0].keys()}
+        mapping = self.tickers_in_multiverse
+        for name, _cost in cost_mv.items():
+            cost_uv = dict()
+            cv0 = list(_cost.values())[0]
+            if isinstance(cv0, Number):
+                # retrieve tickers in universe to set cost for tickers
+                uv = self.multiverse[name]
+                tkrs = uv.get_names(reset=False)
+                for ct, cv in _cost.items():
+                    cost_uv[ct] = {mapping[x]: cv for x in tkrs}
+            elif isinstance(cv0, (dict, pd.Series)):
+                for ct, cv in _cost.items():
+                    cost_uv[ct] = {mapping[t]: c for t,c in cv.items()}
+            else:
+                return print('ERROR')
+            # add to multiverse cost
+            cost = {x: {**cost[x], **cost_uv[x]} for x in cost}
+    
+        if len(list(cost.values())[0]) > 0:
+            self.cost = cost
+            if len(loaded) > 0:
+                print(f"Cost of {', '.join(loaded)} loaded")
+            if len(failed) > 0:
+                print(f"Cost of {', '.join(failed)} set to zero")
+            return None
+        else:
+            return print('ERROR: No cost loaded')
+
+
+    def plot(self, tickers, universes=None, reload=True, **kwargs):
+        mapping = self.tickers_in_multiverse
+        if mapping is None:
+            return print('ERROR')
+        
+        vs = self.get_visualizer(universes=universes, reload=reload)
+        try:
+            tickers = self.get_names('selected').keys() if tickers is None else [mapping[x] for x in tickers]
+        except KeyError:
+            return print('ERROR: Check tickers')
+        return vs.plot(tickers, cost=self.cost, **kwargs)
+        
+
+    def performance(self, tickers=None, universes=None, reload=True, 
+                    metrics=METRICS2, **kwargs):
+        """
+        kwargs: extra args for DataVisualizer.performance
+        """
+        mapping = self.tickers_in_multiverse
+        if mapping is None:
+            return print('ERROR')
+    
+        vs = self.get_visualizer(universes=universes, reload=reload)
+        try:
+            tickers = self.get_names('selected').keys() if tickers is None else [mapping[x] for x in tickers]
+        except KeyError:
+            return print('ERROR: Check tickers')
+        return vs.performance(tickers=tickers, metrics=metrics, 
+                              cost=self.cost, transpose=False, **kwargs)
+        
+
+    def get_visualizer(self, universes=None, reload=False):
+        if reload or (self.visualization is None):
+            df_prices = self.get_prices(universes=universes)
+            security_names = self.get_names(universes=universes)
+            self.visualization = DataVisualizer(df_prices, security_names)
+        return self.visualization
+   
     
 
 class PortfolioData():
