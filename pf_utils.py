@@ -1573,6 +1573,8 @@ class DataVisualizer():
         
         if isinstance(tickers, str):
             tickers = [tickers]
+        if tickers is not None: # for tickers of list or index
+            tickers = list(set(tickers))
         tickers = tickers or df_prices.columns.to_list()
         if len(tickers) > n_max > 0:
             tickers = random.sample(tickers, n_max)
@@ -7752,15 +7754,26 @@ class PortfolioManager():
             print(f"{sr['end']}, {', '.join(p.split('_'))}, , , , 평가, , {', '.join(values)}")
 
 
-    def util_performance_by_asset(self, *pf_names, date=None, exclude_cost=False):
+    def util_performance_by_asset(self, *pf_names, date=None, category=None, exclude_cost=False):
         """
         get ticker list of assets in all portfolios
+        category: add groups of the category to tickers from self.df_category. 
+                  able to select tickers of a specific group. ex) 'strategy:TDF' 
         """
         pf_names = self.check_portfolios(*pf_names)
         if len(pf_names) == 0:
             return None
-    
+        # history of portfolio if date is 'all', asset performance if not
         df_all = self._performance_by_asset(*pf_names, date=date, exclude_cost=exclude_cost)
+
+        # add category to asset performance
+        if (date != 'all') and category is not None:
+            cats = category.split(':')
+            cat = cats[0]
+            df_all, _ = self._assign_category(df_all, cat)
+            if len(cats) > 1:
+                df_all = df_all.loc[df_all[cat] == cats[1]]
+                
         return df_all
 
 
@@ -7770,9 +7783,7 @@ class PortfolioManager():
         pf_names: list of portfolio names
         date: date for values on date, None for values on last date, 'all' for history
         """
-        df_cat = self.df_category
         col_portfolio = self.col_portfolio
-        col_ticker = self.col_ticker
         nms_v = self.names_vals
         nm_val = nms_v['value']
         nm_sell = nms_v['sell']
@@ -7784,20 +7795,10 @@ class PortfolioManager():
         # get data from each portfolio
         df_all = self._performance_by_asset(*pf_names, date=date, exclude_cost=exclude_cost)
     
-        # set custom category
-        if date != 'all':
-            # check category
+        if date != 'all': # group by category from asset performance
+            # add category
             category = category or col_portfolio
-            if category not in df_all.columns:
-                if (df_cat is not None) and category in df_cat.columns:
-                    if len(df_cat.index.names) > 1: # index of df_cat is (ticker, portfolio)
-                        df_all = (df_all.set_index(self.col_portfolio, append=True)
-                                  .join(df_cat[category]).reset_index(self.col_portfolio))
-                    else:
-                        df_all = df_all.join(df_cat[category])
-                else:
-                    print(f'WARNING: Reset category to {col_portfolio} as no {category} exists in the category')
-                    category = col_portfolio
+            df_all, category = self._assign_category(df_all, category)
             # construct result according to category
             sr_start = df_all.groupby(category)[nm_start].min().dt.strftime(format_date)
             sr_end = df_all.groupby(category)[nm_end].max().dt.strftime(format_date)
@@ -7807,7 +7808,7 @@ class PortfolioManager():
             df_prf = PortfolioBuilder.calc_profit(df_all, result='both', 
                                          col_val=nm_val, col_sell=nm_sell, col_buy=nm_buy)
             return pd.concat([df_all, df_prf], axis=1)
-        else:
+        else: # return portfolio history
             return df_all.set_index(col_portfolio, append=True).sort_index()
 
 
@@ -7834,6 +7835,30 @@ class PortfolioManager():
                 df_all = df if df_all is None else pd.concat([df_all, df], axis=0) 
         print(f"WARNING: Check portfolios {', '.join(no_res)}") if len(no_res) > 0 else None
         return df_all
+
+
+    def _assign_category(self, df_all, category):
+        """
+        Ensures the specified category column exists in `df_all` by attempting to 
+        join it from `df_cat` if missing. If unavailable, falls back to using the 
+        portfolio column as the category.
+        df_all: output of self._performance_by_asset
+        category: one of columns of self.df_category
+        """
+        df_cat = self.df_category
+        col_portfolio = self.col_portfolio
+        if category not in df_all.columns:
+            if (df_cat is not None) and category in df_cat.columns:
+                if len(df_cat.index.names) > 1: # index of df_cat is (ticker, portfolio)
+                    df_all = (df_all.set_index(col_portfolio, append=True)
+                              .join(df_cat[category]).reset_index(col_portfolio))
+                else:
+                    df_all = df_all.join(df_cat[category])
+            else:
+                print(f'WARNING: Reset category to {col_portfolio} as no {category} exists in the category')
+                category = col_portfolio
+        df_all = df_all.drop(columns=col_portfolio) if category != col_portfolio else df_all
+        return df_all, category
 
 
 
