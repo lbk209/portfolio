@@ -7732,7 +7732,7 @@ class PortfolioManager():
         cats = df_cat.columns.intersection(df_all.columns)
         if cats.size > 0:
             cats = ', '.join(cats)
-            return print(f'ERROR: Failed to import custom category. Rename column {cats}')
+            return print(f"ERROR: Failed to import custom category. Rename column '{cats}'")
         
         cats = ', '.join(df_cat.columns)
         print(f'Custom category loaded: {cats}')
@@ -7867,7 +7867,7 @@ class DataMultiverse:
             else: # uv assumed as DataManager instance or tuple
                 if isinstance(uv, tuple) and isinstance(uv[0], str):
                     uv_inst[uv[0]] = uv[1]
-                elif isinstance(fund, DataManager): # define name for the instance
+                elif isinstance(uv, DataManager): # define name for the instance
                     cnt += 1
                     uv_inst[f'{default_name}{cnt}'] = uv
                 else:
@@ -8047,10 +8047,16 @@ class DataMultiverse:
                 uv = self.multiverse[name]
                 tkrs = uv.get_names(reset=False)
                 for ct, cv in _cost.items():
-                    cost_uv[ct] = {mapping[x]: cv for x in tkrs}
+                    try:
+                        cost_uv[ct] = {mapping[x]: cv for x in tkrs}
+                    except KeyError:
+                        return print('ERROR: Missing tickers')
             elif isinstance(cv0, (dict, pd.Series)):
                 for ct, cv in _cost.items():
-                    cost_uv[ct] = {mapping[t]: c for t,c in cv.items()}
+                    try:
+                        cost_uv[ct] = {mapping[t]: c for t,c in cv.items()}
+                    except KeyError:
+                        return print('ERROR: Missing tickers')
             else:
                 return print('ERROR')
             # add to multiverse cost
