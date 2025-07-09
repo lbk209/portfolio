@@ -416,6 +416,10 @@ def save_dataframe(df, file, path='.', overwrite=False,
         
 
 def performance_stats(df_prices, metrics=METRICS, sort_by=None, align_period=True, idx_dt=['start', 'end']):
+    """
+    sort_by: one of metrics to sort by. after which you can add number to return top n
+             ex) 'cagr:5'
+    """
     if isinstance(df_prices, pd.Series):
         df_prices = df_prices.to_frame()
 
@@ -437,8 +441,13 @@ def performance_stats(df_prices, metrics=METRICS, sort_by=None, align_period=Tru
             df_stats.loc[i] = df_stats.loc[i].apply(lambda x: x.strftime('%Y-%m-%d'))
 
     if sort_by is not None:
+        sb = sort_by.split(':')
+        sort_by = sb[0]
         try:
             df_stats = df_stats.sort_values(sort_by, axis=1, ascending=False)
+            if (len(sb) > 1):
+                num = sb[1]
+                df_stats = df_stats.iloc[:, :int(num)] if num.isdigit() else df_stats
         except KeyError as e:
             print(f'WARNING: No sorting as {e}')
 
@@ -1369,6 +1378,7 @@ class DataVisualizer():
             df_prices = df_prices if df_p is None else df_p
 
         if transpose:
+            sort_by = sort_by.split(':')[0]
             return self._performance(df_prices, metrics=metrics, sort_by=sort_by)
         else:
             return performance_stats(df_prices, metrics=metrics, sort_by=sort_by, align_period=False)
@@ -3326,7 +3336,7 @@ class PortfolioBuilder():
         return df_val
 
 
-    def performance_stats(self, date=None, metrics=METRICS2, sort_by=None, exclude_cost=False):
+    def performance_stats(self, date=None, metrics=METRICS2, exclude_cost=False):
         """
         calc performance stats of a portfolio with 2 different methods
         date: str for date for fixed weights of simulated performance
@@ -3382,7 +3392,7 @@ class PortfolioBuilder():
             df_sim = df_val if df_sim is None else pd.concat([df_sim, df_val], axis=1)
     
         df_res = df_res.to_frame('Realized').join(df_sim, how='outer')
-        return performance_stats(df_res, metrics=metrics, sort_by=sort_by, align_period=False)
+        return performance_stats(df_res, metrics=metrics, align_period=False)
 
 
     def diversification_history(self, start_date=None, end_date=None, 
@@ -7569,7 +7579,7 @@ class PortfolioManager():
 
 
     def performance_stats(self, *pf_names, date=None, column='Realized',
-                          metrics=METRICS, sort_by=None, exclude_cost=False):
+                          metrics=METRICS, exclude_cost=False):
         """
         compare performance stats of portfolios with 2 different methods
         date: date for fixed weights of simulated performance
@@ -7586,7 +7596,7 @@ class PortfolioManager():
         no_res = []
         for name in pf_names:
             pf = self.portfolios[name]
-            df = pf.performance_stats(date=date, metrics=metrics, sort_by=sort_by, exclude_cost=exclude_cost)
+            df = pf.performance_stats(date=date, metrics=metrics, exclude_cost=exclude_cost)
             if df is None:
                 no_res.append(name)
             else:
