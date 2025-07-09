@@ -440,19 +440,8 @@ def performance_stats(df_prices, metrics=METRICS, sort_by=None, align_period=Tru
         if i in idx_dt:
             df_stats.loc[i] = df_stats.loc[i].apply(lambda x: x.strftime('%Y-%m-%d'))
 
-    if sort_by is not None:
-        sb = sort_by.split(':')
-        sort_by = sb[0]
-        try:
-            df_stats = df_stats.sort_values(sort_by, axis=1, ascending=False)
-            if (len(sb) > 1):
-                num = sb[1]
-                df_stats = df_stats.iloc[:, :int(num)] if num.isdigit() else df_stats
-        except KeyError as e:
-            print(f'WARNING: No sorting as {e}')
-
-    return df_stats
-
+    return sort_dataframe(df_stats, sort_by, axis=1, ascending=False)
+    
 
 def convert_to_daily(df, method='linear'):
     """
@@ -651,6 +640,46 @@ def add_suffix(s: str, existing_list: list) -> str:
                 max_suffix = max(max_suffix, int(suffix) + 1)
 
     return f"{s}{max_suffix}" if max_suffix > 0 else s
+
+
+def sort_dataframe(df: pd.DataFrame, by: str, axis: int = 1, ascending: bool = False) -> pd.DataFrame:
+    """
+    Sort a DataFrame along the specified axis based on a column/index label.
+    A suffix like ':10' or ':-5' in `by` can be used to slice the result.
+
+    Parameters:
+        df : DataFrame to sort
+        by : str, in the form 'column[:limit]' (e.g. 'score:10')
+        axis : 0 for rows, 1 for columns
+        ascending : sort order
+
+    Returns:
+        Sorted (and optionally sliced) DataFrame
+    """
+    if not isinstance(by, str):
+        return df
+
+    parts = by.split(':')
+    sort_key = parts[0].strip()
+    limit = parts[1].strip() if len(parts) > 1 else None
+
+    try:
+        # Sort
+        sorted_df = df.sort_values(sort_key, axis=axis, ascending=ascending)
+
+        # Apply limit if valid
+        if limit and re.fullmatch(r"[+-]?\d+", limit):
+            limit = int(limit)
+            slicer = slice(None, limit) if limit > 0 else slice(limit, None)
+            if axis == 0:
+                sorted_df = sorted_df.iloc[slicer, :]
+            else:
+                sorted_df = sorted_df.iloc[:, slicer]
+
+        return sorted_df
+    except KeyError:
+        print(f"WARNING: Cannot sort by '{sort_key}' (not found)")
+        return df
 
 
 class SuppressPrint:
@@ -1366,7 +1395,7 @@ class DataVisualizer():
              
     def performance(self, tickers=None, metrics=None, 
                     sort_by=None, start_date=None, end_date=None,
-                    cost=None, period_fee=3, percent_fee=True, transpose=True):
+                    cost=None, period_fee=3, percent_fee=True, transpose=False):
         df_prices = self._get_prices(tickers=tickers, start_date=start_date, 
                                       end_date=end_date, n_max=-1)
         if df_prices is None:
@@ -1378,7 +1407,6 @@ class DataVisualizer():
             df_prices = df_prices if df_p is None else df_p
 
         if transpose:
-            sort_by = sort_by.split(':')[0]
             return self._performance(df_prices, metrics=metrics, sort_by=sort_by)
         else:
             return performance_stats(df_prices, metrics=metrics, sort_by=sort_by, align_period=False)
@@ -1398,13 +1426,9 @@ class DataVisualizer():
         
         if self.security_names is not None:
             df_stat = pd.Series(self.security_names).to_frame('name').join(df_stat, how='right')
-        
-        if sort_by is not None:
-            sort_by = [x for x in metrics if sort_by in x]
-            if len(sort_by) > 0:
-                df_stat = df_stat.sort_values(sort_by[0], ascending=False)
-        return df_stat
 
+        return sort_dataframe(df_stat, sort_by, axis=0, ascending=False)
+        
 
     def plot(self, tickers, start_date=None, end_date=None, metric='cagr', compare_fees=[True, True],
              base=1000, cost=None, period_fee=3, percent_fee=True,
@@ -3336,7 +3360,7 @@ class PortfolioBuilder():
         return df_val
 
 
-    def performance_stats(self, date=None, metrics=METRICS2, exclude_cost=False):
+    def performance_stats(self, date=None, metrics=METRICS2, sort_by=None, exclude_cost=False):
         """
         calc performance stats of a portfolio with 2 different methods
         date: str for date for fixed weights of simulated performance
@@ -3392,7 +3416,7 @@ class PortfolioBuilder():
             df_sim = df_val if df_sim is None else pd.concat([df_sim, df_val], axis=1)
     
         df_res = df_res.to_frame('Realized').join(df_sim, how='outer')
-        return performance_stats(df_res, metrics=metrics, align_period=False)
+        return performance_stats(df_res, metrics=metrics, sort_by=sort_by, align_period=False)
 
 
     def diversification_history(self, start_date=None, end_date=None, 
@@ -7579,7 +7603,7 @@ class PortfolioManager():
 
 
     def performance_stats(self, *pf_names, date=None, column='Realized',
-                          metrics=METRICS, exclude_cost=False):
+                          metrics=METRICS, sort_by=None, exclude_cost=False):
         """
         compare performance stats of portfolios with 2 different methods
         date: date for fixed weights of simulated performance
@@ -7604,7 +7628,7 @@ class PortfolioManager():
                 df = df[column].rename(name)
                 df_all = df if df_all is None else pd.concat([df_all, df], axis=1) 
         print(f"WARNING: Check portfolios {', '.join(no_res)}") if len(no_res) > 0 else None
-        return df_all
+        return sort_dataframe(df_all, sort_by, axis=1, ascending=False)
 
 
     def diversification_history(self, *pf_names, start_date=None, end_date=None, 
@@ -7764,7 +7788,8 @@ class PortfolioManager():
             print(f"{sr['end']}, {', '.join(p.split('_'))}, , , , 평가, , {', '.join(values)}")
 
 
-    def util_performance_by_asset(self, *pf_names, date=None, category=None, exclude_cost=False):
+    def util_performance_by_asset(self, *pf_names, date=None, category=None, 
+                                  sort_by=None, exclude_cost=False):
         """
         get ticker list of assets in all portfolios
         category: add groups of the category to tickers from self.df_category. 
@@ -7784,7 +7809,7 @@ class PortfolioManager():
             if len(cats) > 1:
                 df_all = df_all.loc[df_all[cat] == cats[1]]
                 
-        return df_all
+        return sort_dataframe(df_all, sort_by, axis=0, ascending=False) if date != 'all' else df_all
 
 
     def _valuate(self, *pf_names, date=None, category=None, exclude_cost=False, format_date='%Y-%m-%d'):
