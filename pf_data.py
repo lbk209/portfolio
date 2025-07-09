@@ -22,10 +22,9 @@ STRATEGIES = dict(
     MMT = dict(method_select='Momentum', method_weigh='Equally', sort_ascending=False, n_tickers=5, lookback='1y', lag='1w'),
     PER = dict(method_select='F-ratio', method_weigh='Equally', sort_ascending=True, n_tickers=20, lookback='2m', lag=0),
     # 'Selected' works with additional ticker list
-    WTR = dict(method_select='Selected', method_weigh='Equally'), # freq6m
-    LIQ = dict(method_select='Selected', method_weigh='Equally'),
+    SEQ = dict(method_select='Selected', method_weigh='Equally'),
     TDF = dict(method_select='Selected', method_weigh='Equally', unit_fund=True),
-    HANA= dict(method_select='Selected', method_weigh='InvVol', lookback='2y', lag=0, unit_fund=True), # freq2y
+    HANA= dict(method_select='Selected', method_weigh='InvVol', lookback='2y', lag=0, unit_fund=True),
     SAVE= dict(method_select='Selected', method_weigh='Equally', lookback='6m', lag=0, unit_fund=True),
     FCTR= dict(method_select='Selected', method_weigh='MeanVar', lookback='1q', lag=0), # freq1q
     KRX = dict(method_select='Momentum', method_weigh='Equally', sort_ascending=False, n_tickers=5, lookback='1y', lag='1m')
@@ -36,11 +35,11 @@ TRANSACTIONS = dict(
     MMT_2407 = dict(file='pf_k200_momentum'),
     PER_2410 = dict(file='pf_k200_per'),
     PER_2505 = dict(file='pf_k200_per2'),
-    WTR_2407 = dict(file='pf_wtr_static'),
-    WTR_2412 = dict(file='pf_wtr2412_static'),
+    WTR_2407 = dict(file='pf_wtr_static'), # freq6m
+    WTR_2412 = dict(file='pf_wtr2412_static'), # freq6m
     LIQ = dict(file='pf_liq_static'),
     TDF_2406 = dict(file='pf_tdf_static'),
-    HANA_2408 = dict(file='pf_hana_static'),
+    HANA_2408 = dict(file='pf_hana_static'),  # freq2y
     SAVE_2503 = dict(file='pf_save_static'),
     FISA_2504 = dict(file='pf_fisa_static'),
     FCTR= dict(file='pf_fctr_static'),
@@ -54,9 +53,9 @@ PORTFOLIOS = {
     'MMT_2407': {'strategy': 'MMT', 'universe': 'UV_K200'},
     'PER_2410': {'strategy': 'PER', 'universe': 'UV_K200'},
     'PER_2505': {'strategy': 'PER', 'universe': 'UV_K200'},
-    'WTR_2407': {'strategy': 'WTR', 'universe': 'UV_WTR'}, # modified all weather
-    'WTR_2412': {'strategy': 'WTR', 'universe': 'UV_WTR'},
-    'LIQ': {'strategy': 'LIQ', 'universe': 'UV_LIQ'},
+    'WTR_2407': {'strategy': 'SEQ', 'universe': 'UV_WTR'}, # modified all weather
+    'WTR_2412': {'strategy': 'SEQ', 'universe': 'UV_WTR'},
+    'LIQ': {'strategy': 'SEQ', 'universe': 'UV_LIQ'},
     'TDF_2406': {'strategy': 'TDF', 'universe': 'UV_FUND'},
     'HANA_2408': {'strategy': 'HANA', 'universe': 'UV_FUND'},
     'SAVE_2503': {'strategy': 'SAVE', 'universe': 'UV_FUND'},
