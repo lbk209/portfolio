@@ -851,6 +851,7 @@ class TimeTracker:
 
 class DataManager():
     def __init__(self, file=None, path='.', 
+                 file_info=(r"_(\d{6})(?=\.\w+$)", '%y%m%d'),
                  universe='kospi200', tickers='KRX/INDEX/STOCK/1028', 
                  to_daily=False, days_in_year=12, **kwargs):
         """
@@ -863,6 +864,7 @@ class DataManager():
         """
         file = set_filename(file, 'csv') 
         self.file_historical = get_file_latest(file, path) # latest file
+        self.file_info = file_info # rule for naming file and its date format
         self.path = path
         self.universe = universe
         self.tickers = tickers
@@ -898,7 +900,7 @@ class DataManager():
 
     @print_runtime
     def download(self, start_date=None, end_date=None, n_years=3, tickers=None,
-                 save=True, overwrite=False, close_today=False, append=False,
+                 save=True, overwrite=False, close_today=False, append=False, cleanup=False,
                  date_format='%Y-%m-%d', **kwargs_download):
         """
         download df_prices by using FinanceDataReader
@@ -947,30 +949,105 @@ class DataManager():
         self.df_prices = df_prices
         self.security_names = security_names
         if save:
-            if not self.save(overwrite=overwrite):
+            if not self.save(overwrite=overwrite, cleanup=cleanup):
                 return None
         # convert to daily after saving original monthly
         self.convert_to_daily(True, self.days_in_year) if self.to_daily else None
         return print('df_prices updated')
 
     
-    def save(self, file=None, path=None, date=None, overwrite=False, date_format='%y%m%d'):
+    def save(self, file=None, path=None, date=None, overwrite=False, 
+             cleanup=False, **kwargs):
+        """
+        kwargs: input for self.delete
+        """
         file = self._check_var(file, self.file_historical)
         path = self._check_var(path, self.path)
         df_prices = self.df_prices
         if (file is None) or (df_prices is None):
             return print('ERROR: check file or df_prices')
-
+        
         if date is None:
             #date = datetime.now()
             date = df_prices.index.max()
         if not isinstance(date, str):
+            date_format = self.file_info[1]
             date = date.strftime(date_format)
 
-        file = get_filename(file, f'_{date}', r"_\d+(?=\.\w+$)")
-        return save_dataframe(df_prices, file, path, overwrite=overwrite,
+        pattern = self.file_info[0]
+        file = get_filename(file, f'_{date}', pattern)
+        _ = save_dataframe(df_prices, file, path, overwrite=overwrite,
                                msg_succeed=f'{file} saved',
                                msg_fail=f'ERROR: failed to save as {file} exists')
+        if cleanup:
+            _ = self.delete(**kwargs)
+        return None
+
+
+    def delete(self, file=None, path=None, n_retention=5, backup_path=None):
+        """
+        Delete older files in the `path`, retaining only the most recent `n_retention` files 
+        dated before the given `file`.
+        """
+        file = self._check_var(file, self.file_historical)
+        path = self._check_var(path, self.path)
+        if file is None:
+            return print('ERROR: check file or path')
+        else:
+            pattern, date_format = self.file_info
+            return DataManager.cleanup_files(file, path, n_retention=n_retention, backup_path=None,
+                      date_format=date_format, pattern=pattern)
+
+
+    @staticmethod
+    def cleanup_files(file, path='.', n_retention=5, backup_path=None,
+                      date_format='%y%m%d', pattern = r"_(\d{6})(?=\.\w+$)"):
+        """
+        Delete older files in the `path`, retaining only the most recent `n_retention` files 
+        dated before the given `file`.
+        """
+        # get files to delete
+        match = re.search(pattern, file)
+        if match:
+            i_base = match.start()
+            file_base = file[:i_base]
+            files = get_file_list(file_base, path)
+            if isinstance(files, list): # check length of base
+                files = [x for x in files if re.search(pattern, x).start() == i_base]
+            else:
+                return print('WARNING: No file to delete')
+        else:
+            return print('WARNING: No file to delete')
+    
+        # remove files to keep from the files to delete
+        if len(files) > 0 and n_retention > 0:
+            files_del = sorted(files)[:-n_retention]
+    
+        n_del = len(files_del)
+        if n_del == 0:
+            return None
+    
+        # delete or backup
+        if backup_path is None: # delete files
+            try:
+                _ = [os.remove(f'{path}/{x}') for x in files_del]
+                print(f'{n_del} files before {files[-n_retention]} removed')
+            except Exception as e:
+                return print(f'ERROR: {e}')
+        else: # backup files
+            backup_path = os.path.join(path, backup_path)
+            if not os.path.exists(backup_path):
+                os.makedirs(backup_path)
+            for f in files_del:
+                src = os.path.join(path, f)
+                dst = os.path.join(backup_path, f)
+                try:
+                    shutil.move(src, dst)
+                except Exception as e:
+                    return print(f'ERROR: {e}')
+            else:
+                print(f'{n_del} files before {files[-n_retention]} moved to {backup_path}')
+        return None
 
     
     def _check_var(self, var_arg, var_self):
