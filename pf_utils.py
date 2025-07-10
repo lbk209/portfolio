@@ -995,7 +995,7 @@ class DataManager():
             return print('ERROR: check file or path')
         else:
             pattern, date_format = self.file_info
-            return DataManager.cleanup_files(file, path, n_retention=n_retention, backup_path=None,
+            return DataManager.cleanup_files(file, path, n_retention=n_retention, backup_path=backup_path,
                       date_format=date_format, pattern=pattern)
 
 
