@@ -7881,9 +7881,13 @@ class PortfolioManager():
             return print(f'ERROR: Duplicate {x} in the category')
         
         # check missing groups of a category for assets in pfs
-        if df_all.index.difference(df_cat.index).size > 0:
+        tkrs = df_all.index.difference(df_cat.index)
+        n = tkrs.size
+        if n > 0:
             x = ', '.join(df_cat.index.names)
-            return print(f'ERROR: Check category as missing {x}')
+            y = ', '.join(tkrs)
+            y += ' ...' if n > 5 else ''
+            return print(f'ERROR: Check category as missing {x} {y}')
     
         # check duplicate category
         cats = df_cat.columns.intersection(df_all.columns)
