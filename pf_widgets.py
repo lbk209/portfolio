@@ -7,15 +7,23 @@ def on_toggle(change):
         w_save.description = 'Don\'t Save'
 
 
-def WidgetCheckbox(*labels):
+def WidgetCheckbox(*labels, as_accessor=False):
     """
     Create a VBox of checkboxes labeled by *labels.
+
+    Args:
+        *labels (str): Checkbox labels.
+        as_accessor (bool): If True, return a ValueAccessor instance wrapping the VBox.
+
+    Returns:
+        VBox or ValueAccessor: VBox of checkboxes, or ValueAccessor if as_accessor=True.
     """
-    return VBox([
+    vbox = VBox([
         Checkbox(value=False, description=label, disabled=False, indent=False)
         for label in labels
     ])
-
+    return ValueAccessor(vbox) if as_accessor else vbox
+    
 
 class ValueAccessor:
     """
@@ -101,8 +109,7 @@ w_save = ToggleButton(
 )
 w_save.observe(on_toggle, names='value')
 
-WidgetUniverse = WidgetCheckbox('Download', 'Closed', 'Overwrite', 'Cleanup')
-WidgetUniverse = ValueAccessor(WidgetUniverse)
+WidgetUniverse = WidgetCheckbox('Download', 'Closed', 'Overwrite', 'Cleanup', as_accessor=True)
 
 WidgetTransaction = VBox([w_date, w_cap, w_save])
 WidgetTransaction = ValueAccessor(WidgetTransaction)
