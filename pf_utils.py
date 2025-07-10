@@ -7881,9 +7881,13 @@ class PortfolioManager():
             return print(f'ERROR: Duplicate {x} in the category')
         
         # check missing groups of a category for assets in pfs
-        if df_all.index.difference(df_cat.index).size > 0:
+        tkrs = df_all.index.difference(df_cat.index)
+        n = tkrs.size
+        if n > 0:
             x = ', '.join(df_cat.index.names)
-            return print(f'ERROR: Check category as missing {x}')
+            y = ', '.join(tkrs)
+            y += ' ...' if n > 5 else ''
+            return print(f'ERROR: Check category as missing {x} {y}')
     
         # check duplicate category
         cats = df_cat.columns.intersection(df_all.columns)
@@ -8169,7 +8173,7 @@ class DataMultiverse:
         return SecurityDict(security_names, names=security_names)
         
 
-    def get_prices(self, universes=None):
+    def get_prices(self, tickers=None, universes=None):
         """
         merge price data from universes by adding universe name to column names 
         """
@@ -8185,6 +8189,15 @@ class DataMultiverse:
             # update column names with universe name
             df_p.columns = [self.tickers_in_multiverse[x] for x in df_p.columns]
             df_prices = df_p if df_prices is None else pd.concat([df_prices, df_p], axis=1)
+
+        # check given tickers with price data
+        if tickers is not None:
+            tkrs = self.get_names(tickers=tickers, universes=universes).keys()
+            tkrs = [x for x in tkrs if x not in df_prices.columns]
+            if len(tkrs) > 0:
+                print('Check tickers missing in price data')
+                return [x for x in tickers if self.tickers_in_multiverse[x] in tkrs]
+                
         return df_prices
 
 
