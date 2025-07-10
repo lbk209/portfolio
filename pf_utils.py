@@ -18,7 +18,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import xarray as xr
 import asyncio, nest_asyncio
-import math
+import math, shutil
 
 from datetime import datetime, timedelta
 from datetime import date as datetime_date
@@ -851,7 +851,7 @@ class TimeTracker:
 
 class DataManager():
     def __init__(self, file=None, path='.', 
-                 file_info=(r"_(\d{6})(?=\.\w+$)", '%y%m%d'),
+                 file_info=(r"_(\d{6})(?=\.\w+$)", '%y%m%d'), # pattern & format for file
                  universe='kospi200', tickers='KRX/INDEX/STOCK/1028', 
                  to_daily=False, days_in_year=12, **kwargs):
         """
@@ -900,7 +900,8 @@ class DataManager():
 
     @print_runtime
     def download(self, start_date=None, end_date=None, n_years=3, tickers=None,
-                 save=True, overwrite=False, close_today=False, append=False, cleanup=False,
+                 save=True, overwrite=False, close_today=False, append=False, 
+                 cleanup=False, n_retention=5, backup_path=None,
                  date_format='%Y-%m-%d', **kwargs_download):
         """
         download df_prices by using FinanceDataReader
@@ -908,6 +909,7 @@ class DataManager():
         tickers: None for all in new universe, 'selected' for all in df_prices, 
                  or list of tickers in new universe
         append: set to True to just donwload new tickers to update existing price data
+        cleanup: set to True to delete older files
         kwargs_download: args for krx. ex) interval=5, pause_duration=1, msg=False
         """
         df_prices = self.df_prices
@@ -949,24 +951,24 @@ class DataManager():
         self.df_prices = df_prices
         self.security_names = security_names
         if save:
-            if not self.save(overwrite=overwrite, cleanup=cleanup):
+            if not self.save(overwrite=overwrite):
                 return None
+            else: # delete older files after saving new
+                if cleanup:
+                    self.cleanup(n_retention=n_retention, backup_path=backup_path, dry_run=False)
         # convert to daily after saving original monthly
         self.convert_to_daily(True, self.days_in_year) if self.to_daily else None
-        return print('df_prices updated')
+        return None
 
     
-    def save(self, file=None, path=None, date=None, overwrite=False, 
-             cleanup=False, **kwargs):
-        """
-        kwargs: input for self.delete
-        """
+    def save(self, file=None, path=None, date=None, overwrite=False):
         file = self._check_var(file, self.file_historical)
         path = self._check_var(path, self.path)
         df_prices = self.df_prices
         if (file is None) or (df_prices is None):
-            return print('ERROR: check file or df_prices')
-        
+            print('ERROR: check file or df_prices')
+            return False
+            
         if date is None:
             #date = datetime.now()
             date = df_prices.index.max()
@@ -976,62 +978,69 @@ class DataManager():
 
         pattern = self.file_info[0]
         file = get_filename(file, f'_{date}', pattern)
-        _ = save_dataframe(df_prices, file, path, overwrite=overwrite,
-                               msg_succeed=f'{file} saved',
-                               msg_fail=f'ERROR: failed to save as {file} exists')
-        if cleanup:
-            _ = self.delete(**kwargs)
-        return None
+        kw = dict(overwrite=overwrite, msg_succeed=f'{file} saved',
+                  msg_fail=f'ERROR: failed to save as {file} exists')
+        return save_dataframe(df_prices, file, path, **kw)
+        
 
-
-    def delete(self, file=None, path=None, n_retention=5, backup_path=None):
+    def cleanup(self, file=None, path=None, n_retention=5, backup_path=None, dry_run=True):
         """
-        Delete older files in the `path`, retaining only the most recent `n_retention` files 
-        dated before the given `file`.
+        Delete older data files
         """
         file = self._check_var(file, self.file_historical)
         path = self._check_var(path, self.path)
         if file is None:
             return print('ERROR: check file or path')
         else:
-            pattern, date_format = self.file_info
-            return DataManager.cleanup_files(file, path, n_retention=n_retention, backup_path=backup_path,
-                      date_format=date_format, pattern=pattern)
+            return DataManager.cleanup_files(file, path, n_retention=n_retention, backup_path=backup_path, 
+                                             dry_run=dry_run, pattern=self.file_info[0])
 
 
     @staticmethod
-    def cleanup_files(file, path='.', n_retention=5, backup_path=None,
-                      date_format='%y%m%d', pattern = r"_(\d{6})(?=\.\w+$)"):
+    def cleanup_files(file, path='.', n_retention=5, backup_path=None, dry_run=False,
+                      pattern = r"_(\d{6})(?=\.\w+$)"):
         """
-        Delete older files in the `path`, retaining only the most recent `n_retention` files 
-        dated before the given `file`.
+        Removes older files in the given path that share the same base name as `file`,
+        matching the specified pattern. Files are sorted by name in ascending order, and
+        only the last `n_retention` files (including `file` itself) are kept. If `backup_path` 
+        is set, the older files are moved there instead of being deleted.
+        dry_run: set to True to display the files that would be deleted without performing any action.
         """
         # get files to delete
         match = re.search(pattern, file)
         if match:
             i_base = match.start()
             file_base = file[:i_base]
-            files = get_file_list(file_base, path)
-            if isinstance(files, list): # check length of base
-                files = [x for x in files if re.search(pattern, x).start() == i_base]
-            else:
-                return print('WARNING: No file to delete')
+        else: # file assumed as base
+            i_base = len(file)
+            file_base = file
+        files = get_file_list(file_base, path)
+        if isinstance(files, list): # check length of base
+            files = [x for x in files if re.search(pattern, x).start() == i_base]
         else:
             return print('WARNING: No file to delete')
-    
+        
         # remove files to keep from the files to delete
         if len(files) > 0 and n_retention > 0:
             files_del = sorted(files)[:-n_retention]
+        else:
+            return print('ERROR')
     
         n_del = len(files_del)
         if n_del == 0:
-            return None
+            return print('WARNING: No file to delete')
+            
+        action = "deleted" if backup_path is None else f"moved to '{backup_path}'"
+        if dry_run:
+            return print(f"{n_del} files before '{files[-n_retention]}' will be {action}")
+        else:
+            summary = f"{n_del} files before '{files[-n_retention]}' {action}"
     
         # delete or backup
         if backup_path is None: # delete files
             try:
                 _ = [os.remove(f'{path}/{x}') for x in files_del]
-                print(f'{n_del} files before {files[-n_retention]} removed')
+                print(summary)
             except Exception as e:
                 return print(f'ERROR: {e}')
         else: # backup files
@@ -1046,7 +1055,7 @@ class DataManager():
                 except Exception as e:
                     return print(f'ERROR: {e}')
             else:
-                print(f'{n_del} files before {files[-n_retention]} moved to {backup_path}')
+                print(summary)
         return None
 
     
@@ -2617,7 +2626,7 @@ class PortfolioBuilder():
                  df_additional=None, security_names=None, unit_fund=False,
                  cols_record = {'date':'date', 'tkr':'ticker', 'name':'name', 'rat':'ratio',
                                 'trs':'transaction', 'net':'net', 'wgt':'weight', 'dttr':'date*', 'prc':'price'},
-                 date_format='%Y-%m-%d', cost=None
+                 date_format='%Y-%m-%d', cost=None, file_info=(r"_(\d{6})(?=\.\w+$)", '%y%m%d'),
                 ):
         """
         file: file of transaction history. 
@@ -2636,6 +2645,7 @@ class PortfolioBuilder():
         file = self._retrieve_transaction_file(file, path)
         self.file = file
         self.path = path
+        self.file_info = file_info # data for save or cleanup transaction files
         
         self.method_select = method_select
         self.sort_ascending = sort_ascending
@@ -3140,7 +3150,8 @@ class PortfolioBuilder():
 
 
     def transaction_pipeline(self, date=None, capital=10000000, 
-                             save=False, nshares=False, date_actual=None):
+                             save=False, nshares=False, date_actual=None,
+                             cleanup=False, n_retention=5, backup_path='del'):
         """
         nshares: set to True if saving last transaction as num of shares for the convenience of trading
         capital: int, float if adding capital. 
@@ -3192,6 +3203,8 @@ class PortfolioBuilder():
                     col_rat = self.cols_record['rat']
                     df_rec.loc[date_lt, col_rat] = None
                 self.save_transaction(df_rec)
+                if cleanup: # delete older files after saving new
+                    self.cleanup(n_retention=n_retention, backup_path=backup_path, dry_run=False)
             else:
                 print('Set save=True to save transaction record')
         else:
@@ -3623,11 +3636,25 @@ class PortfolioBuilder():
         df_rec: all transaction record w/ tickers of halt
         """
         file, path = self.file, self.path
-        self.file = self._save_transaction(df_rec, file, path)
+        kw = dict(zip(['pattern', 'date_format'], self.file_info))
+        self.file = self._save_transaction(df_rec, file, path, **kw)
         if self.file is not None:
             self.record = self.import_record(df_rec, return_on_fail=True)
             self.record_halt = None if self.tradinghalts is None else self.tradinghalts.record_halt
         return df_rec
+
+
+    def cleanup(self, file=None, path=None, n_retention=5, backup_path='del', dry_run=True):
+        """
+        Delete older transaction files
+        """
+        file = self._check_var(file, self.file)
+        path = self._check_var(path, self.path)
+        if file is None:
+            return print('ERROR: check file or path')
+        else:
+            return DataManager.cleanup_files(file, path, n_retention=n_retention, backup_path=backup_path, 
+                                             dry_run=dry_run, pattern=self.file_info[0])
         
 
     def update_record(self, security_names=None, save=True, update_var=True):
@@ -4436,15 +4463,15 @@ class PortfolioBuilder():
         return df_rec
 
 
-    def _save_transaction(self, df_rec, file, path, pattern=r"_\d+(?=\.\w+$)"):
+    def _save_transaction(self, df_rec, file, path, pattern=r"_\d+(?=\.\w+$)", date_format='%y%m%d'):
         """
         save df_rec and return file name
         """
         # add date to file name
         dt = df_rec.index.get_level_values(0).max()
-        dt = f"_{dt.strftime('%y%m%d')}"
+        dt = f"_{dt.strftime(date_format)}"
 
-        file = get_filename(file, dt, r"_\d+(?=\.\w+$)")
+        file = get_filename(file, dt, pattern)
         _ = save_dataframe(df_rec, file, path, 
                            msg_succeed=f'All transactions saved to {file}',
                            msg_fail=f'ERROR: failed to save as {file} exists')
