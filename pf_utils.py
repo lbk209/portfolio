@@ -951,11 +951,11 @@ class DataManager():
         self.df_prices = df_prices
         self.security_names = security_names
         if save:
-            if not self.save(overwrite=overwrite):
-                return None
-            else: # delete older files after saving new
+            if self.save(overwrite=overwrite):
                 if cleanup:
                     self.cleanup(n_retention=n_retention, backup_path=backup_path, dry_run=False)
+            else:
+                return None
         # convert to daily after saving original monthly
         self.convert_to_daily(True, self.days_in_year) if self.to_daily else None
         return None
@@ -1016,7 +1016,8 @@ class DataManager():
             file_base = file
         files = get_file_list(file_base, path)
         if isinstance(files, list): # check length of base
-            files = [x for x in files if re.search(pattern, x).start() == i_base]
+            files = [x for x in files if (m := re.search(pattern, x)) and m.start() == i_base]
+            #files = [x for x in files if re.search(pattern, x).start() == i_base]
         else:
             return print('WARNING: No file to delete')
         
@@ -6776,12 +6777,14 @@ class BayesianEstimator():
 
 class FinancialRatios():
     def __init__(self, file, path='.', date_format='%Y-%m-%d',
+                 file_info=(r"_(\d{6})(?=\.\w+$)", '%y%m%d'), # pattern & format for file
                  cols_index={'date':'date', 'ticker':'ticker'},
                  ratios={'BPS':False, 'PER':True, 'PBR':True, 
                          'EPS':False, 'DIV':False, 'DPS':False}):
         file = set_filename(file, 'csv') 
         self.file = get_file_latest(file, path) # latest file
         self.path = path
+        self.file_info = file_info
         self.date_format = date_format
         self.ratios = ratios # ratios and its ascending order
         self.cols_index = cols_index
@@ -6810,6 +6813,7 @@ class FinancialRatios():
 
     def download(self, tickers, start_date, end_date=None, 
                  freq='daily', close_today=False, save=True,
+                 cleanup=False, n_retention=5, backup_path=None,
                  # args for TimeTracker.pause
                  interval=50, pause_duration=2, msg=False):
         """
@@ -6841,24 +6845,37 @@ class FinancialRatios():
         self._print_info(df_ratios, str_sfx='downloaded')
         self.df_ratios = df_ratios
         if save:
-            self.save(self.file, self.path)
+            if self.save(self.file, self.path) and cleanup:
+                self.cleanup(n_retention=n_retention, backup_path=backup_path, dry_run=False)
+        return None
 
     
-    def save(self, file=None, path=None, date_format='%y%m%d'):
-        """
-        date_format: date format for file name
-        """
+    def save(self, file=None, path=None):
         file = self._check_var(file, self.file)
         path = self._check_var(path, self.path)
         df_ratios = self.df_ratios
         if (file is None) or (df_ratios is None):
-            return print('ERROR: check file or df_ratios')
+            print('ERROR: check file or df_ratios')
+            return False
 
+        pattern, date_format = self.file_info
         date = df_ratios.index.get_level_values(1).max().strftime(date_format)
-        file = get_filename(file, f'_{date}', r"_\d+(?=\.\w+$)")
-        _ = save_dataframe(df_ratios, file, path, msg_succeed=f'{file} saved',
+        file = get_filename(file, f'_{date}', pattern)
+        return save_dataframe(df_ratios, file, path, msg_succeed=f'{file} saved',
                            msg_fail=f'ERROR: failed to save as {file} exists')
-        return None
+
+
+    def cleanup(self, file=None, path=None, n_retention=5, backup_path=None, dry_run=True):
+        """
+        Delete older data files
+        """
+        file = self._check_var(file, self.file)
+        path = self._check_var(path, self.path)
+        if file is None:
+            return print('ERROR: check file or path')
+        else:
+            return DataManager.cleanup_files(file, path, n_retention=n_retention, backup_path=backup_path, 
+                                             dry_run=dry_run, pattern=self.file_info[0])
 
 
     def get_ratios(self, date=None, metrics=None):
