@@ -5,29 +5,77 @@ def on_toggle(change):
         w_save.description = 'Save'
     else:
         w_save.description = 'Don\'t Save'
+
+
+def WidgetCheckbox(*labels, as_accessor=False):
+    """
+    Create a VBox of checkboxes labeled by *labels.
+
+    Args:
+        *labels (str): Checkbox labels.
+        as_accessor (bool): If True, return a ValueAccessor instance wrapping the VBox.
+
+    Returns:
+        VBox or ValueAccessor: VBox of checkboxes, or ValueAccessor if as_accessor=True.
+    """
+    vbox = VBox([
+        Checkbox(value=False, description=label, disabled=False, indent=False)
+        for label in labels
+    ])
+    return ValueAccessor(vbox) if as_accessor else vbox
+    
+
+class ValueAccessor:
+    """
+    Helper class to access the .value property of widgets (like Checkbox or DatePicker)
+    inside a container widget (e.g., VBox), using either index or label.
+
+    Args:
+        container (ipywidgets.Box): A container widget (like VBox or HBox) with children
+                                    that have 'description' and 'value' attributes.
+
+    Methods:
+        __getitem__(key): Access widget value by index (int) or label (str).
+        as_dict(): Return a dictionary of {description: value} for all child widgets.
+
+    Raises:
+        KeyError: If no widget matches the given label.
+        TypeError: If key is not int or str.
+
+    Example:
+        va = ValueAccessor(vbox)
+        va[0]               # Value of the first widget
+        va['Option A']      # Value of the widget with description 'Option A'
+        va.as_dict()        # All values in dict form
+    """
+    def __init__(self, container):
+        self._container = container
+        self._children = container.children
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._children[key].value
+        elif isinstance(key, str):
+            for widget in self._children:
+                if hasattr(widget, 'description') and widget.description == key:
+                    return widget.value
+            raise KeyError(f"No widget with description '{key}'")
+        else:
+            raise TypeError("Key must be int or str")
+
+    def as_dict(self):
+        return {
+            widget.description: widget.value
+            for widget in self._children
+            if hasattr(widget, 'description')
+        }
+    
+    def _ipython_display_(self):
+        from IPython.display import display
+        display(self._container)
+
         
 item_layout = Layout(width='200px')
-
-w_download = Checkbox(
-    value=False,
-    description='Download',
-    disabled=False,
-    indent=False
-)
-
-w_close = Checkbox(
-    value=False,
-    description='Closed',
-    disabled=False,
-    indent=False
-)
-
-w_overwrite = Checkbox(
-    value=False,
-    description='Overwrite',
-    disabled=False,
-    indent=False
-)
 
 w_date = DatePicker(
     #description='Date',
@@ -61,8 +109,7 @@ w_save = ToggleButton(
 )
 w_save.observe(on_toggle, names='value')
 
-WidgetUniverse = VBox([w_download, w_close, w_overwrite])
-WidgetTransaction = VBox([w_date, w_cap, w_save])
+WidgetUniverse = WidgetCheckbox('Download', 'Closed', 'Overwrite', 'Cleanup', as_accessor=True)
 
-WidgetUniverse.values = lambda i: WidgetUniverse.children[i].value
-WidgetTransaction.values = lambda i: WidgetTransaction.children[i].value
+WidgetTransaction = VBox([w_date, w_cap, w_save])
+WidgetTransaction = ValueAccessor(WidgetTransaction)
