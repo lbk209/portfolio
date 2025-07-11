@@ -5021,7 +5021,7 @@ class TradingHalts():
 
             if len(buy) > 0: # add new assets
                 index = pd.MultiIndex.from_product([[date], buy.keys()], names=[col_date, col_tkr])
-                kw = {col_rat:1, col_dttr:date_actual}
+                kw = {col_rat:1, col_dttr:date_actual} # add data for new tickers
                 df_buy = (pd.DataFrame([buy, buy], index=[col_trs, col_net]).T
                           .set_index(index).assign(**kw))
                 record = pd.concat([record, df_buy])
@@ -5039,11 +5039,11 @@ class TradingHalts():
                 sell = {x: record.loc[idx[date, x], col_net] for x in sell}
             else: # assuming sell is dict
                 print_reminder('sell')
-            index = pd.MultiIndex.from_product([[date], sell.keys()], names=[col_date, col_tkr])
-            kw = {col_net:0, col_rat:1, col_dttr:date_actual}
-            df_sell = (pd.DataFrame(sell, index=[col_trs]).mul(-1).T
-                       .set_index(index).assign(**kw))
-            record.update(df_sell, overwrite=True)
+
+            # update transaction & net field of selling tikers
+            sr_sell = pd.Series(sell).rename_axis(col_tkr)
+            for x in [col_trs, col_net]:
+                record.loc[idx[date, sr_sell.index], x] -= sr_sell
 
         # update net of resumed if net given in resume dict
         if resume is not None: # resume is dict
