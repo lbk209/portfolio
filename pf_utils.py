@@ -7723,8 +7723,8 @@ class PortfolioManager():
             return df_val.map(format_price, digits=0) if int_to_str else df_val
 
 
-    def performance_stats(self, *pf_names, date=None, column='Realized',
-                          metrics=METRICS, sort_by=None, exclude_cost=False):
+    def performance_stats(self, *pf_names, date=None, simulation=False,
+                          metrics=METRICS2, sort_by=None, exclude_cost=False):
         """
         compare performance stats of portfolios with 2 different methods
         date: date for fixed weights of simulated performance
@@ -7746,9 +7746,15 @@ class PortfolioManager():
                 no_res.append(name)
             else:
                 # add portfolio name
-                df = df[column].rename(name)
+                if simulation:
+                    df = df.iloc[:, -1].rename(name)
+                    msg = 'Simulated performance using the most recent transaction weights'
+                else: # actual performance
+                    df = df.iloc[:, 0].rename(name) 
+                    msg = 'Actual performance'
                 df_all = df if df_all is None else pd.concat([df_all, df], axis=1) 
         print(f"WARNING: Check portfolios {', '.join(no_res)}") if len(no_res) > 0 else None
+        print(f'Returning {msg}:')
         return sort_dataframe(df_all, sort_by, axis=1, ascending=False)
 
 
