@@ -4949,7 +4949,7 @@ class TradingHalts():
         col_rat = cols_record['rat']
         col_dttr = cols_record['dttr']
         idx = pd.IndexSlice
-        print_reminder = lambda x: print(f'REMINDER: For the {x} price, use the total amount, not the unit price.')
+        print_reminder = lambda x: print(f'Reminder: Use the total {x} amount based on the closing price, not the per-unit price.')
     
         # set transaction date
         date = pd.to_datetime(date)
@@ -5003,7 +5003,7 @@ class TradingHalts():
         record = pd.concat([record, record_date]).sort_index()
     
         if buy is not None:
-            print_reminder('buy')
+            print_reminder('purchase')
             # check if assets to buy in halted
             if record_halt is not None:
                 tkr = record_halt.loc[date_lt].index.map(self.toggle_prefix).intersection(buy.keys())
@@ -5038,7 +5038,7 @@ class TradingHalts():
                 # get sell price from net if not spec after the size check
                 sell = {x: record.loc[idx[date, x], col_net] for x in sell}
             else: # assuming sell is dict
-                print_reminder('sell')
+                print_reminder('sale')
 
             # update transaction & net field of selling tikers
             sr_sell = pd.Series(sell).rename_axis(col_tkr)
