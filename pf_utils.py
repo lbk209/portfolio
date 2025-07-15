@@ -4454,7 +4454,7 @@ class PortfolioBuilder():
             return None
         # fill ticker less than 6 digits with zeros
         df_rec = (df_rec.reset_index(level=col_tkr)
-                        .assign(**{col_tkr: lambda x: x.ticker.str.zfill(6)})
+                        .assign(**{col_tkr: lambda x: x[col_tkr].str.zfill(6)})
                         .set_index(col_tkr, append=True))
         
         if print_msg:
