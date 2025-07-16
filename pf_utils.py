@@ -4107,8 +4107,8 @@ class PortfolioBuilder():
         def func(df_tkr, price_start=price_start):
             sr_prc = pd.Series(index=df_tkr.index, dtype=float)  # Initialize output series
             sr_prc.iloc[0] = price_start
-            sr_trs = df_tkr[col_rat] * df_tkr[col_trs]
-            sr_net = df_tkr[col_rat] *  df_tkr[col_net]
+            sr_trs = df_tkr[col_rat] * df_tkr[col_trs] # get [num of transaction] * [close price]
+            sr_net = df_tkr[col_net] # [num of net] * [close price]
             sum_t_p = 0  # This keeps track of the summation term
             for i in range(1, len(df_tkr)):  # Start from i=2 (index 1 in pandas)
                 sum_t_p += sr_trs.iloc[i-1] / sr_prc.iloc[i-1]  # Accumulate sum from previous terms
@@ -4126,8 +4126,8 @@ class PortfolioBuilder():
         """
         calc number of shares for amount net & transaction
         """
-        cols = [cols_record[x] for x in ['prc','trs','net']]
-        col_prc, col_trs, col_net = cols
+        cols = [cols_record[x] for x in ['prc','trs','net', 'tkr']]
+        col_prc, col_trs, col_net, col_tkr = cols
         try:
             if df_rec[col_prc].notna().any():
                 return print(f'ERROR: {col_prc} is not None')
@@ -4138,8 +4138,11 @@ class PortfolioBuilder():
         sr_prc = self._get_trading_price(df_rec, df_universe)
         if sr_prc is None:
             return None # see _get_trading_price for err msg
-    
-        df_nshares = df_rec[[col_trs, col_net]].div(sr_prc, axis=0)
+        # close price to compute num of shares of net
+        sr_cls = df_universe.rename_axis(col_tkr, axis=1).stack()
+
+        df_nshares = df_rec[col_trs].div(sr_prc).to_frame(col_trs)
+        df_nshares[col_net] = df_rec[col_net].div(sr_cls)
         df_nshares = df_nshares.join(sr_prc) if add_price else df_nshares
         return df_nshares.map(np.rint).astype(int) if int_nshares else df_nshares
 
