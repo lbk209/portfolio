@@ -3012,11 +3012,10 @@ class PortfolioBuilder():
             # where num of shares is ratio of value to close from latest data
             df_nshares = self._get_nshares(df_rec, df_prc, cols_record, int_nshares=False)
             # compute transaction amount for the transaction date
-            df_trs = (df_nshares.loc[date, col_net]
-                      .sub(df_nshares.groupby(col_tkr)[col_trs].sum()) # calc num of shares for transaction
+            df_trs = (df_nshares.groupby(col_tkr, group_keys=False)[col_net]
+                      .apply(lambda x: x - x.shift()).loc[date].round() # num of shares for transaction   
                       # get amount by multiplying price
                       .mul(df_prc.loc[date]).dropna() # transaction assumed by close price
-                      .round() # round very small transaction to zero for the cond later
                       .to_frame(col_trs).assign(**{col_date:date, col_dttr:date_actual})
                       .set_index(col_date, append=True).swaplevel())
             # confine tickers on the transaction date
@@ -3918,6 +3917,7 @@ class PortfolioBuilder():
         """
         Calculate the entry turnover ratio of the portfolio over time.
         """
+        # get num of shares of all transaction
         df_rec = self.view_record(0, nshares=True, msg=False, int_nshares=True)
         if df_rec is None:
             return None # see msg from view_record
@@ -3928,7 +3928,6 @@ class PortfolioBuilder():
     
         cols_record = self.cols_record
         col_date = cols_record['date']
-        col_rat = cols_record['rat']
         col_trs = cols_record['trs']
         col_net = cols_record['net']
         
