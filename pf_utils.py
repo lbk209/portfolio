@@ -2920,7 +2920,7 @@ class PortfolioBuilder():
         wi = pd.Series(weights, name=col_wgt).rename_axis(col_tkr) # ideal weights
         sr_net = wi * capital # weighted security value
         
-        if int_nshares: # allocating by considering num of shares from price data
+        if int_nshares: # allocate by considering num of shares from price data
             sr_net = sr_net / df_prc.loc[date, tickers] # stock quantity float
             sr_net = sr_net.rename(col_net).rename_axis(col_tkr) # missing index name in some cases
             # floor-towards-zero for int shares of buy or sell
@@ -3011,10 +3011,11 @@ class PortfolioBuilder():
             # get num of shares for transaction & net with price history
             # where num of shares is ratio of value to close from latest data
             df_nshares = self._get_nshares(df_rec, df_prc, cols_record, int_nshares=False)
-            # get transaction amount for the transaction date
+            # compute transaction amount for the transaction date
             df_trs = (df_nshares.loc[date, col_net]
-                      .sub(df_nshares.groupby(col_tkr)[col_trs].sum())
-                      .mul(df_prc.loc[date]).dropna() # get amount by multiplying price
+                      .sub(df_nshares.groupby(col_tkr)[col_trs].sum()) # calc num of shares for transaction
+                      # get amount by multiplying price
+                      .mul(df_prc.loc[date]).dropna() # transaction assumed by close price
                       .round() # round very small transaction to zero for the cond later
                       .to_frame(col_trs).assign(**{col_date:date, col_dttr:date_actual})
                       .set_index(col_date, append=True).swaplevel())
@@ -3917,25 +3918,28 @@ class PortfolioBuilder():
         """
         Calculate the entry turnover ratio of the portfolio over time.
         """
-        df_rec = self._check_result()
+        df_rec = self.view_record(0, nshares=True, msg=False, int_nshares=True)
         if df_rec is None:
             return None # see msg from view_record
-    
+
         df = df_rec.loc[date:]
         if len(df) > 0:
             df_rec = df
     
         cols_record = self.cols_record
         col_date = cols_record['date']
+        col_rat = cols_record['rat']
         col_trs = cols_record['trs']
         col_net = cols_record['net']
         
         return df_rec.groupby(col_date).apply(
-            lambda x: pd.Series({
-                'New': sum(x[col_net] == x[col_trs]),
-                'Total': sum(x[col_net] > 0),
-                'Ratio': round(sum(x[col_net] == x[col_trs])/sum(x[col_net] > 0), 3)
-            })
+            lambda x: (
+                lambda new, total: pd.Series({
+                    'New': new,
+                    'Total': total,
+                    'Ratio': round(new / total, 3) if total else 0
+                })
+            )(sum(x[col_net] == x[col_trs]), sum(x[col_net] > 0))
         )
     
 
@@ -4060,6 +4064,7 @@ class PortfolioBuilder():
         convert df_rec from num of shares to amount-based
         """
         cols_record = self.cols_record
+        col_rat = cols_record['rat']
         col_trs = cols_record['trs']
         col_net = cols_record['net']
         col_prc = cols_record['prc']
@@ -4068,7 +4073,8 @@ class PortfolioBuilder():
         if df_rec[col_prc].isna().any():
             return df_rec # col_prc must be not None to convert to shares
         # calc amounts for transaction & net
-        df_rec.loc[:, cols_int] = df_rec[cols_int].mul(df_rec[col_prc], axis=0)
+        df_rec.loc[:, col_trs] = df_rec.apply(lambda x: x[col_trs] * x[col_prc], axis=1)
+        df_rec.loc[:, col_net] = df_rec.apply(lambda x: x[col_net] * x[col_prc] * x[col_rat], axis=1)
         df_rec[cols_int] = df_rec[cols_int].astype(int) # ensure casting works by not using loc?
         df_rec.loc[:, col_prc] = None # set col_prc to None as flag
         return df_rec
@@ -4210,7 +4216,6 @@ class PortfolioBuilder():
         """
         cols_record = self.cols_record
         col_date = cols_record['date']
-        col_rat = cols_record['rat']
         col_net = cols_record['net']
         end = datetime.today() if end_date is None else end_date
         sr_ttl = None
@@ -4221,22 +4226,15 @@ class PortfolioBuilder():
             return
         else:
             sr_nshares = sr_nshares[col_net]
-        df_unit = df_universe.copy()
-        df_unit.loc[:,:] = None
         
         # loop for transaction dates in descending order
         for start in dates_trs.sort_values(ascending=False):
-            n_tickers = sr_nshares.loc[start]
-            df_c = df_universe.loc[start:end, n_tickers.index]
+            n_tickers = sr_nshares.loc[start] # num of net shares
+            df_c = df_universe.loc[start:end, n_tickers.index] # close price
             if len(df_c) == 0: # no price data from transaction date start
                 continue
-                
-            # get ratio of closed to buy/sell price on transaction date 'start'
-            rat_i = df_unit.loc[start:end, n_tickers.index]
-            rat_i.loc[start] = df_rec.loc[start, col_rat]
             # calc combined security value history from prv transaction (start) to current (end) 
-            sr_i = (df_c.div(rat_i, fill_value=1) # trading price
-                        .apply(lambda x: x*n_tickers.loc[x.name])) # x.name: index name
+            sr_i = df_c.apply(lambda x: x*n_tickers.loc[x.name]) # x.name: index name
             # concat histories        
             sr_ttl = sr_i if sr_ttl is None else pd.concat([sr_ttl, sr_i])
             end = start - pd.DateOffset(days=1)
@@ -4245,7 +4243,7 @@ class PortfolioBuilder():
             return print('ERROR: no historical')
         else:
             sr_ttl = sr_ttl.sort_index()
-
+    
         if not exclude_cost:
             cost = self.cost or dict()
             kw = dict(period=3, percent=True, **cost)
