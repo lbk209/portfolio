@@ -2976,7 +2976,7 @@ class PortfolioBuilder():
         cols_int = [col_trs, col_net]
                 
         date = df_net.index.get_level_values(0).max()
-        date_actual = date if date_actual is None else date_actual
+        date_actual = date if date_actual is None else pd.to_datetime(date_actual)
         record = self.record
         if record is None: # no transation record saved
             # allocation is same as transaction for the 1st time
@@ -3159,8 +3159,10 @@ class PortfolioBuilder():
         kw = dict(date=date, date_actual=date_actual)
         if isinstance(capital, Number):
             df_rec = self._transaction_process(capital=capital, **kw)
-        else:
+        elif isinstance(capital, dict):
             df_rec = self._transaction_by_shares(trade=capital, **kw)
+        else:
+            return print('ERROR')
         
         if df_rec is not None: # new transaction updated
             # recover record with halt before saving or converting to record with num of shares
@@ -3263,62 +3265,81 @@ class PortfolioBuilder():
         """
         if (trade is None) or not isinstance(trade, dict):
             return print('ERROR: Set tickers to trade')
-    
-        # get existing transaction history
-        record = self.record
-        if record is None:
-            return None # TODO: create 1st transaction, error if sale exists
-        else:
-            # check record is amount-based
-            if record[self.cols_record['prc']].notna().any(): 
-                return print('ERROR: Run update_record first after editing record')
-    
-        # get transaction record by num of shares
-        df_prc = self._update_universe(record, msg=False)
-        df_net = self._convert_to_nshares(record, df_prc, int_nshares=True)
-    
-        # check new transaction date
-        date = self._get_data(date=date, df_data=df_prc).index.max()
-        if not self.check_new_transaction(date=date, msg=True):
-            # calc profit at the last transaction
-            _ = self.valuate(date, total=True, int_to_str=True, print_msg=True)
-            # add tickers of halt to recover original record
-            return self.tradinghalts.recover(self.record, self.record_halt)  
-        else:
-            date_actual = date if date_actual is None else date_actual
         
         security_names = self.security_names
         cols_record = self.cols_record
         col_date = cols_record['date']
         col_tkr = cols_record['tkr']
+        col_name = cols_record['name']
         col_rat = cols_record['rat']
         col_trs = cols_record['trs']
         col_net = cols_record['net']
         col_wgt = cols_record['wgt']
         col_dttr = cols_record['dttr']
         col_prc = cols_record['prc']
-    
-        # copy the latest transaction for new one
-        date_lt = record.index.get_level_values(col_date).max()
-        df_net = df_net.loc[date_lt]
-        df_net = df_net.loc[df_net[col_net] > 0]
-    
-        # create new transaction
-        try: # check arg transaction
-            df_trs = pd.DataFrame.from_dict(trade, orient='index', columns=[col_trs, col_prc])
-        except Exception as e:
-            return print(f'ERROR: Check the arg transaction as {e}')
-        df_trs = df_trs.join(df_net[col_net]).fillna(0).assign(**{col_net: lambda x: x[col_trs] + x[col_net]})
-        df_trs = df_trs.rename_axis(col_tkr)
-    
-        # add new ticker before update
-        df_net = pd.concat([df_net, df_trs.loc[df_trs.index.difference(df_net.index)]])
         
-        # set col_rat to None for later update 
-        # use np.nan for consistency instead of None
-        df_net = df_net.assign(**{col_trs:0, col_rat:np.nan, col_wgt:np.nan, col_dttr:date_actual})
-        df_net[col_prc] = df_prc.loc[date] # update share price for stocks of no transaction
-        df_net.update(df_trs) # update transaction, unit-price & net
+        # get existing transaction history
+        record = self.record
+        if record is None: # create 1st transaction
+            # create transaction record with num of shares
+            df_net = pd.DataFrame.from_dict(trade, orient='index', columns=[col_trs, col_prc])
+            
+            # check input
+            if df_net[col_trs].le(0).any():
+                return print('ERROR: No short sale supported')
+           
+            # check date
+            date = self._get_data(date=date).index.max()
+            date_actual = date if date_actual is None else pd.to_datetime(date_actual)
+            # update fields
+            df_net[col_net] = df_net[col_trs]
+            df_net = df_net.assign(**{col_name:None, col_rat:np.nan, col_wgt:np.nan, col_dttr:date_actual})
+            # sort columns
+            cols_all = [col_name, col_rat, col_trs, col_net, col_wgt, col_dttr, col_prc]
+            df_net = df_net[cols_all].rename_axis(col_tkr)
+    
+            # price in next step
+            df_prc = self.df_universe
+        else:
+            # check record is amount-based
+            if record[self.cols_record['prc']].notna().any(): 
+                return print('ERROR: Run update_record first after editing record')
+    
+            # get transaction record by num of shares
+            df_prc = self._update_universe(record, msg=False)
+            df_net = self._convert_to_nshares(record, df_prc, int_nshares=True)
+    
+            # check new transaction date
+            date = self._get_data(date=date, df_data=df_prc).index.max()
+            if not self.check_new_transaction(date=date, msg=True):
+                # calc profit at the last transaction
+                _ = self.valuate(date, total=True, int_to_str=True, print_msg=True)
+                # add tickers of halt to recover original record
+                return self.tradinghalts.recover(self.record, self.record_halt)  
+        
+            # copy the latest transaction for new one
+            date_lt = record.index.get_level_values(col_date).max()
+            df_net = df_net.loc[date_lt]
+            df_net = df_net.loc[df_net[col_net] > 0]
+    
+            # create new transaction
+            try: # check arg transaction
+                df_trs = pd.DataFrame.from_dict(trade, orient='index', columns=[col_trs, col_prc])
+            except Exception as e:
+                return print(f'ERROR: Check the arg transaction as {e}')
+            df_trs = df_trs.join(df_net[col_net]).fillna(0).assign(**{col_net: lambda x: x[col_trs] + x[col_net]})
+            df_trs = df_trs.rename_axis(col_tkr)
+        
+            # add new ticker before update
+            df_net = pd.concat([df_net, df_trs.loc[df_trs.index.difference(df_net.index)]])
+        
+            date_actual = date if date_actual is None else pd.to_datetime(date_actual)
+            # set col_rat to None for later update 
+            # use np.nan for consistency instead of None
+            df_net = df_net.assign(**{col_trs:0, col_rat:np.nan, col_wgt:np.nan, col_dttr:date_actual})
+            df_net[col_prc] = df_prc.loc[date] # update share price for stocks of no transaction
+            df_net.update(df_trs) # update transaction, unit-price & net
+    
         # add new transaction date as index    
         df_net = df_net.assign(**{col_date: date}).set_index(col_date, append=True).swaplevel(0)
         # add security names
@@ -3329,12 +3350,12 @@ class PortfolioBuilder():
         df_net = self._convert_to_amount(df_net, df_prc)
         # combine new tranaction with prv ones
         df_rec = pd.concat([record, df_net]).sort_index()
-
+    
         # print Invested capital or Residual cash
         invested = df_rec.loc[date, col_trs].sum()
         st = 'Deployed capital' if invested > 0 else 'Residual cash'
         print(f'{st}: {abs(invested):,}')
-
+    
         # overwrite existing df_rec with new transaction
         self.df_rec = df_rec
         # print portfolio value and profit/loss after self.df_rec updated
