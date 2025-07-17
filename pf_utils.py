@@ -3577,12 +3577,14 @@ class PortfolioBuilder():
         df_all = self.valuate(date='all', total=True, exclude_cost=exclude_cost)
         if df_all is None:
             return None
+        else: # no simulation for portfolio with no position 
+            df_sim = True if df_all.iloc[-1]['value'] > 0 else False
         
         df_val = df_all[col_roi]
         # portfolio returns from cumulative roi
         df_val = (1 + df_val) / (1 + df_val.shift(1)) - 1
         # portfolio values from returns
-        df_res = df_val.apply(lambda x: (1 + x)).cumprod().dropna()
+        df_res = df_val.apply(lambda x: (1 + x)).cumprod().dropna().to_frame('Realized')
     
         # get price history of assets
         df_rec = self._check_result()
@@ -3602,22 +3604,23 @@ class PortfolioBuilder():
             dates = [df_all.index.get_level_values(col_date).max()]
         else: # date is string
             dates = [datetime.strptime(date, self.date_format)]
-    
-        df_sim = None
-        # Portfolio value by assuming the end-date weights were held from the start
-        for date in dates:
-            df_all = self.valuate(date=date, total=False, int_to_str=False, exclude_cost=exclude_cost)
-            if df_all is None:
-                return None
-            df_val = df_prices.loc[:date, df_all.index].dropna(how='all')
-            date = date.strftime('%y%m%d') # cast to str for column name
-            df_val = (df_all[col_val].div(df_all[col_val].sum()) # weights
-                     .div(df_val.iloc[0]) # unit price of each asset
-                     .mul(df_val).sum(axis=1) # total value
-                     .rename(f'Simulated ({date})'))
-            df_sim = df_val if df_sim is None else pd.concat([df_sim, df_val], axis=1)
-    
-        df_res = df_res.to_frame('Realized').join(df_sim, how='outer')
+
+        if df_sim:
+            df_sim = None
+            # Portfolio value by assuming the end-date weights were held from the start
+            for date in dates:
+                df_all = self.valuate(date=date, total=False, int_to_str=False, exclude_cost=exclude_cost)
+                if df_all is None:
+                    return None
+                df_val = df_prices.loc[:date, df_all.index].dropna(how='all')
+                date = date.strftime('%y%m%d') # cast to str for column name
+                df_val = (df_all[col_val].div(df_all[col_val].sum()) # weights
+                         .div(df_val.iloc[0]) # unit price of each asset
+                         .mul(df_val).sum(axis=1) # total value
+                         .rename(f'Simulated ({date})'))
+                df_sim = df_val if df_sim is None else pd.concat([df_sim, df_val], axis=1)
+            df_res = df_res.join(df_sim, how='outer')
+
         return performance_stats(df_res, metrics=metrics, sort_by=sort_by, align_period=False)
 
 
