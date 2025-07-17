@@ -4152,9 +4152,10 @@ class PortfolioBuilder():
         return df_nshares.map(np.rint).astype(int) if int_nshares else df_nshares
 
 
-    def _update_price_ratio(self, df_rec, df_universe):
+    def _update_price_ratio(self, df_rec, df_universe, overwrite=False):
         """
         calc the ratio of trading price to close price on the trading date
+        overwrite: set to False to only update ratio values that are None/null
         """
         col_rat, col_prc = [self.cols_record[x] for x in ['rat','prc']]
         col_close = 'close'
@@ -4163,10 +4164,14 @@ class PortfolioBuilder():
             if df_rec[col_prc].notna().any():
                 print(f'ERROR: {col_prc} must be all None or all not None')
             return df_rec
-        
-        df_rat = df_rec.loc[df_rec[col_rat].isna()]
-        if len(df_rat) == 0: # no calc of ratio
-            return df_rec
+    
+        if overwrite:
+            df_rat = df_rec
+        else:
+            df_rat = df_rec.loc[df_rec[col_rat].isna()]
+            if len(df_rat) == 0: # no calc of ratio
+                return df_rec
+                
         index = [self.cols_record[x] for x in ['date','tkr']]
         sr_close = df_universe.stack().rename(col_close).rename_axis(index)
         df_rat = df_rat.join(sr_close).apply(lambda x: x[col_close] / x[col_prc], axis=1)
