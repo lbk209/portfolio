@@ -2920,7 +2920,7 @@ class PortfolioBuilder():
         wi = pd.Series(weights, name=col_wgt).rename_axis(col_tkr) # ideal weights
         sr_net = wi * capital # weighted security value
         
-        if int_nshares: # allocating by considering num of shares from price data
+        if int_nshares: # allocate by considering num of shares from price data
             sr_net = sr_net / df_prc.loc[date, tickers] # stock quantity float
             sr_net = sr_net.rename(col_net).rename_axis(col_tkr) # missing index name in some cases
             # floor-towards-zero for int shares of buy or sell
@@ -3011,11 +3011,11 @@ class PortfolioBuilder():
             # get num of shares for transaction & net with price history
             # where num of shares is ratio of value to close from latest data
             df_nshares = self._get_nshares(df_rec, df_prc, cols_record, int_nshares=False)
-            # get transaction amount for the transaction date
-            df_trs = (df_nshares.loc[date, col_net]
-                      .sub(df_nshares.groupby(col_tkr)[col_trs].sum())
-                      .mul(df_prc.loc[date]).dropna() # get amount by multiplying price
-                      .round() # round very small transaction to zero for the cond later
+            # compute transaction amount for the transaction date
+            df_trs = (df_nshares.groupby(col_tkr, group_keys=False)[col_net]
+                      .apply(lambda x: x - x.shift()).loc[date].round() # num of shares for transaction   
+                      # get amount by multiplying price
+                      .mul(df_prc.loc[date]).dropna() # transaction assumed by close price
                       .to_frame(col_trs).assign(**{col_date:date, col_dttr:date_actual})
                       .set_index(col_date, append=True).swaplevel())
             # confine tickers on the transaction date
@@ -3917,10 +3917,11 @@ class PortfolioBuilder():
         """
         Calculate the entry turnover ratio of the portfolio over time.
         """
-        df_rec = self._check_result()
+        # get num of shares of all transaction
+        df_rec = self.view_record(0, nshares=True, msg=False, int_nshares=True)
         if df_rec is None:
             return None # see msg from view_record
-    
+
         df = df_rec.loc[date:]
         if len(df) > 0:
             df_rec = df
@@ -3931,11 +3932,13 @@ class PortfolioBuilder():
         col_net = cols_record['net']
         
         return df_rec.groupby(col_date).apply(
-            lambda x: pd.Series({
-                'New': sum(x[col_net] == x[col_trs]),
-                'Total': sum(x[col_net] > 0),
-                'Ratio': round(sum(x[col_net] == x[col_trs])/sum(x[col_net] > 0), 3)
-            })
+            lambda x: (
+                lambda new, total: pd.Series({
+                    'New': new,
+                    'Total': total,
+                    'Ratio': round(new / total, 3) if total else 0
+                })
+            )(sum(x[col_net] == x[col_trs]), sum(x[col_net] > 0))
         )
     
 
@@ -4060,6 +4063,7 @@ class PortfolioBuilder():
         convert df_rec from num of shares to amount-based
         """
         cols_record = self.cols_record
+        col_rat = cols_record['rat']
         col_trs = cols_record['trs']
         col_net = cols_record['net']
         col_prc = cols_record['prc']
@@ -4068,7 +4072,8 @@ class PortfolioBuilder():
         if df_rec[col_prc].isna().any():
             return df_rec # col_prc must be not None to convert to shares
         # calc amounts for transaction & net
-        df_rec.loc[:, cols_int] = df_rec[cols_int].mul(df_rec[col_prc], axis=0)
+        df_rec.loc[:, col_trs] = df_rec.apply(lambda x: x[col_trs] * x[col_prc], axis=1)
+        df_rec.loc[:, col_net] = df_rec.apply(lambda x: x[col_net] * x[col_prc] * x[col_rat], axis=1)
         df_rec[cols_int] = df_rec[cols_int].astype(int) # ensure casting works by not using loc?
         df_rec.loc[:, col_prc] = None # set col_prc to None as flag
         return df_rec
@@ -4107,8 +4112,8 @@ class PortfolioBuilder():
         def func(df_tkr, price_start=price_start):
             sr_prc = pd.Series(index=df_tkr.index, dtype=float)  # Initialize output series
             sr_prc.iloc[0] = price_start
-            sr_trs = df_tkr[col_rat] * df_tkr[col_trs]
-            sr_net = df_tkr[col_rat] *  df_tkr[col_net]
+            sr_trs = df_tkr[col_rat] * df_tkr[col_trs] # get [num of transaction] * [close price]
+            sr_net = df_tkr[col_net] # [num of net] * [close price]
             sum_t_p = 0  # This keeps track of the summation term
             for i in range(1, len(df_tkr)):  # Start from i=2 (index 1 in pandas)
                 sum_t_p += sr_trs.iloc[i-1] / sr_prc.iloc[i-1]  # Accumulate sum from previous terms
@@ -4126,8 +4131,8 @@ class PortfolioBuilder():
         """
         calc number of shares for amount net & transaction
         """
-        cols = [cols_record[x] for x in ['prc','trs','net']]
-        col_prc, col_trs, col_net = cols
+        cols = [cols_record[x] for x in ['prc','trs','net', 'tkr']]
+        col_prc, col_trs, col_net, col_tkr = cols
         try:
             if df_rec[col_prc].notna().any():
                 return print(f'ERROR: {col_prc} is not None')
@@ -4138,15 +4143,19 @@ class PortfolioBuilder():
         sr_prc = self._get_trading_price(df_rec, df_universe)
         if sr_prc is None:
             return None # see _get_trading_price for err msg
-    
-        df_nshares = df_rec[[col_trs, col_net]].div(sr_prc, axis=0)
+        # close price to compute num of shares of net
+        sr_cls = df_universe.rename_axis(col_tkr, axis=1).stack()
+
+        df_nshares = df_rec[col_trs].div(sr_prc).to_frame(col_trs)
+        df_nshares[col_net] = df_rec[col_net].div(sr_cls)
         df_nshares = df_nshares.join(sr_prc) if add_price else df_nshares
         return df_nshares.map(np.rint).astype(int) if int_nshares else df_nshares
 
 
-    def _update_price_ratio(self, df_rec, df_universe):
+    def _update_price_ratio(self, df_rec, df_universe, overwrite=False):
         """
         calc the ratio of trading price to close price on the trading date
+        overwrite: set to False to only update ratio values that are None/null
         """
         col_rat, col_prc = [self.cols_record[x] for x in ['rat','prc']]
         col_close = 'close'
@@ -4155,10 +4164,14 @@ class PortfolioBuilder():
             if df_rec[col_prc].notna().any():
                 print(f'ERROR: {col_prc} must be all None or all not None')
             return df_rec
-        
-        df_rat = df_rec.loc[df_rec[col_rat].isna()]
-        if len(df_rat) == 0: # no calc of ratio
-            return df_rec
+    
+        if overwrite:
+            df_rat = df_rec
+        else:
+            df_rat = df_rec.loc[df_rec[col_rat].isna()]
+            if len(df_rat) == 0: # no calc of ratio
+                return df_rec
+                
         index = [self.cols_record[x] for x in ['date','tkr']]
         sr_close = df_universe.stack().rename(col_close).rename_axis(index)
         df_rat = df_rat.join(sr_close).apply(lambda x: x[col_close] / x[col_prc], axis=1)
@@ -4207,7 +4220,6 @@ class PortfolioBuilder():
         """
         cols_record = self.cols_record
         col_date = cols_record['date']
-        col_rat = cols_record['rat']
         col_net = cols_record['net']
         end = datetime.today() if end_date is None else end_date
         sr_ttl = None
@@ -4218,22 +4230,15 @@ class PortfolioBuilder():
             return
         else:
             sr_nshares = sr_nshares[col_net]
-        df_unit = df_universe.copy()
-        df_unit.loc[:,:] = None
         
         # loop for transaction dates in descending order
         for start in dates_trs.sort_values(ascending=False):
-            n_tickers = sr_nshares.loc[start]
-            df_c = df_universe.loc[start:end, n_tickers.index]
+            n_tickers = sr_nshares.loc[start] # num of net shares
+            df_c = df_universe.loc[start:end, n_tickers.index] # close price
             if len(df_c) == 0: # no price data from transaction date start
                 continue
-                
-            # get ratio of closed to buy/sell price on transaction date 'start'
-            rat_i = df_unit.loc[start:end, n_tickers.index]
-            rat_i.loc[start] = df_rec.loc[start, col_rat]
             # calc combined security value history from prv transaction (start) to current (end) 
-            sr_i = (df_c.div(rat_i, fill_value=1) # trading price
-                        .apply(lambda x: x*n_tickers.loc[x.name])) # x.name: index name
+            sr_i = df_c.apply(lambda x: x*n_tickers.loc[x.name]) # x.name: index name
             # concat histories        
             sr_ttl = sr_i if sr_ttl is None else pd.concat([sr_ttl, sr_i])
             end = start - pd.DateOffset(days=1)
@@ -4242,7 +4247,7 @@ class PortfolioBuilder():
             return print('ERROR: no historical')
         else:
             sr_ttl = sr_ttl.sort_index()
-
+    
         if not exclude_cost:
             cost = self.cost or dict()
             kw = dict(period=3, percent=True, **cost)
