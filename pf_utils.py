@@ -3277,17 +3277,23 @@ class PortfolioBuilder():
         col_wgt = cols_record['wgt']
         col_dttr = cols_record['dttr']
         col_prc = cols_record['prc']
+
+        try: # check arg transaction
+            df_trs = pd.DataFrame.from_dict(trade, orient='index', columns=[col_trs, col_prc])
+        except Exception as e:
+            return print(f'ERROR: Check the arg trade as {e}')
+        # check share price
+        if df_trs[col_prc].le(0).any():
+            return print('ERROR: Check share price')
         
         # get existing transaction history
         record = self.record
+        # create transaction record with num of shares
         if record is None: # create 1st transaction
-            # create transaction record with num of shares
-            df_net = pd.DataFrame.from_dict(trade, orient='index', columns=[col_trs, col_prc])
-            
-            # check input
+            df_net = df_trs
+            # check if all trade is purchase
             if df_net[col_trs].le(0).any():
-                return print('ERROR: No short sale supported')
-           
+                return print('ERROR: Short sale not supported')
             # check date
             date = self._get_data(date=date).index.max()
             date_actual = date if date_actual is None else pd.to_datetime(date_actual)
@@ -3316,24 +3322,21 @@ class PortfolioBuilder():
                 _ = self.valuate(date, total=True, int_to_str=True, print_msg=True)
                 # add tickers of halt to recover original record
                 return self.tradinghalts.recover(self.record, self.record_halt)  
-        
+            else:
+                date_actual = date if date_actual is None else pd.to_datetime(date_actual)
+            
             # copy the latest transaction for new one
             date_lt = record.index.get_level_values(col_date).max()
             df_net = df_net.loc[date_lt]
             df_net = df_net.loc[df_net[col_net] > 0]
     
             # create new transaction
-            try: # check arg transaction
-                df_trs = pd.DataFrame.from_dict(trade, orient='index', columns=[col_trs, col_prc])
-            except Exception as e:
-                return print(f'ERROR: Check the arg transaction as {e}')
             df_trs = df_trs.join(df_net[col_net]).fillna(0).assign(**{col_net: lambda x: x[col_trs] + x[col_net]})
             df_trs = df_trs.rename_axis(col_tkr)
         
             # add new ticker before update
             df_net = pd.concat([df_net, df_trs.loc[df_trs.index.difference(df_net.index)]])
         
-            date_actual = date if date_actual is None else pd.to_datetime(date_actual)
             # set col_rat to None for later update 
             # use np.nan for consistency instead of None
             df_net = df_net.assign(**{col_trs:0, col_rat:np.nan, col_wgt:np.nan, col_dttr:date_actual})
