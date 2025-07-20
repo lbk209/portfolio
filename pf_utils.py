@@ -3456,10 +3456,11 @@ class PortfolioBuilder():
         col_pnl = col_roi if roi else col_ugl
         str_pnl = 'Return On Investment (%)' if roi else 'Unrealized Gain/Loss'
         mlf_pnl = 100 if roi else 1
-        
+        line_ttl = {'c':'darkgray', 'ls':'--', 'lw':1}
+        fill_ttl = {'facecolor': line_ttl['c'], 'alpha':0.1}
+            
         if total:
             # data for plot
-            sr_ttl = df_all.apply(lambda x: x[col_sell] + x[col_val], axis=1)
             sr_val = df_all[col_val]
             sr_pnl = df_all[col_pnl].mul(mlf_pnl)
     
@@ -3468,11 +3469,8 @@ class PortfolioBuilder():
             title = PortfolioBuilder.get_title_pnl(sr_end[col_roi], sr_end[col_ugl], end_date)
     
             # plot
-            line_ttl = {'c':'darkgray', 'ls':'--'}
-            _ = sr_ttl.plot(ax=ax1, label='Total', title=title, **line_ttl)
-            _ = sr_val.plot(ax=ax1, c=line_ttl['c'])
-            ax1.fill_between(sr_ttl.index, sr_ttl, ax1.get_ylim()[0], facecolor=line_ttl['c'], alpha=0.1)
-            ax1.fill_between(sr_val.index, sr_val, ax1.get_ylim()[0], facecolor=line_ttl['c'], alpha=0.2)
+            _ = sr_val.plot(ax=ax1, title=title, **line_ttl)
+            ax1.fill_between(sr_val.index, sr_val, ax1.get_ylim()[0], **fill_ttl)
             ax1.set_ylabel('Value')
             ax1.margins(0)
             
@@ -3495,18 +3493,17 @@ class PortfolioBuilder():
             if self.security_names is not None:
                 df_pnl.columns = [self.security_names[x] for x in df_pnl.columns]
             sr_pnl_ttl = df_tkr.groupby(col_date).sum()
-            sr_pnl_ttl = sr_pnl_ttl[col_ugl].div(sr_pnl_ttl[col_buy].div(mlf_pnl) if roi else 1).rename('Portfolio')
-    
-            # get title
-            sr_end = df_all.loc[end_date]
-            sr_end = sr_end.sum()
-            sr_end[col_roi] = sr_end[col_ugl]/sr_end[col_buy]
-            title = PortfolioBuilder.get_title_pnl(sr_end[col_roi], sr_end[col_ugl], end_date)
+            sr_ugl_ttl = sr_pnl_ttl[col_ugl]
+            sr_roi_ttl = sr_ugl_ttl.div(sr_pnl_ttl[col_buy]).mul(mlf_pnl)            
+            sr_pnl_ttl = sr_roi_ttl if roi else sr_ugl_ttl
+            sr_pnl_ttl = sr_pnl_ttl.rename('Total')
+
+            title = PortfolioBuilder.get_title_pnl(sr_roi_ttl[end_date]/mlf_pnl, sr_ugl_ttl[end_date], end_date)
+            title = f'Results Across {tickers.size} Assets: {title}'
     
             # plot profit history
-            line_ttl = {'c':'darkgray', 'ls':'--'}
-            _ = sr_pnl_ttl.plot(ax=ax1, lw=1, title=title, **line_ttl)
-            ax1.fill_between(sr_pnl_ttl.index, sr_pnl_ttl, ax1.get_ylim()[0], facecolor=line_ttl['c'], alpha=0.1)
+            _ = sr_pnl_ttl.plot(ax=ax1, title=title, **line_ttl)
+            ax1.fill_between(sr_pnl_ttl.index, sr_pnl_ttl, ax1.get_ylim()[0], **fill_ttl)
             _ = df_pnl.plot(ax=ax1, lw=1)
             yl = ax1.set_ylabel(str_pnl)
             ax1.yaxis.tick_right()
@@ -3526,7 +3523,9 @@ class PortfolioBuilder():
             ax1.vlines(dates_trs, 0, 1, transform=ax1.get_xaxis_transform(), lw=0.5, color='gray')
             # set slice for record with a single transaction
             ax2 = self.plot_cashflow(df_rec=df_rec, start_date=start_date, end_date=end_date, 
+                                     labels=['Net Invested Capital'],
                                      exclude_cost=exclude_cost, ax=ax2)
+            ax2.tick_params(axis='y', which='both', right=True, labelright=True)
         return None
 
 
@@ -3539,11 +3538,13 @@ class PortfolioBuilder():
             return None
 
         df_cf = self._calc_cashflow_history(df_rec, exclude_cost=exclude_cost)
+        df_cf = df_cf.apply(lambda x: x['buy'] - x['sell'], axis=1)
         df_cf = self._plot_cashflow_slice(df_cf, start_date, end_date)
         if ax is None:
             _, ax = plt.subplots(figsize=figsize)
         kw = lambda i: {'label':labels[i], 'color':colors[i]}
-        _ = [self._plot_cashflow(ax, df_cf[x], end_date, **kw(i)) for i, x in enumerate(df_cf.columns)]
+        #_ = [self._plot_cashflow(ax, df_cf[x], end_date, **kw(i)) for i, x in enumerate(df_cf.columns)]
+        _ = self._plot_cashflow(ax, df_cf, end_date, **kw(0))
         ax.legend(loc=loc)
         return ax  
 
@@ -3934,7 +3935,7 @@ class PortfolioBuilder():
 
     @staticmethod
     def get_title_pnl(roi, ugl, date, **kwargs):
-        title = f'ROI: {roi:.1%}, UGL: {format_price(ugl, **kwargs)}'
+        title = f'ROI {roi:.1%}, UGL {format_price(ugl, **kwargs)}'
         return f"{title} ({date})"
 
     
