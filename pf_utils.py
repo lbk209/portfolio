@@ -1253,7 +1253,10 @@ class DataManager():
         """
         if isinstance(tickers, str):
             tickers = [tickers]
-        df_data = fdr.DataReader(tickers, start_date, end_date)
+        try:
+            df_data = fdr.DataReader(tickers, start_date, end_date)
+        except Exception as e:
+            print(f'ERROR: {e}')
         cols = df_data.columns
         if col_price1 in cols: # data of signle us stock
             df_data = df_data[col_price1]
@@ -7538,6 +7541,7 @@ class PortfolioManager():
         self.portfolios = dict() # dict of name to PortfolioBuilder instance
         self.load(*pf_names, verbose=verbose, **kwargs)
         self.df_category = None # see import_category
+        self.df_benchmark = None # see set_benchmark
         self.names_vals = dict(
             date='date', ttl='TOTAL', start='start', end='end', 
             buy='buy', sell='sell', value='value', ugl='ugl', roi='roi')
@@ -7594,8 +7598,25 @@ class PortfolioManager():
         
         self.portfolios = pf_dict
         return None
-        
 
+
+    def set_benchmark(self, ticker, start_date=None, end_date=None, 
+                      name='BM', date_format='%Y-%m-%d'):
+        """
+        ticker: ticker to compare with portfolios
+        """
+        df_all = self.util_performance_by_asset(date='all')
+        if df_all is None:
+            return
+        if start_date is None:
+            start_date = df_all.index.min().strftime(date_format)
+        if end_date is None:
+            end_date = df_all.index.max().strftime(date_format)
+        df_benchmark = DataManager.download_fdr(ticker, start_date, end_date)
+        self.df_benchmark = df_benchmark.iloc[:, 0].rename(name)
+        return None if df_benchmark is None else print(f'{ticker} set as benchmark')
+
+    
     @staticmethod
     def review(space=None, output=False):
         pfd = PortfolioData()
