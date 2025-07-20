@@ -3104,7 +3104,7 @@ class PortfolioBuilder():
         df_pnl = self._calc_profit(sr_val, df_cf, result='all')
         
         if total:
-            df_m = df_cf.join(sr_val.rename('value'), how='right').join(df_pnl).ffill()
+            df_m = df_cf.join(sr_val.rename(col_val), how='right').join(df_pnl).ffill()
         else:
             df_m = self._join_cashflow_by_ticker(sr_val, df_cf, df_pnl)
         df_m = df_m.dropna(how='all')
@@ -7857,22 +7857,25 @@ class PortfolioManager():
         if len(pf_names) == 0:
             return None
             
+        if simulation:
+            i = -1
+            msg = 'Simulated performance using the most recent transaction weights'
+        else:
+            i = 0
+            msg = 'Actual performance'
+                    
         # get data from each portfolio
-        df_all = None
-        no_res = []
+        df_all, no_res = None, []
         for name in pf_names:
             pf = self.portfolios[name]
             df = pf.performance_stats(date=date, metrics=metrics, exclude_cost=exclude_cost)
             if df is None:
                 no_res.append(name)
-            else:
-                # add portfolio name
-                if simulation:
-                    df = df.iloc[:, -1].rename(name)
-                    msg = 'Simulated performance using the most recent transaction weights'
-                else: # actual performance
-                    df = df.iloc[:, 0].rename(name) 
-                    msg = 'Actual performance'
+            else: # add portfolio name
+                if simulation and df.columns.size == 1: # no simulated for pf with no position
+                    no_res.append(name)
+                else:
+                    df = df.iloc[:, i].rename(name)
                 df_all = df if df_all is None else pd.concat([df_all, df], axis=1) 
         print(f"WARNING: Check portfolios {', '.join(no_res)}") if len(no_res) > 0 else None
         print(f'Returning {msg}:')
