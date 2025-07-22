@@ -1253,7 +1253,10 @@ class DataManager():
         """
         if isinstance(tickers, str):
             tickers = [tickers]
-        df_data = fdr.DataReader(tickers, start_date, end_date)
+        try:
+            df_data = fdr.DataReader(tickers, start_date, end_date)
+        except Exception as e:
+            print(f'ERROR: {e}')
         cols = df_data.columns
         if col_price1 in cols: # data of signle us stock
             df_data = df_data[col_price1]
@@ -7538,6 +7541,7 @@ class PortfolioManager():
         self.portfolios = dict() # dict of name to PortfolioBuilder instance
         self.load(*pf_names, verbose=verbose, **kwargs)
         self.df_category = None # see import_category
+        self.df_benchmark = None # see set_benchmark
         self.names_vals = dict(
             date='date', ttl='TOTAL', start='start', end='end', 
             buy='buy', sell='sell', value='value', ugl='ugl', roi='roi')
@@ -7594,8 +7598,27 @@ class PortfolioManager():
         
         self.portfolios = pf_dict
         return None
-        
 
+
+    def set_benchmark(self, ticker, start_date=None, end_date=None, 
+                      name='BM', date_format='%Y-%m-%d'):
+        """
+        ticker: ticker to compare with portfolios
+        """
+        df_all = self.util_performance_by_asset(date='all')
+        if df_all is None:
+            return
+        if start_date is None:
+            start_date = df_all.index.min().strftime(date_format)
+        if end_date is None:
+            end_date = df_all.index.max().strftime(date_format)
+        df_benchmark = DataManager.download_fdr(ticker, start_date, end_date)
+        if df_benchmark is None:
+            return None
+        self.df_benchmark = df_benchmark.iloc[:, 0].rename(name)
+        return print(f'{ticker} set as benchmark')
+
+    
     @staticmethod
     def review(space=None, output=False):
         pfd = PortfolioData()
@@ -7811,7 +7834,7 @@ class PortfolioManager():
 
     def summary(self, *pf_names, date=None, 
                 int_to_str=True, category=None, exclude_cost=False, sort_by=None, 
-                plot=False, roi=True, figsize=None):
+                plot=False, roi=True, figsize=None, bm_capital='mean'):
         """
         get cashflow & pnl of groups in category (default portfolio) on date
         """       
@@ -7832,8 +7855,15 @@ class PortfolioManager():
         if plot:
             category = df_val.index.name # reset category according to result df_val
             df_val = df_val.reset_index()
+            n_ori = len(df_val)
             df_val = df_val.sort_values(sort_by, ascending=True) if sort_by in df_val.columns else df_val
+            df_val = self._get_benchmark(df_val, option=0, capital=bm_capital) # add benchmark
             axes = PortfolioBuilder._plot_assets(df_val, col_name=category, roi=roi, figsize=figsize)
+            # Set transparency of the Benchmark
+            if len(df_val) > n_ori:
+                for ax in axes:
+                    bars = ax.patches
+                    bars[-1].set_alpha(0.3)
             return None
         else:
             # set total
@@ -7842,6 +7872,7 @@ class PortfolioManager():
                                  *df_val.iloc[2:].sum(axis=1).to_list()]
             df_ttl = df_val[nm_ttl]
             df_val.loc[nm_roi, nm_ttl] = df_ttl[nm_ugl] / df_ttl[nm_buy]
+            df_val = self._get_benchmark(df_val, option=1, capital=bm_capital) # add benchmark
             return df_val.map(format_price, digits=0) if int_to_str else df_val
 
 
@@ -7878,10 +7909,11 @@ class PortfolioManager():
                 else:
                     df = df.iloc[:, i].rename(name)
                 df_all = df if df_all is None else pd.concat([df_all, df], axis=1) 
+        df_all = self._get_benchmark(df_all, option=2, metrics=metrics) 
         print(f"WARNING: Check portfolios {', '.join(no_res)}") if len(no_res) > 0 else None
         print(f'Returning {msg}:')
         return sort_dataframe(df_all, sort_by, axis=1, ascending=False)
-
+        
 
     def diversification_history(self, *pf_names, start_date=None, end_date=None, 
                                 metrics=None, exclude_cost=False, min_dates=20,
@@ -8150,6 +8182,70 @@ class PortfolioManager():
                 category = col_portfolio
         df_all = df_all.drop(columns=col_portfolio) if category != col_portfolio else df_all
         return df_all, category
+
+
+    def _get_benchmark(self, df_value, option=0, capital='mean', 
+                       metrics=None, date_format='%Y-%m-%d'):
+        """
+        add benchmark stats to stats of portfolios
+        capital: init capital for benchmark as a portfolio. 
+                'mean', 'max', 'mean' or 'total' of all portfolios
+        """
+        df_bm = self.df_benchmark
+        if df_bm is None:
+            print('WARNING: Run set_benchmark first to compare with benchmark')
+            return df_value
+
+        nms_v = self.names_vals
+        nm_buy = nms_v['buy']
+        nm_sell = nms_v['sell']
+        nm_ttl = nms_v['ttl']
+        nm_start = nms_v['start']
+        nm_end = nms_v['end']
+
+        def get_buy(buy, option=capital):
+            if option=='mean':
+                return buy.mean()
+            elif option=='min':
+                return buy.min()
+            elif option=='max':
+                return buy.max()
+            else: # 'total'
+                return buy.sum()
+
+        def value_ugl_roi(buy, df):
+            value = buy / df.iloc[0] * df.iloc[-1]
+            ugl = value - buy
+            roi = ugl / buy
+            return [value, ugl, roi]
+
+        if option == 0: # self.summary with plot=True
+            # slice benchmark data
+            df_bm = df_bm.loc[df_value[nm_start].min():df_value[nm_end].max()]
+            # get stats of benchmark and add to result of portfolios
+            start, end = get_date_minmax(df_bm, date_format)
+            buy = get_buy(df_value[nm_buy].sub(df_value[nm_sell]))
+            bm_list = [df_bm.name, start, end, buy, 0, *value_ugl_roi(buy, df_bm)]
+            df_value.loc[df_value.index.max()+1] = bm_list
+        elif option == 1: # self.summary with plot=False
+            # slice benchmark data
+            df_bm = df_bm.loc[df_value.loc[nm_start].min():df_value.loc[nm_end].max()]
+            # get stats of benchmark and add to result of portfolios
+            start, end = get_date_minmax(df_bm, date_format)
+            cols = df_value.columns.difference([nm_ttl])
+            df_val = df_value[cols]
+            buy = get_buy(df_val.loc[nm_buy].sub(df_val.loc[nm_sell]))
+            bm_list = [start, end, buy, 0, *value_ugl_roi(buy, df_bm)]
+            sr_bm = pd.Series(bm_list, index=df_val.index).rename(df_bm.name) 
+            df_value = pd.concat([df_value, sr_bm], axis=1)
+        else: # self.performance_stats
+            # slice benchmark data
+            df_bm = df_bm.loc[df_value.loc[nm_start].min():df_value.loc[nm_end].max()]
+            # get stats of benchmark and add to result of portfolios
+            start, end = get_date_minmax(df_bm, date_format)
+            df = performance_stats(df_bm.to_frame(), metrics=metrics)
+            df_value = pd.concat([df_value, df], axis=1)
+        return df_value
 
 
 
