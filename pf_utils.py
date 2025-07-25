@@ -2997,7 +2997,7 @@ class PortfolioBuilder():
                 # add new to record after removing additional info except for cols_all in record
                 df_rec = pd.concat([record[cols_all], df_net]).sort_index()
                 # update universe by adding tickers not in the universe but in the past transactions
-                df_prc = self._update_universe(df_rec, msg=True)
+                df_prc = self._update_universe(df_rec, msg=True, download_missing=True)
             else: # return None if no new transaction
                 return None
             
@@ -3173,7 +3173,7 @@ class PortfolioBuilder():
             if save:
                 # save transaction as num of shares for the convenience of trading
                 if nshares:
-                    df_prc = self._update_universe(df_rec, msg=False)
+                    df_prc = self._update_universe(df_rec, msg=False, download_missing=True)
                     # DO NOT SAVE both of transaction & net as int. Set int_nshares to False
                     df_rec = self._convert_to_nshares(df_rec, df_prc, int_nshares=False)
                     # set ratio to None for the new transaction which is a flag for calc of ratio with buy/sell price
@@ -3588,7 +3588,7 @@ class PortfolioBuilder():
         # portfolio returns from cumulative roi
         df_val = (1 + df_val) / (1 + df_val.shift(1)) - 1
         # portfolio values from returns
-        df_res = df_val.apply(lambda x: (1 + x)).cumprod().dropna().to_frame('Realized')
+        df_result = df_val.apply(lambda x: (1 + x)).cumprod().dropna().to_frame('Realized')
     
         # get price history of assets
         df_rec = self._check_result()
@@ -3607,6 +3607,7 @@ class PortfolioBuilder():
         elif date is None:
             dates = [df_all.index.get_level_values(col_date).max()]
         else: # date is string
+            df_result = df_result.loc[:date]
             dates = [datetime.strptime(date, self.date_format)]
 
         if df_sim:
@@ -3623,9 +3624,9 @@ class PortfolioBuilder():
                          .mul(df_val).sum(axis=1) # total value
                          .rename(f'Simulated ({date})'))
                 df_sim = df_val if df_sim is None else pd.concat([df_sim, df_val], axis=1)
-            df_res = df_res.join(df_sim, how='outer')
+            df_result = df_result.join(df_sim, how='outer')
 
-        return performance_stats(df_res, metrics=metrics, sort_by=sort_by, align_period=False)
+        return performance_stats(df_result, metrics=metrics, sort_by=sort_by, align_period=False)
 
 
     def diversification_history(self, start_date=None, end_date=None, 
@@ -3790,7 +3791,7 @@ class PortfolioBuilder():
             df_rec = record.copy()
 
         # update col_rat and convert record from num of shares to amount
-        df_prc = self._update_universe(df_rec, msg=False)
+        df_prc = self._update_universe(df_rec, msg=False, download_missing=True)
         df_rec = self._update_price_ratio(df_rec, df_prc)
         df_rec = self._convert_to_amount(df_rec, df_prc)
         
@@ -3826,7 +3827,7 @@ class PortfolioBuilder():
             df_rec = self.insert_weight_actual(df_rec)
         
         if nshares or value:
-            df_prc = self._update_universe(df_rec, msg=False)
+            df_prc = self._update_universe(df_rec, msg=False, download_missing=True)
 
         if value: # run before nshares
             df_val = self._calc_periodic_value(df_rec, df_prc)
@@ -3897,7 +3898,7 @@ class PortfolioBuilder():
         if df_rec is None:
             df_prc = self.df_universe
         else:
-            df_prc = self._update_universe(df_rec, msg=False)
+            df_prc = self._update_universe(df_rec, msg=False, download_missing=True)
         df_prc = df_prc.loc[start_date:]
     
         # check dates
