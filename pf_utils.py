@@ -3980,6 +3980,7 @@ class PortfolioBuilder():
     def util_plot_additional(self, tickers=None, start_date=None, n_tickers=3, **kwargs):
         """
         tickers: set to None to plot additional data of held assets
+        n_tickers: num of tickers for legend
         kwargs: kwargs for plot
         """
         df_mkt = self.df_additional
@@ -4013,15 +4014,6 @@ class PortfolioBuilder():
             print('REMINDER: More additional data required to generate the plot.')
             return df_tkrs
 
-        # outliers from a Pandas Series using the IQR method.
-        sr = df_tkrs.iloc[-1].sort_values()
-        q1 = sr.quantile(0.25)
-        q3 = sr.quantile(0.75)
-        iqr = q3 - q1
-        upper_bound = q3 + 1.5 * iqr
-        outliers = sr[sr > upper_bound]
-        outliers = sr.iloc[-n_tickers:].index if outliers.size < n_tickers else outliers.index
-
         # plot history
         title = 'Additional data of Portfolio assets'
         ax = df_tkrs.plot(**{'title':title, **kwargs})
@@ -4032,13 +4024,25 @@ class PortfolioBuilder():
         _ = df_mkt.mean(axis=1).rename('Market Average').plot(ax=ax, **kw)
         
         # selec tickers for labels
-        handles, labels = ax.get_legend_handles_labels()
-        idx = [i for i, x in enumerate(labels) if x in outliers]
-        handles = handles[-1:] + [handles[i] for i in idx]
-        _labels = [labels[i] for i in idx]
-        _labels = _labels if self.security_names is None else [self.security_names[x] for x in _labels]
-        labels = labels[-1:] + _labels
-        ax.legend(handles=handles, labels=labels, loc='upper left')
+        if len(tickers_add) > n_tickers: 
+            # outliers from a Pandas Series using the IQR method.
+            sr = df_tkrs.iloc[-1].sort_values()
+            q1 = sr.quantile(0.25)
+            q3 = sr.quantile(0.75)
+            iqr = q3 - q1
+            upper_bound = q3 + 1.5 * iqr
+            outliers = sr[sr > upper_bound]
+            outliers = sr.iloc[-n_tickers:].index if outliers.size < n_tickers else outliers.index
+    
+            handles, labels = ax.get_legend_handles_labels()
+            idx = [i for i, x in enumerate(labels) if x in outliers]
+            handles = handles[-1:] + [handles[i] for i in idx]
+            _labels = [labels[i] for i in idx]
+            _labels = _labels if self.security_names is None else [self.security_names[x] for x in _labels]
+            labels = labels[-1:] + _labels
+            ax.legend(handles=handles, labels=labels, loc='upper left')
+        else:
+            ax.legend(loc='upper left')
         
         return ax
 
