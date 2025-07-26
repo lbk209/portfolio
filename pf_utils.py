@@ -3977,16 +3977,22 @@ class PortfolioBuilder():
         return (ax1, ax2)
 
 
-    def util_plot_additional(self, tickers=None, start_date=None, **kwargs):
+class PortfolioBuilder(PortfolioBuilder):
+    def util_plot_additional(self, tickers=None, start_date=None, end_date=None,
+                             n_tickers=3, history=False, height_bar=0.3, height_padding=0,
+                             figsize=None, title=None):
         """
         tickers: set to None to plot additional data of held assets
+        n_tickers: num of tickers for legend
         kwargs: kwargs for plot
         """
-        df_add = self.df_additional
-        if df_add is None:
+        df_mkt = self.df_additional
+        if df_mkt is None:
             return print('ERROR: no df_additional to check')
         
         col_start = 'start'
+        security_names = self.security_names
+        
         if isinstance(tickers, str):
             tickers = [tickers]
     
@@ -3999,21 +4005,71 @@ class PortfolioBuilder():
             if start_date is None:
                 start_date = df[col_start].min()
     
-        tickers_add = df_add.columns.intersection(tickers)
+        tickers_add = df_mkt.columns.intersection(tickers)
         if tickers_add.size == 0:
             return print('ERROR')
     
-        m = pd.Index(tickers).difference(df_add.columns)
+        m = pd.Index(tickers).difference(df_mkt.columns)
         if m.size > 0:
             print(f'WARNING: {m.size} tickers not in additional data')
 
-        df_add = df_add.loc[start_date:, tickers_add]
-        if len(df_add) > 1:
-            title = 'Additional data of Portfolio assets'
-            return df_add.plot(**{'title':title, **kwargs})
-        else: # no plot if there's just one date for data
-            print('REMINDER: More additional data required to generate the plot.')
-            return df_add
+        df_mkt = df_mkt.loc[start_date:end_date]
+        df_tkrs = df_mkt[tickers_add]
+
+        # plot history
+        title = 'Additional data of Portfolio assets' if title is None else title
+        label_mkt = 'Market Average'
+        fig, ax = plt.subplots()
+        if history: # plot history of additional data
+            if len(df_tkrs) < 2:  # no plot if there's just one date for data
+                print('REMINDER: More additional data required to generate the plot.')
+                return df_tkrs
+                
+            _ = df_tkrs.plot(title=title, ax=ax)
+    
+            # add market avg
+            kw = dict(color='grey', ls='--', lw=1, legend=True)
+            _ = df_mkt.mean(axis=1).rename(label_mkt).plot(ax=ax, **kw)
+            
+            # selec tickers for labels
+            if len(tickers_add) > n_tickers: 
+                # outliers from a Pandas Series using the IQR method.
+                sr = df_tkrs.iloc[-1].sort_values()
+                q1 = sr.quantile(0.25)
+                q3 = sr.quantile(0.75)
+                iqr = q3 - q1
+                upper_bound = q3 + 1.5 * iqr
+                outliers = sr[sr > upper_bound]
+                outliers = sr.iloc[-n_tickers:].index if outliers.size < n_tickers else outliers.index
+                # set legend
+                handles, labels = ax.get_legend_handles_labels()
+                idx = [i for i, x in enumerate(labels) if x in outliers]
+                handles = handles[-1:] + [handles[i] for i in idx]
+                _labels = [labels[i] for i in idx]
+                _labels = _labels if security_names is None else [security_names[x] for x in _labels]
+                labels = labels[-1:] + _labels
+                ax.legend(handles=handles, labels=labels, loc='upper left')
+            else:
+                ax.legend(loc='upper left')
+            _ = ax.set_xlabel(None)
+        else: # plot bar chart on end_date
+            date = df_tkrs.loc[:end_date].index.max()
+            title = f'{title} ({date.strftime(self.date_format)})'
+            sr = df_tkrs.loc[date].sort_values()
+            sr.index = sr.index if security_names is None else [security_names[x] for x in sr.index]
+            sr.loc[label_mkt] = df_mkt.loc[date].mean()
+            _ = sr.plot(kind='barh', title=title, ax=ax)
+            _ = ax.set_ylabel(None)
+            bars = ax.patches
+            bars[-1].set_alpha(0.3)
+
+            # Update the figure height
+            n_bars = len(sr)
+            height_tmp = n_bars * height_bar + height_padding
+            width, height = fig.get_size_inches()
+            if height_tmp > height:
+                fig.set_size_inches(width, height_tmp)
+        return ax
 
 
     def util_get_prices(self, tickers, update_security_names=True):
