@@ -3977,13 +3977,13 @@ class PortfolioBuilder():
         return (ax1, ax2)
 
 
-    def util_plot_additional(self, tickers=None, start_date=None, **kwargs):
+    def util_plot_additional(self, tickers=None, start_date=None, n_tickers=3, **kwargs):
         """
         tickers: set to None to plot additional data of held assets
         kwargs: kwargs for plot
         """
-        df_add = self.df_additional
-        if df_add is None:
+        df_mkt = self.df_additional
+        if df_mkt is None:
             return print('ERROR: no df_additional to check')
         
         col_start = 'start'
@@ -3999,21 +3999,48 @@ class PortfolioBuilder():
             if start_date is None:
                 start_date = df[col_start].min()
     
-        tickers_add = df_add.columns.intersection(tickers)
+        tickers_add = df_mkt.columns.intersection(tickers)
         if tickers_add.size == 0:
             return print('ERROR')
     
-        m = pd.Index(tickers).difference(df_add.columns)
+        m = pd.Index(tickers).difference(df_mkt.columns)
         if m.size > 0:
             print(f'WARNING: {m.size} tickers not in additional data')
 
-        df_add = df_add.loc[start_date:, tickers_add]
-        if len(df_add) > 1:
-            title = 'Additional data of Portfolio assets'
-            return df_add.plot(**{'title':title, **kwargs})
-        else: # no plot if there's just one date for data
+        df_mkt = df_mkt.loc[start_date:]
+        df_tkrs = df_mkt[tickers_add]
+        if len(df_tkrs) < 2:  # no plot if there's just one date for data
             print('REMINDER: More additional data required to generate the plot.')
-            return df_add
+            return df_tkrs
+
+        # outliers from a Pandas Series using the IQR method.
+        sr = df_tkrs.iloc[-1].sort_values()
+        q1 = sr.quantile(0.25)
+        q3 = sr.quantile(0.75)
+        iqr = q3 - q1
+        upper_bound = q3 + 1.5 * iqr
+        outliers = sr[sr > upper_bound]
+        outliers = sr.iloc[-n_tickers:].index if outliers.size < n_tickers else outliers.index
+
+        # plot history
+        title = 'Additional data of Portfolio assets'
+        ax = df_tkrs.plot(**{'title':title, **kwargs})
+        _ = ax.set_xlabel(None)
+
+        # add market avg
+        kw = dict(color='grey', ls='--', lw=1, legend=True)
+        _ = df_mkt.mean(axis=1).rename('Market Average').plot(ax=ax, **kw)
+        
+        # selec tickers for labels
+        handles, labels = ax.get_legend_handles_labels()
+        idx = [i for i, x in enumerate(labels) if x in outliers]
+        handles = handles[-1:] + [handles[i] for i in idx]
+        _labels = [labels[i] for i in idx]
+        _labels = _labels if self.security_names is None else [self.security_names[x] for x in _labels]
+        labels = labels[-1:] + _labels
+        ax.legend(handles=handles, labels=labels, loc='upper left')
+        
+        return ax
 
 
     def util_get_prices(self, tickers, update_security_names=True):
